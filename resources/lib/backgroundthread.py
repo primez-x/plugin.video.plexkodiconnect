@@ -246,7 +246,7 @@ class OrderedQueue(queue.PriorityQueue, object):
 
 class Tasks(list):
     def add(self, task):
-        for t in self:
+        for t in list(self):
             if not t.isValid():
                 self.remove(t)
 
@@ -316,7 +316,7 @@ class FunctionAsTask(Task):
 
 class MutablePriorityQueue(queue.PriorityQueue):
     def _get(self):
-            self.queue.sort()
+            heapq.heapify(self.queue)
             return heapq.heappop(self.queue)
 
     def lowest(self):

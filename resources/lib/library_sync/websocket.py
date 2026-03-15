@@ -15,21 +15,12 @@ if PLAYLIST_SYNC_ENABLED:
 
 LOG = getLogger('PLEX.sync.websocket')
 
-CACHING_ENALBED = utils.settings('enableTextureCache') == "true"
+CACHING_ENABLED = utils.settings('enableTextureCache') == "true"
 
-WEBSOCKET_MESSAGES = []
+# Dict keyed by plex_id to avoid O(n) duplicate scans on every incoming message
+WEBSOCKET_MESSAGES = {}
 # Dict to save info for Plex items currently being played somewhere
 PLAYSTATE_SESSIONS = {}
-
-
-def multi_delete(input_list, delete_list):
-    """
-    Deletes the list items of input_list at the positions in delete_list
-    (which can be in any arbitrary order)
-    """
-    for index in sorted(delete_list, reverse=True):
-        del input_list[index]
-    return input_list
 
 
 def store_websocket_message(message):
@@ -71,11 +62,10 @@ def process_websocket_messages():
         6: 'analyzing',
         9: 'deleted'
     """
-    global WEBSOCKET_MESSAGES
     now = timing.unix_timestamp()
     update_kodi_video_library, update_kodi_music_library = False, False
-    delete_list = []
-    for i, message in enumerate(WEBSOCKET_MESSAGES):
+    keys_to_delete = []
+    for plex_id, message in list(WEBSOCKET_MESSAGES.items()):
         if message['state'] == 9:
             successful, video, music = process_delete_message(message)
         elif now - message['timestamp'] < app.SYNC.backgroundsync_saftymargin:
@@ -91,7 +81,7 @@ def process_websocket_messages():
                            refresh=False)
                 backgroundthread.BGThreader.addTask(task)
         if successful is True:
-            delete_list.append(i)
+            keys_to_delete.append(plex_id)
             update_kodi_video_library = True if video else update_kodi_video_library
             update_kodi_music_library = True if music else update_kodi_music_library
         else:
@@ -100,11 +90,11 @@ def process_websocket_messages():
             if message['attempt'] > 3:
                 LOG.error('Repeatedly could not process message %s, abort',
                           message)
-                delete_list.append(i)
+                keys_to_delete.append(plex_id)
 
     # Get rid of the items we just processed
-    if delete_list:
-        WEBSOCKET_MESSAGES = multi_delete(WEBSOCKET_MESSAGES, delete_list)
+    for plex_id in keys_to_delete:
+        WEBSOCKET_MESSAGES.pop(plex_id, None)
     # Let Kodi know of the change
     if update_kodi_video_library or update_kodi_music_library:
         update_kodi_library(video=update_kodi_video_library,
@@ -140,7 +130,6 @@ def store_timeline_message(data):
     PMS is messing with the library items, e.g. new or changed. Put in our
     "processing queue" for later
     """
-    global WEBSOCKET_MESSAGES
     for message in data:
         if 'tv.plex' in message.get('identifier', ''):
             # Ommit Plex DVR messages - the Plex IDs are not corresponding
@@ -166,31 +155,29 @@ def store_timeline_message(data):
                                 status=status)
         elif status == 9:
             # Immediately and always process deletions (as the PMS will
-            # send additional message with other codes)
-            WEBSOCKET_MESSAGES.append({
+            # send additional message with other codes). Overwrite any
+            # pending update for the same plex_id.
+            plex_id = utils.cast(int, message['itemID'])
+            WEBSOCKET_MESSAGES[plex_id] = {
                 'state': status,
                 'plex_type': typus,
-                'plex_id': utils.cast(int, message['itemID']),
+                'plex_id': plex_id,
                 'timestamp': timing.unix_timestamp(),
                 'attempt': 0
-            })
+            }
         elif typus in (v.PLEX_TYPE_MOVIE,
                        v.PLEX_TYPE_EPISODE,
                        v.PLEX_TYPE_SONG) and status == 5:
             plex_id = int(message['itemID'])
-            # Have we already added this element for processing?
-            for existing_message in WEBSOCKET_MESSAGES:
-                if existing_message['plex_id'] == plex_id:
-                    break
-            else:
-                # Haven't added this element to the queue yet
-                WEBSOCKET_MESSAGES.append({
+            # Only add if not already queued (O(1) dict lookup)
+            if plex_id not in WEBSOCKET_MESSAGES:
+                WEBSOCKET_MESSAGES[plex_id] = {
                     'state': status,
                     'plex_type': typus,
                     'plex_id': plex_id,
                     'timestamp': timing.unix_timestamp(),
                     'attempt': 0
-                })
+                }
 
 
 def store_activity_message(data):
@@ -198,7 +185,6 @@ def store_activity_message(data):
     PMS is re-scanning an item, e.g. after having changed a movie poster.
     WATCH OUT for this if it's triggered by our PKC library scan!
     """
-    global WEBSOCKET_MESSAGES
     for message in data:
         if message['event'] != 'ended':
             # Scan still going on, so skip for now
@@ -227,19 +213,15 @@ def store_activity_message(data):
         if not typus:
             LOG.debug('plex_id %s not synced yet - skipping', plex_id)
             continue
-        # Have we already added this element?
-        for existing_message in WEBSOCKET_MESSAGES:
-            if existing_message['plex_id'] == plex_id:
-                break
-        else:
-            # Haven't added this element to the queue yet
-            WEBSOCKET_MESSAGES.append({
+        # Only add if not already queued (O(1) dict lookup)
+        if plex_id not in WEBSOCKET_MESSAGES:
+            WEBSOCKET_MESSAGES[plex_id] = {
                 'state': None,  # Don't need a state here
                 'plex_type': typus['plex_type'],
                 'plex_id': plex_id,
                 'timestamp': timing.unix_timestamp(),
                 'attempt': 0
-            })
+            }
 
 
 def process_playing(data):
@@ -368,7 +350,7 @@ def cache_artwork(plex_id, plex_type, kodi_id=None, kodi_type=None):
     """
     Triggers caching of artwork (if so enabled in the PKC settings)
     """
-    if not CACHING_ENALBED:
+    if not CACHING_ENABLED:
         return
     if not kodi_id:
         with PlexDB(lock=False) as plexdb:

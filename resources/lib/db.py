@@ -82,7 +82,7 @@ def connect(media_type=None):
         try:
             _initial_db_connection_setup(conn)
         except sqlite3.OperationalError as err:
-            if 'database is locked' not in err:
+            if err.args[0] and 'database is locked' not in err.args[0]:
                 # Not an error we want to catch, so reraise it
                 raise
             attempts -= 1

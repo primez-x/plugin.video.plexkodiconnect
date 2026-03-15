@@ -352,7 +352,7 @@ def initialize():
                 'CREATE INDEX IF NOT EXISTS ix_season_3 ON season (plex_guid)',
                 'CREATE INDEX IF NOT EXISTS ix_episode_1 ON episode (last_sync)',
                 'CREATE UNIQUE INDEX IF NOT EXISTS ix_episode_2 ON episode (kodi_id)',
-                'CREATE INDEX IF NOT EXISTS ix_episode_3 ON season (plex_guid)',
+                'CREATE INDEX IF NOT EXISTS ix_episode_3 ON episode (plex_guid)',
                 'CREATE INDEX IF NOT EXISTS ix_artist_1 ON artist (last_sync)',
                 'CREATE UNIQUE INDEX IF NOT EXISTS ix_artist_2 ON artist (kodi_id)',
                 'CREATE INDEX IF NOT EXISTS ix_album_1 ON album (last_sync)',

@@ -55,7 +55,7 @@ class ImageCachingThread(backgroundthread.KillableThread):
                         batch.append(url)
                         if len(batch) == BATCH_SIZE:
                             break
-            offset += i
+            offset += i + 1
             for url in batch:
                 yield url
             if i + 1 < BATCH_SIZE:

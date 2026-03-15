@@ -291,13 +291,6 @@ def cast(func, value):
             return value
         else:
             return value.decode('utf-8')
-    elif func == str:
-        if isinstance(value, (int, float)):
-            return str(value)
-        elif isinstance(value, str):
-            return value
-        else:
-            return value.encode('utf-8')
     elif func == int:
         try:
             return int(value)
