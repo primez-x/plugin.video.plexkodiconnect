@@ -672,6 +672,87 @@ def _videolibrary_onupdate(data):
         PF.scrobble(db_item['plex_id'], 'unwatched')
 
 
+class PKCPlayer(xbmc.Player):
+    """
+    xbmc.Player subclass that hooks onPlayBackError so PKC can fall back from
+    a failed direct-path open to HTTP streaming via the PMS addon path.
+
+    When Kodi fails to open a direct-path file (e.g. because an SMB share is
+    temporarily unavailable), this retries the same item through the PKC plugin
+    endpoint, which streams via HTTP from the Plex Media Server instead.
+    """
+
+    def __init__(self):
+        self._fallback_in_progress = False
+        super().__init__()
+
+    def onAVStarted(self):
+        """Stream actually started - clear the fallback guard."""
+        self._fallback_in_progress = False
+
+    def onPlayBackError(self):
+        """
+        Kodi signals that playback failed to open.  If the failing item was a
+        direct path (not already a plugin:// URL) attempt one retry via the PKC
+        addon path, which will stream via HTTP from the PMS.
+        """
+        LOG.warning('onPlayBackError: Kodi playback error detected')
+        if self._fallback_in_progress:
+            # The addon-path retry itself failed - give up and reset.
+            LOG.warning('onPlayBackError: addon-path fallback also failed, giving up')
+            self._fallback_in_progress = False
+            return
+
+        # The Kodi video playlist usually still holds the item after a failed
+        # open, so query it to find out what was supposed to play.
+        try:
+            items = js.playlist_get_items(v.KODI_VIDEO_PLAYER_ID)
+        except Exception:
+            LOG.debug('onPlayBackError: could not query Kodi playlist')
+            return
+
+        if not items:
+            LOG.debug('onPlayBackError: playlist is empty, nothing to fall back')
+            return
+
+        item = items[0]
+        path = item.get('file', '')
+        kodi_id = item.get('id')
+        kodi_type = item.get('type')
+
+        # Only fall back for direct-path items – plugin:// URLs are already
+        # going through PKC and failing for a different reason.
+        if not path or path.startswith('plugin://'):
+            LOG.debug('onPlayBackError: not a direct path (%s), skipping', path)
+            return
+
+        LOG.warning('onPlayBackError: direct path "%s" failed, attempting addon fallback', path)
+
+        # Resolve Kodi id when the playlist item did not include it.
+        if not kodi_id and kodi_type:
+            kodi_id, _ = kodi_db.kodiid_from_filename(path, kodi_type)
+
+        if not kodi_id or not kodi_type:
+            LOG.debug('onPlayBackError: cannot determine kodi_id/kodi_type, skipping')
+            return
+
+        with PlexDB(lock=False) as plexdb:
+            db_item = plexdb.item_by_kodi_id(kodi_id, kodi_type)
+
+        if not db_item:
+            LOG.debug('onPlayBackError: no Plex DB entry for kodi_id=%s type=%s',
+                      kodi_id, kodi_type)
+            return
+
+        plex_id = db_item['plex_id']
+        plex_type = db_item['plex_type']
+        LOG.warning('onPlayBackError: retrying plex_id=%s via PKC addon path', plex_id)
+        self._fallback_in_progress = True
+        xbmc.executebuiltin(
+            'RunPlugin(plugin://%s/?mode=play&plex_id=%s&plex_type=%s)'
+            % (v.ADDON_ID, plex_id, plex_type))
+
+
 class InitVideoStreams(backgroundthread.Task):
     """
     The Kodi player takes forever to initialize all streams Especially

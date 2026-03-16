@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 from logging import getLogger
+import re
 from requests import exceptions
 
 from .downloadutils import DownloadUtils as DU
@@ -12,9 +13,37 @@ LOG = getLogger('PLEX.playback_decision')
 
 # largest signed 32bit integer: 2147483
 MAX_SIGNED_INT = int(2**31 - 1)
+
+# Matches .plex.direct URLs where the local IP is encoded in the hostname,
+# e.g. https://192-168-0-135.<hash>.plex.direct:32400/path?query
+# Groups: (scheme, ip_with_dashes, port, rest_of_url)
+_REGEX_PLEX_DIRECT_URL = re.compile(
+    r'^(https?)://(\d+-\d+-\d+-\d+)\.[^.]+\.plex\.direct:(\d+)(/.*)$',
+    re.IGNORECASE
+)
 # PMS answer codes
 DIRECT_PLAY_OK = 1000
 CONVERSION_OK = 1001  # PMS can either direct stream or transcode
+
+
+def _resolve_plex_direct_url(url):
+    """
+    If url uses a .plex.direct hostname (e.g. 192-168-0-135.<hash>.plex.direct:32400),
+    replace it with the raw IP encoded in the hostname (192.168.0.135:32400).
+    This bypasses Plex cloud DNS entirely for local servers, eliminating sporadic
+    'Open - Unhandled exception' failures caused by transient DNS resolution errors.
+    Returns the url unchanged if it is not a recognised .plex.direct pattern.
+    """
+    if url is None:
+        return url
+    match = _REGEX_PLEX_DIRECT_URL.match(url)
+    if not match:
+        return url
+    scheme, ip_dashes, port, rest = match.groups()
+    ip = ip_dashes.replace('-', '.')
+    resolved = '%s://%s:%s%s' % (scheme, ip, port, rest)
+    LOG.debug('Resolved .plex.direct URL to direct IP: %s', resolved)
+    return resolved
 
 
 def set_pkc_playmethod(api, item):
@@ -46,6 +75,7 @@ def set_playurl(api, item):
         else:
             item.file = api.transcode_video_path(item.playmethod,
                                                  quality=item.quality)
+            item.file = _resolve_plex_direct_url(item.file)
     finally:
         LOG.info('The playurl for %s is: %s',
                  v.EXPLICIT_PLAYBACK_METHOD[item.playmethod], item.file)

@@ -487,7 +487,7 @@ class Service(object):
         # Some plumbing
         app.init()
         app.APP.monitor = kodimonitor.KodiMonitor()
-        app.APP.player = xbmc.Player()
+        app.APP.player = kodimonitor.PKCPlayer()
 
         # Server auto-detect
         self.setup = initialsetup.InitialSetup()
