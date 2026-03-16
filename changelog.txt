@@ -1,3 +1,15 @@
+version 3.12.3 (beta only):
+- Fix PMS stop registering playback state after 6-10 music tracks #2224 (thanks @quinnoshea)
+- Database may still be locked: add logging #2225
+
+version 3.12.2 (beta only):
+- add context menu option to analyze media in pms
+#2219 (thanks @doomwithdon)
+- Hopefully fix sqlite3.OperationalError: database is locked
+#2222
+- Fix potentially locked database when trying to connect to SQlite
+#2221
+
 version 3.12.1 (beta only):
 - Implement fallback to PMS on playback and seek errors (thanks @doomwithdon) #2211
 - Deactivate warning dialog that user should use default skin Estuary #2212
