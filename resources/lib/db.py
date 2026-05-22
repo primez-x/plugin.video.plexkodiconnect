@@ -9,7 +9,7 @@ from .exceptions import LockedDatabase
 
 DB_WRITE_ATTEMPTS = 30
 DB_WRITE_ATTEMPTS_TIMEOUT = 0.05  # initial backoff in seconds
-DB_WRITE_ATTEMPTS_TIMEOUT_MAX = 5  # cap in seconds
+DB_WRITE_ATTEMPTS_TIMEOUT_MAX = 1  # cap in seconds
 DB_CONNECTION_TIMEOUT = 10
 
 logger = getLogger('PLEX.db')
@@ -20,7 +20,10 @@ def catch_operationalerrors(method):
     sqlite.OperationalError is raised immediately if another DB connection
     is open, reading something that we're trying to change
 
-    So let's catch it and try again
+    So let's catch it and try again.
+
+    A type check for sqlite3.OperationalError does NOT work at least for
+    OSMC, so use general "catch all"
 
     Also see https://github.com/mattn/go-sqlite3/issues/274
     """
@@ -31,21 +34,42 @@ def catch_operationalerrors(method):
         while True:
             try:
                 return method(self, *args, **kwargs)
-            except sqlite3.OperationalError as err:
-                if err.args[0] and 'database is locked' not in err.args[0]:
+            except Exception as err:
+                if 'database is locked' not in str(err):
                     # Not an error we want to catch, so reraise it
                     raise
                 attempts -= 1
-                logger.warning('DB locked, retrying in %.2fs (%d left)',
-                               timeout, attempts)
+                logger.debug('DB locked, retrying in %.2fs (%d left)',
+                             timeout, attempts)
                 if attempts == 0:
                     # Reraise in order to NOT catch nested OperationalErrors
                     raise LockedDatabase('Database is locked')
+                # Release our transaction so VACUUM (or other
+                # exclusive operations) can proceed
+                _close_transaction(self.kodiconn)
+                if self.artconn:
+                    _close_transaction(self.artconn)
                 if app.APP.monitor.waitForAbort(timeout):
-                    # PKC needs to quit
                     return
                 timeout = min(timeout * 2, DB_WRITE_ATTEMPTS_TIMEOUT_MAX)
+                _begin_transaction(self.kodiconn)
+                if self.artconn:
+                    _begin_transaction(self.artconn)
     return wrapper
+
+
+def _close_transaction(conn):
+    try:
+        conn.commit()
+    except Exception:
+        pass
+
+
+def _begin_transaction(conn):
+    try:
+        conn.execute('BEGIN')
+    except Exception:
+        pass
 
 
 def _initial_db_connection_setup(conn):

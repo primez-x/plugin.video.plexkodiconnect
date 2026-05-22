@@ -1,3 +1,12 @@
+version 3.12.6:
+- version 3.11.4-3.12.5 for everyone
+
+version 3.12.5 (beta only):
+- Hopefully almost there to fix 'database is locked' on OSMC #2229
+
+version 3.12.4 (beta only):
+- Fix "database is locked" for good, hopefully! #2227
+
 version 3.12.3 (beta only):
 - Fix PMS stop registering playback state after 6-10 music tracks #2224 (thanks @quinnoshea)
 - Database may still be locked: add logging #2225
