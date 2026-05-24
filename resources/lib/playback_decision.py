@@ -29,9 +29,10 @@ CONVERSION_OK = 1001  # PMS can either direct stream or transcode
 def _resolve_plex_direct_url(url):
     """
     If url uses a .plex.direct hostname (e.g. 192-168-0-135.<hash>.plex.direct:32400),
-    replace it with the raw IP encoded in the hostname (192.168.0.135:32400).
-    This bypasses Plex cloud DNS entirely for local servers, eliminating sporadic
-    'Open - Unhandled exception' failures caused by transient DNS resolution errors.
+    replace HTTP URLs with the raw IP encoded in the hostname (192.168.0.135:32400).
+    This bypasses Plex cloud DNS for local HTTP servers, eliminating sporadic
+    'Open - Unhandled exception' failures caused by transient DNS resolution errors,
+    but HTTPS URLs must keep the hostname so Kodi can validate Plex's certificate.
     Returns the url unchanged if it is not a recognised .plex.direct pattern.
     """
     if url is None:
@@ -40,6 +41,8 @@ def _resolve_plex_direct_url(url):
     if not match:
         return url
     scheme, ip_dashes, port, rest = match.groups()
+    if scheme.lower() == 'https':
+        return url
     ip = ip_dashes.replace('-', '.')
     resolved = '%s://%s:%s%s' % (scheme, ip, port, rest)
     LOG.debug('Resolved .plex.direct URL to direct IP: %s', resolved)
