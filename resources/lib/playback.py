@@ -306,6 +306,39 @@ def resume_dialog(resume):
     return answ == 0
 
 
+def _refresh_playback_metadata(item):
+    """
+    Refresh PMS metadata right before resolving playback.
+
+    Plex playQueue XML can lag just after a file replacement and still contain
+    stale Part keys. The library metadata endpoint is the source of truth for
+    the currently playable media parts.
+    """
+    if item.plex_type not in (v.PLEX_TYPE_MOVIE, v.PLEX_TYPE_EPISODE,
+                              v.PLEX_TYPE_VIDEO):
+        return
+    xml = PF.GetPlexMetadata(item.plex_id)
+    try:
+        api = API(xml[0])
+        api.xml[0].attrib
+    except (TypeError, IndexError, AttributeError):
+        LOG.warn('Could not refresh playback metadata for plex_id %s',
+                 item.plex_id)
+        return
+    try:
+        api.xml[0][item.part or 0].attrib
+    except (TypeError, IndexError, AttributeError):
+        LOG.warn('Plex metadata no longer has part %s for plex_id %s; '
+                 'falling back to part 0',
+                 item.part, item.plex_id)
+        item.part = 0
+    item.api = api
+    item.guid = api.guid_html_escaped()
+    item.playcount = api.viewcount()
+    item.offset = api.resume_point()
+    item._streams_have_been_processed = False
+
+
 def _init_existing_kodi_playlist(playqueue, pos):
     """
     Will take the playqueue's kodi_pl with MORE than 1 element and initiate
@@ -447,6 +480,7 @@ def _conclude_playback(playqueue, pos):
     """
     LOG.debug('Concluding playback for playqueue position %s', pos)
     item = playqueue.items[pos]
+    _refresh_playback_metadata(item)
     if item.api.mediastream_number() is None:
         # E.g. user could choose between several media streams and cancelled
         LOG.debug('Did not get a mediastream_number')
