@@ -1,3 +1,6 @@
+version 3.12.8 (beta only):
+- Preflight DirectPlay media URLs before handing playback to Kodi.
+
 version 3.12.6:
 - version 3.11.4-3.12.5 for everyone
 

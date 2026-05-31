@@ -49,6 +49,34 @@ def _resolve_plex_direct_url(url):
     return resolved
 
 
+def _preflight_directplay_url(url):
+    if url is None:
+        return
+    lower_url = url.lower()
+    if (not lower_url.startswith(('http://', 'https://')) or
+            '/library/parts/' not in lower_url):
+        return
+    response = None
+    try:
+        response = DU().downloadUrl(url,
+                                    headerOptions={'Range': 'bytes=0-0'},
+                                    return_response=True,
+                                    timeout=10)
+        status_code = getattr(response, 'status_code', None)
+        if status_code in (200, 206):
+            LOG.info('DirectPlay URL preflight returned HTTP %s', status_code)
+        else:
+            LOG.warn('DirectPlay URL preflight returned HTTP %s', status_code)
+    except Exception as err:
+        LOG.warn('DirectPlay URL preflight failed; Kodi will try the URL')
+        LOG.warn(err)
+    finally:
+        try:
+            response.close()
+        except AttributeError:
+            pass
+
+
 def set_pkc_playmethod(api, item):
     item.playmethod = int(utils.settings('playType'))
     LOG.info('User chose playback method %s in PKC settings',
@@ -79,6 +107,8 @@ def set_playurl(api, item):
             item.file = api.transcode_video_path(item.playmethod,
                                                  quality=item.quality)
             item.file = _resolve_plex_direct_url(item.file)
+            if item.playmethod == v.PLAYBACK_METHOD_DIRECT_PLAY:
+                _preflight_directplay_url(item.file)
     finally:
         LOG.info('The playurl for %s is: %s',
                  v.EXPLICIT_PLAYBACK_METHOD[item.playmethod], item.file)
