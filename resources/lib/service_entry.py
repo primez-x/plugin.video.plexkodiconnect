@@ -11,6 +11,7 @@ from . import initialsetup
 from . import kodimonitor
 from . import sync, library_sync
 from . import websocket_client
+from . import kodi_db
 from . import plex_db
 from . import plex_companion
 from . import plex_functions as PF

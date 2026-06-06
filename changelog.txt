@@ -1,3 +1,6 @@
+version 3.12.11 (beta only):
+- Fix startup crash after artwork URL normalization prevented PKC from authenticating.
+
 version 3.12.10 (beta only):
 - Normalize stale PMS artwork URLs to the active Plex server so widgets keep loading thumbnails after connection changes.
 
