@@ -7,7 +7,7 @@ from .video import KodiVideoDB
 from .music import KodiMusicDB
 from .texture import KodiTextureDB
 
-from .. import path_ops, utils, variables as v
+from .. import artwork_urls, path_ops, utils, variables as v
 
 LOG = getLogger('PLEX.kodi_db')
 
@@ -77,6 +77,14 @@ def reset_cached_images():
                 LOG.warn('Could not create thumbnail directory %s: %s',
                          new_path, err)
     LOG.info('Done resetting cached artwork')
+
+
+def normalize_artwork_urls():
+    with KodiVideoDB() as kodidb:
+        changed = artwork_urls.normalize_artwork_table_urls(kodidb.cursor)
+    if changed:
+        LOG.info('Normalized %s PMS artwork URLs to the active server', changed)
+    return changed
 
 
 def wipe_dbs(music=True):

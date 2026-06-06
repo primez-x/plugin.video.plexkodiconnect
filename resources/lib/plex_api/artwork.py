@@ -4,7 +4,7 @@ from logging import getLogger
 
 from ..kodi_db import KodiVideoDB, KodiMusicDB
 from ..downloadutils import DownloadUtils as DU
-from .. import utils, variables as v, app
+from .. import artwork_urls, utils, variables as v, app
 
 from . import fanart_lookup
 
@@ -30,8 +30,10 @@ class Artwork(object):
             raise NotImplementedError('aspect ratio not yet implemented: %s'
                                       % aspect)
         artwork = self.xml.get(art_kind)
-        if not artwork or artwork.startswith('http'):
+        if not artwork:
             return artwork
+        if artwork.startswith('http'):
+            return artwork_urls.normalize_plex_artwork_url(artwork)
         if '/composite/' in artwork:
             try:
                 # e.g. Plex collections where artwork already contains width and
@@ -51,7 +53,7 @@ class Artwork(object):
         artwork = (f'{app.CONN.server}/photo/:/transcode?width=1920&height=1920&'
                    f'minSize=1&upscale=0&url={utils.quote(artwork)}')
         artwork = self.attach_plex_token_to_url(artwork)
-        return artwork
+        return artwork_urls.normalize_plex_artwork_url(artwork)
 
     def artwork_episode(self, full_artwork):
         """

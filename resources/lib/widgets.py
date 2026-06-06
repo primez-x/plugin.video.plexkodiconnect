@@ -12,7 +12,7 @@ import xbmc
 import xbmcgui
 import xbmcvfs
 
-from . import json_rpc as js, utils, variables as v
+from . import artwork_urls, json_rpc as js, utils, variables as v
 
 LOG = getLogger('PLEX.widget')
 
@@ -53,6 +53,10 @@ def get_clean_image(image):
         return image
     else:
         return image
+
+
+def get_clean_artwork_image(image):
+    return artwork_urls.normalize_plex_artwork_url(get_clean_image(image))
 
 
 def generate_item(api):
@@ -422,6 +426,8 @@ def prepare_listitem(item, listing_key = None):
 
         # artwork
         art = item.get("art", {})
+        if item.get("thumbnail"):
+            item["thumbnail"] = get_clean_artwork_image(item["thumbnail"])
         if item["type"] in ["episode", "season"]:
             if not art.get("fanart") and art.get("season.fanart"):
                 art["fanart"] = art["season.fanart"]
@@ -442,11 +448,11 @@ def prepare_listitem(item, listing_key = None):
         if not art.get("fanart") and item.get('fanart'):
             art["fanart"] = item.get('fanart')
         if not art.get("thumb") and item.get('thumbnail'):
-            art["thumb"] = get_clean_image(item.get('thumbnail'))
+            art["thumb"] = get_clean_artwork_image(item.get('thumbnail'))
         if not art.get("thumb") and art.get('poster'):
-            art["thumb"] = get_clean_image(art.get('poster'))
+            art["thumb"] = get_clean_artwork_image(art.get('poster'))
         if not art.get("thumb") and item.get('icon'):
-            art["thumb"] = get_clean_image(item.get('icon'))
+            art["thumb"] = get_clean_artwork_image(item.get('icon'))
         if not item.get("thumbnail") and art.get('thumb'):
             item["thumbnail"] = art["thumb"]
 
@@ -455,7 +461,7 @@ def prepare_listitem(item, listing_key = None):
             if not isinstance(value, str):
                 art[key] = ""
             elif value:
-                art[key] = get_clean_image(value)
+                art[key] = get_clean_artwork_image(value)
         item["art"] = art
 
         item["extraproperties"] = properties
@@ -712,6 +718,7 @@ def create_listitem(item, as_tuple=True, offscreen=True,
         if "icon" in item:
             liz.setArt({"icon": item['icon']})
         if "thumbnail" in item:
+            item['thumbnail'] = get_clean_artwork_image(item['thumbnail'])
             liz.setArt({"thumb": item['thumbnail']})
 
         # contextmenu

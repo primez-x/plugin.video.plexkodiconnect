@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 from threading import Lock
 
-from .. import db, path_ops
+from .. import artwork_urls, db, path_ops
 
 KODIDB_LOCK = Lock()
 # Names of tables we generally leave untouched and e.g. don't wipe
@@ -75,6 +75,7 @@ class KodiDBBase(object):
         Kodi art table for item kodi_id/kodi_type. Will also cache everything
         except actor portraits.
         """
+        url = artwork_urls.normalize_plex_artwork_url(url)
         self.cursor.execute('''
             INSERT INTO art(media_id, media_type, type, url)
             VALUES (?, ?, ?, ?)
@@ -94,6 +95,7 @@ class KodiDBBase(object):
         Kodi art table for item kodi_id/kodi_type. Will also cache everything
         except actor portraits.
         """
+        url = artwork_urls.normalize_plex_artwork_url(url)
         self.cursor.execute('''
             SELECT url FROM art
             WHERE media_id = ? AND media_type = ? AND type = ?

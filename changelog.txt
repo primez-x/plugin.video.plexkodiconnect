@@ -1,3 +1,6 @@
+version 3.12.10 (beta only):
+- Normalize stale PMS artwork URLs to the active Plex server so widgets keep loading thumbnails after connection changes.
+
 version 3.12.9 (beta only):
 - Sync Plex resume points into Kodi native bookmarks during playback prep.
 - Retry failed DirectPlay startups through PMS transcode while preserving resume choice.

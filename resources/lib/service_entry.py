@@ -492,6 +492,7 @@ class Service(object):
         # Server auto-detect
         self.setup = initialsetup.InitialSetup()
         self.setup.setup()
+        kodi_db.normalize_artwork_urls()
 
         # Initialize important threads
         self.pms_ws = websocket_client.get_pms_websocketapp()
