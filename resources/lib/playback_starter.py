@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 from logging import getLogger
 
-from . import utils, playback, transfer, backgroundthread
+from . import utils, playback, transfer, backgroundthread, app
 from .contextmenu import menu
 
 ###############################################################################
@@ -37,6 +37,10 @@ class PlaybackTask(backgroundthread.Task):
         resolve = False if params.get('handle') == '-1' else True
         LOG.debug('Received mode: %s, params: %s', mode, params)
         if mode == 'play':
+            if params.get('force_transcode') == '1':
+                app.PLAYSTATE.force_transcode = True
+            if params.get('pms_play') == '1':
+                app.PLAYSTATE.context_menu_play = True
             if params.get('resume'):
                 resume = params.get('resume') == '1'
             else:

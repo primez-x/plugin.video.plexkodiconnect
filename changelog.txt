@@ -1,3 +1,7 @@
+version 3.12.9 (beta only):
+- Sync Plex resume points into Kodi native bookmarks during playback prep.
+- Retry failed DirectPlay startups through PMS transcode while preserving resume choice.
+
 version 3.12.8 (beta only):
 - Preflight DirectPlay media URLs before handing playback to Kodi.
 

@@ -208,7 +208,9 @@ def _playback_init(plex_id, plex_type, playqueue, pos, resume):
     # Release default.py
     _ensure_resolve()
     api = API(xml[0])
+    _sync_kodi_resume_from_api(plex_id, plex_type, api)
     if (app.PLAYSTATE.context_menu_play and
+            resume is None and
             api.resume_point() and
             api.plex_type in v.PLEX_VIDEOTYPES):
         # User chose to either play via PMS or to force transcode
@@ -339,6 +341,43 @@ def _refresh_playback_metadata(item):
     item._streams_have_been_processed = False
 
 
+def _sync_kodi_resume_from_api(plex_id, plex_type, api):
+    """
+    Keep Kodi's native bookmark row aligned with Plex's current playstate.
+    """
+    if plex_type not in (v.PLEX_TYPE_MOVIE, v.PLEX_TYPE_EPISODE):
+        return
+    with PlexDB(lock=False) as plexdb:
+        db_item = plexdb.item_by_id(plex_id, plex_type)
+    if not db_item:
+        LOG.debug('Cannot sync Plex resume for unsynced %s %s',
+                  plex_type, plex_id)
+        return
+    resume = api.resume_point()
+    total = api.runtime()
+    playcount = api.viewcount()
+    lastplayed = api.lastplayed()
+    with KodiVideoDB(lock=False) as kodidb:
+        kodidb.set_resume(db_item['kodi_fileid'],
+                          resume,
+                          total,
+                          playcount,
+                          lastplayed)
+        if db_item.get('kodi_fileid_2'):
+            kodidb.set_resume(db_item['kodi_fileid_2'],
+                              resume,
+                              total,
+                              playcount,
+                              lastplayed)
+    if resume:
+        LOG.info('Synced Plex resume point %.3f to Kodi for %s %s',
+                 resume, plex_type, plex_id)
+
+
+def _sync_kodi_resume_from_item(item):
+    _sync_kodi_resume_from_api(item.plex_id, item.plex_type, item.api)
+
+
 def _init_existing_kodi_playlist(playqueue, pos):
     """
     Will take the playqueue's kodi_pl with MORE than 1 element and initiate
@@ -458,9 +497,33 @@ def _use_kodi_db_offset(plex_id, plex_type, plex_offset):
         db_item = plexdb.item_by_id(plex_id, plex_type)
     if db_item:
         with KodiVideoDB(lock=False) as kodidb:
-            return kodidb.get_resume(db_item['kodi_fileid'])
+            kodi_offset = kodidb.get_resume(db_item['kodi_fileid'])
+            return kodi_offset if kodi_offset is not None else plex_offset
     else:
         return plex_offset
+
+
+def _fallback_to_pms_transcode(item, offset, reason):
+    if not item or getattr(item, 'plex_type', None) not in v.PLEX_VIDEOTYPES:
+        return False
+    if getattr(item, 'playmethod', None) == v.PLAYBACK_METHOD_TRANSCODE:
+        return False
+    LOG.info('%s; retrying %s %s through PMS transcode',
+             reason, item.plex_type, item.plex_id)
+    try:
+        app.PLAYSTATE.context_menu_play = True
+        app.PLAYSTATE.force_transcode = True
+        pms_path = item.api.fullpath(force_addon=True)[0]
+        pms_path = utils.extend_url(pms_path, {
+            'resume': '1' if offset else '0',
+            'force_transcode': '1',
+            'pms_play': '1'
+        })
+        xbmc.executebuiltin('RunPlugin(%s)' % pms_path)
+    except Exception as exc:
+        LOG.error('Fallback via PMS transcode failed: %s', exc)
+        return False
+    return True
 
 
 def _conclude_playback(playqueue, pos):
@@ -481,6 +544,7 @@ def _conclude_playback(playqueue, pos):
     LOG.debug('Concluding playback for playqueue position %s', pos)
     item = playqueue.items[pos]
     _refresh_playback_metadata(item)
+    _sync_kodi_resume_from_item(item)
     if item.api.mediastream_number() is None:
         # E.g. user could choose between several media streams and cancelled
         LOG.debug('Did not get a mediastream_number')
@@ -628,16 +692,8 @@ def threaded_playback(kodi_playlist, startpos, offset):
         i += 1
         if i > TRY_TO_SEEK_FOR:
             LOG.error('Could not seek to %s', offset)
-            # Fall back to PMS if direct-path playback failed
             itm = getattr(app.PLAYSTATE, 'item', None)
-            if itm and getattr(itm, 'playmethod', None) == v.PLAYBACK_METHOD_DIRECT_PATH:
-                LOG.info('Direct-path playback failed; falling back to PMS.')
-                try:
-                    app.PLAYSTATE.context_menu_play = True
-                    pms_path = itm.api.fullpath(force_addon=True)[0]
-                    xbmc.executebuiltin('RunPlugin(%s)' % pms_path)
-                except Exception as exc:
-                    LOG.error('Fallback via PMS failed: %s', exc)
+            _fallback_to_pms_transcode(itm, offset, 'Playback did not start')
             return
     try:
         if offset == 0 and app.APP.player.getTime() < IGNORE_SECONDS_AT_START:
@@ -657,16 +713,8 @@ def threaded_playback(kodi_playlist, startpos, offset):
         i += 1
         if i > TRY_TO_SEEK_FOR:
             LOG.error('Failed to seek to %s. Error: %s', offset, answ)
-            # If seeking fails, fall back to PMS
             itm = getattr(app.PLAYSTATE, 'item', None)
-            if itm and getattr(itm, 'playmethod', None) == v.PLAYBACK_METHOD_DIRECT_PATH:
-                LOG.info('Seeking failed; falling back to PMS.')
-                try:
-                    app.PLAYSTATE.context_menu_play = True
-                    pms_path = itm.api.fullpath(force_addon=True)[0]
-                    xbmc.executebuiltin('RunPlugin(%s)' % pms_path)
-                except Exception as exc:
-                    LOG.error('Fallback via PMS failed: %s', exc)
+            _fallback_to_pms_transcode(itm, offset, 'Seek failed')
             return
         answ = js.seek_to(offset)
     LOG.debug('Seek to offset %s successful', offset)
