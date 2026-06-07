@@ -225,6 +225,34 @@ class PlaybackTests(unittest.TestCase):
         self.assertIn('force_transcode=1', command)
         self.assertIn('pms_play=1', command)
 
+    def test_threaded_playback_retries_attempted_item_when_playstate_was_cleared(self):
+        playback, _, app = load_playback()
+        attempted_item = SimpleNamespace(
+            plex_id=10052,
+            plex_type=playback.v.PLEX_TYPE_MOVIE,
+            playmethod=playback.v.PLAYBACK_METHOD_DIRECT_PLAY,
+        )
+        calls = []
+
+        playback.TRY_TO_SEEK_FOR = 0
+        playback.js.get_player_ids = lambda: []
+        playback.LOG.error = lambda *args, **kwargs: None
+        playback._fallback_to_pms_transcode = lambda item, offset, reason: (
+            calls.append((item, offset, reason)) or True
+        )
+        app.PLAYSTATE.item = None
+
+        playback.threaded_playback(
+            kodi_playlist='video playlist',
+            startpos=0,
+            offset=None,
+            fallback_item=attempted_item,
+        )
+
+        self.assertEqual(calls, [
+            (attempted_item, 0, 'Playback did not start'),
+        ])
+
 
 if __name__ == '__main__':
     unittest.main()

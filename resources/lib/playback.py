@@ -666,13 +666,17 @@ def play_xml(playqueue, xml, offset=None, start_plex_id=None):
         stack[startpos]['resume'] = True
     _process_stack(playqueue, stack)
     LOG.debug('Playqueue after play_xml update: %s', playqueue)
+    try:
+        fallback_item = playqueue.items[startpos]
+    except IndexError:
+        fallback_item = None
     thread = Thread(target=threaded_playback,
-                    args=(playqueue.kodi_pl, startpos, offset))
+                    args=(playqueue.kodi_pl, startpos, offset, fallback_item))
     LOG.debug('Done play_xml, starting Kodi player at position %s', startpos)
     thread.start()
 
 
-def threaded_playback(kodi_playlist, startpos, offset):
+def threaded_playback(kodi_playlist, startpos, offset, fallback_item=None):
     """
     Seek immediately after kicking off playback is not reliable. We even seek
     to 0 (starting position) in case Kodi wants to resume but we want to start
@@ -692,7 +696,7 @@ def threaded_playback(kodi_playlist, startpos, offset):
         i += 1
         if i > TRY_TO_SEEK_FOR:
             LOG.error('Could not seek to %s', offset)
-            itm = getattr(app.PLAYSTATE, 'item', None)
+            itm = getattr(app.PLAYSTATE, 'item', None) or fallback_item
             _fallback_to_pms_transcode(itm, offset, 'Playback did not start')
             return
     try:
@@ -713,7 +717,7 @@ def threaded_playback(kodi_playlist, startpos, offset):
         i += 1
         if i > TRY_TO_SEEK_FOR:
             LOG.error('Failed to seek to %s. Error: %s', offset, answ)
-            itm = getattr(app.PLAYSTATE, 'item', None)
+            itm = getattr(app.PLAYSTATE, 'item', None) or fallback_item
             _fallback_to_pms_transcode(itm, offset, 'Seek failed')
             return
         answ = js.seek_to(offset)
