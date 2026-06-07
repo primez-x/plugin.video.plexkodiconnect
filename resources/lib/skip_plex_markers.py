@@ -3,7 +3,7 @@
 import xbmc
 
 from .windows.skip_marker import SkipMarkerDialog
-from . import app, utils, variables as v
+from . import app, skip_marker_state, utils, variables as v
 
 
 # Supported types of markers that can be skipped; values here will be
@@ -13,6 +13,33 @@ MARKERS = {
     'credits': (utils.lang(30526), 'enableSkipCredits', 'enableAutoSkipCredits'),  # Skip credits
     'commercial': (utils.lang(30530), 'enableSkipCommercials', 'enableAutoSkipCommercials'),  # Skip commercial
 }
+
+
+def _set_marker_properties(properties):
+    for key, value in properties.items():
+        utils.setGlobalProperty('skip_marker.%s' % key, value)
+
+
+def _clear_marker_properties():
+    _set_marker_properties(skip_marker_state.clear_properties())
+
+
+def _auto_hide_seconds():
+    if utils.settings("enableAutoHideSkip") != "true":
+        return 0
+    return int(utils.settings("enableAutoHideSkipTime"))
+
+
+def _publish_marker_state(marker_type, marker_definition, marker_end, creation_time, progress,
+                          toast_visible=True):
+    _set_marker_properties(skip_marker_state.build_properties(
+        marker_type=marker_type,
+        marker_message=marker_definition[0],
+        marker_end=marker_end,
+        creation_time=creation_time,
+        progress=progress,
+        auto_hide_seconds=_auto_hide_seconds(),
+        toast_visible=toast_visible))
 
 
 def _should_skip_credits_popup():
@@ -40,6 +67,8 @@ def skip_markers(markers, markers_hidden):
         return
     within_marker = None
     marker_definition = None
+    marker_start = None
+    marker_end = None
     for start, end, typus, _ in markers:
         marker_definition = MARKERS[typus]
         # Skip the PKC credits popup if Up Next is enabled (Up Next handles it)
@@ -50,6 +79,8 @@ def skip_markers(markers, markers_hidden):
         # see https://github.com/croneter/PlexKodiConnect/issues/2002
         if utils.settings(marker_definition[1]) == "true" and start <= progress < end - 1:
             within_marker = typus
+            marker_start = start
+            marker_end = end
             break
         elif typus in markers_hidden:
             # reset the marker when escaping its time window
@@ -58,7 +89,10 @@ def skip_markers(markers, markers_hidden):
     if within_marker is not None:
         if within_marker in markers_hidden:
             # the user did not click the button within the enableAutoHideSkipTime time
-            # so it was hidden. don't show this marker
+            # so it was hidden. don't show this marker, but keep it available
+            # to skins that expose skip controls in the OSD.
+            _publish_marker_state(within_marker, marker_definition, marker_end, marker_start,
+                                  progress, toast_visible=False)
             return
 
         if app.APP.skip_markers_dialog is None:
@@ -70,25 +104,46 @@ def skip_markers(markers, markers_hidden):
                 'default',
                 '1080i',
                 marker_message=marker_definition[0],
-                marker_end=end,
+                marker_end=marker_end,
                 creation_time=progress)
             if utils.settings(marker_definition[2]) == "true":
                 app.APP.skip_markers_dialog.seekTimeToEnd()
             else:
                 app.APP.skip_markers_dialog.show()
 
-        elif utils.settings("enableAutoHideSkip") == "true" and \
-            app.APP.skip_markers_dialog.creation_time is not None and \
-            (progress - app.APP.skip_markers_dialog.creation_time) > int(utils.settings("enableAutoHideSkipTime")):
+        creation_time = getattr(app.APP.skip_markers_dialog, 'creation_time', None)
+        creation_time = progress if creation_time is None else creation_time
+        if _auto_hide_seconds() and \
+            (progress - creation_time) > _auto_hide_seconds():
             # the dialog has been open for more than X seconds, so close it and
             # mark it as hidden so it won't show up again within the start/end window
             markers_hidden[within_marker] = True
             app.APP.skip_markers_dialog.close()
             app.APP.skip_markers_dialog = None
+            _publish_marker_state(within_marker, marker_definition, marker_end, creation_time,
+                                  progress, toast_visible=False)
+        else:
+            _publish_marker_state(within_marker, marker_definition, marker_end, creation_time,
+                                  progress, toast_visible=True)
 
     elif app.APP.skip_markers_dialog is not None:
         app.APP.skip_markers_dialog.close()
         app.APP.skip_markers_dialog = None
+        _clear_marker_properties()
+    else:
+        _clear_marker_properties()
+
+
+def skip_active_marker():
+    try:
+        marker_end = float(utils.getGlobalProperty('skip_marker.end'))
+    except (TypeError, ValueError):
+        return False
+    app.APP.player.seekTime(marker_end)
+    if app.APP.skip_markers_dialog is not None:
+        app.APP.skip_markers_dialog.close()
+        app.APP.skip_markers_dialog = None
+    return True
 
 def check():
     with app.APP.lock_playqueues:

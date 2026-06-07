@@ -1,3 +1,6 @@
+version 3.12.12 (beta only):
+- Modernize intro, credit, and commercial skip overlays with countdown state for skin OSD integration.
+
 version 3.12.11 (beta only):
 - Fix startup crash after artwork URL normalization prevented PKC from authenticating.
 

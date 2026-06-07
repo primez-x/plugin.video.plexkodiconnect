@@ -550,6 +550,8 @@ class Service(object):
                     app.SYNC.run_lib_scan = 'fanart'
                 elif plex_command == 'textures-scan':
                     app.SYNC.run_lib_scan = 'textures'
+                elif plex_command == 'skip-marker':
+                    skip_plex_markers.skip_active_marker()
                 elif plex_command == 'select-libraries':
                     self.choose_plex_libraries()
                 elif plex_command == 'refreshplaylist':

@@ -2,44 +2,123 @@
 <window>
     <defaultcontrol always="true">3002</defaultcontrol>
     <onload>Dialog.Close(fullscreeninfo,true)</onload>
-    <onload>Dialog.Close(videoosd,true)</onload>
     <controls>
         <control type="group">
             <animation type="WindowOpen" reversible="false">
-                <effect type="fade" start="0" end="100" time="500"/>
+                <effect type="fade" start="0" end="100" time="220"/>
+                <effect type="slide" start="0,-24" end="0,0" tween="cubic" easing="out" time="260"/>
             </animation>
             <animation type="WindowClose" reversible="false">
-                <effect type="fade" start="100" end="0" time="500"/>
+                <effect type="fade" start="100" end="0" time="160"/>
+                <effect type="slide" start="0,0" end="0,-16" tween="cubic" easing="in" time="180"/>
             </animation>
             <control type="group">
-                <height>64</height>
-                <control type="group">
+                <top>42</top>
+                <right>48</right>
+                <width>430</width>
+                <height>84</height>
+
+                <control type="image">
+                    <left>-34</left>
+                    <top>-30</top>
+                    <width>498</width>
+                    <height>144</height>
+                    <texture border="64" colordiffuse="88000000">skip-marker-shadow.png</texture>
+                </control>
+                <control type="image">
+                    <width>430</width>
+                    <height>76</height>
+                    <texture border="34" colordiffuse="EE121316">skip-marker-pill.png</texture>
+                </control>
+                <control type="image">
+                    <width>430</width>
+                    <height>76</height>
+                    <texture border="34" colordiffuse="26E5A00D">$INFO[Window(10000).Property(plugin.video.plexkodiconnect.skip_marker.hide_progress_frame),progress/,.png]</texture>
+                    <visible>!String.IsEmpty(Window(10000).Property(plugin.video.plexkodiconnect.skip_marker.hide_progress_frame))</visible>
+                </control>
+                <control type="image">
+                    <left>28</left>
+                    <bottom>15</bottom>
+                    <width>300</width>
+                    <height>4</height>
+                    <texture colordiffuse="55FFFFFF">white.png</texture>
+                    <visible>!String.IsEmpty(Window(10000).Property(plugin.video.plexkodiconnect.skip_marker.hide_progress_frame))</visible>
+                </control>
+                <control type="image">
+                    <left>28</left>
+                    <bottom>15</bottom>
+                    <width>300</width>
+                    <height>4</height>
+                    <texture colordiffuse="FFE5A00D">$INFO[Window(10000).Property(plugin.video.plexkodiconnect.skip_marker.hide_progress_frame),progress/,.png]</texture>
+                    <visible>!String.IsEmpty(Window(10000).Property(plugin.video.plexkodiconnect.skip_marker.hide_progress_frame))</visible>
+                </control>
+                <control type="image">
+                    <width>430</width>
+                    <height>76</height>
+                    <texture border="34" colordiffuse="44FFFFFF">skip-marker-outline.png</texture>
+                    <visible>!Control.HasFocus(3002)</visible>
+                </control>
+                <control type="image">
+                    <width>430</width>
+                    <height>76</height>
+                    <texture border="34" colordiffuse="DDE5A00D">skip-marker-outline.png</texture>
+                    <visible>Control.HasFocus(3002)</visible>
+                </control>
+                <control type="label">
+                    <left>28</left>
                     <top>12</top>
-                    <right>20</right>
-                    <width>70%</width>
-                    <control type="grouplist" id="3001">
-                        <orientation>horizontal</orientation>
-                        <height>40</height>
-                        <itemgap>10</itemgap>
-                        <align>right</align>
-                        <control type="button" id="3002">
-                            <label>$INFO[Window.Property(marker_message)]</label>
-                            <height>40</height>
-                            <width min="50">auto</width>
-                            <font>font20_title</font>
-                            <textoffsetx>32</textoffsetx>
-                            <textcolor>ddffffff</textcolor>
-                            <focusedcolor>eeffffff</focusedcolor>
-                            <selectedcolor>ddffffff</selectedcolor>
-                            <shadowcolor>22000000</shadowcolor>
-                            <aligny>center</aligny>
-                            <align>center</align>
-                            <texturefocus border="10" colordiffuse="FF063FB2">skipintro-button.png</texturefocus>
-                            <texturenofocus border="10" colordiffuse="FF323232">skipintro-button.png</texturenofocus>
-                            <alttexturefocus border="10" colordiffuse="FF063FB2">skipintro-button.png</alttexturefocus>
-                            <alttexturenofocus border="10" colordiffuse="FF323232">skipintro-button.png</alttexturenofocus>
-                        </control>
-                    </control>
+                    <width>294</width>
+                    <height>46</height>
+                    <label>$INFO[Window.Property(marker_message)]</label>
+                    <font>font20_title</font>
+                    <textcolor>F2FFFFFF</textcolor>
+                    <shadowcolor>CC000000</shadowcolor>
+                    <aligny>center</aligny>
+                    <align>left</align>
+                    <visible>!Control.HasFocus(3002)</visible>
+                </control>
+                <control type="image">
+                    <right>24</right>
+                    <top>19</top>
+                    <width>58</width>
+                    <height>38</height>
+                    <texture border="18" colordiffuse="24FFFFFF">skip-marker-pill.png</texture>
+                    <visible>!String.IsEmpty(Window(10000).Property(plugin.video.plexkodiconnect.skip_marker.hide_remaining))</visible>
+                </control>
+                <control type="label">
+                    <right>24</right>
+                    <top>19</top>
+                    <width>58</width>
+                    <height>38</height>
+                    <label>$INFO[Window(10000).Property(plugin.video.plexkodiconnect.skip_marker.hide_remaining),,s]</label>
+                    <font>font20_title</font>
+                    <textcolor>FFE5A00D</textcolor>
+                    <shadowcolor>99000000</shadowcolor>
+                    <aligny>center</aligny>
+                    <align>center</align>
+                    <visible>!String.IsEmpty(Window(10000).Property(plugin.video.plexkodiconnect.skip_marker.hide_remaining))</visible>
+                </control>
+                <control type="button" id="3002">
+                    <width>430</width>
+                    <height>76</height>
+                    <label></label>
+                    <texturefocus colordiffuse="00FFFFFF">white.png</texturefocus>
+                    <texturenofocus colordiffuse="00FFFFFF">white.png</texturenofocus>
+                    <alttexturefocus colordiffuse="00FFFFFF">white.png</alttexturefocus>
+                    <alttexturenofocus colordiffuse="00FFFFFF">white.png</alttexturenofocus>
+                </control>
+                <control type="label">
+                    <left>28</left>
+                    <top>12</top>
+                    <width>294</width>
+                    <height>46</height>
+                    <label>$INFO[Window.Property(marker_message)]</label>
+                    <font>font20_title</font>
+                    <textcolor>FFFFFFFF</textcolor>
+                    <shadowcolor>CC000000</shadowcolor>
+                    <aligny>center</aligny>
+                    <align>left</align>
+                    <visible>Control.HasFocus(3002)</visible>
                 </control>
             </control>
         </control>

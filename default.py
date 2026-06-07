@@ -30,6 +30,9 @@ def triage(mode, params, path, arguments, itemid):
     elif mode == 'settings':
         xbmc.executebuiltin('Addon.OpenSettings(%s)' % v.ADDON_ID)
         return
+    elif mode == 'skip_marker':
+        transfer.plex_command('skip-marker')
+        return
     elif mode == 'enterPMS':
         LOG.info('Request to manually enter new PMS address')
         transfer.plex_command('enter_new_pms_address')

@@ -18,6 +18,7 @@ from . import utils, timing, plex_functions as PF
 from . import json_rpc as js, playlist_func as PL
 from . import backgroundthread, app, variables as v
 from . import exceptions
+from . import skip_marker_state
 from . import upnext
 
 LOG = getLogger('PLEX.kodimonitor')
@@ -404,6 +405,8 @@ def _playback_cleanup(ended=False):
     if app.APP.skip_markers_dialog:
         app.APP.skip_markers_dialog.close()
         app.APP.skip_markers_dialog = None
+    for key, value in skip_marker_state.clear_properties().items():
+        utils.setGlobalProperty('skip_marker.%s' % key, value)
     # We might have saved a transient token from a user flinging media via
     # Companion (if we could not use the playqueue to store the token)
     app.CONN.plex_transient_token = None
