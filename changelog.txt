@@ -1,3 +1,6 @@
+version 3.12.15 (beta only):
+- Render skip marker countdowns as a 12px-radius background fill instead of a separate progress line.
+
 version 3.12.14 (beta only):
 - Move skip marker overlays to the lower-right viewing area and smooth their countdown bars.
 

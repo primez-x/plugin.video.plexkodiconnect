@@ -28,31 +28,24 @@
                 <control type="image">
                     <width>450</width>
                     <height>82</height>
-                    <texture border="42" colordiffuse="EE121316">skip-marker-pill.png</texture>
-                </control>
-                <control type="progress">
-                    <left>30</left>
-                    <bottom>17</bottom>
-                    <width>318</width>
-                    <height>5</height>
-                    <texturebg colordiffuse="55FFFFFF" border="10,0,10,0">white.png</texturebg>
-                    <lefttexture>-</lefttexture>
-                    <midtexture colordiffuse="FFE5A00D" border="10,0,10,0">white.png</midtexture>
-                    <righttexture>-</righttexture>
-                    <overlaytexture>-</overlaytexture>
-                    <info>Window(10000).Property(plugin.video.plexkodiconnect.skip_marker.hide_progress_percent)</info>
-                    <visible>!String.IsEmpty(Window(10000).Property(plugin.video.plexkodiconnect.skip_marker.hide_progress_percent))</visible>
+                    <texture border="12" colordiffuse="EE121316">skip-marker-pill.png</texture>
                 </control>
                 <control type="image">
                     <width>450</width>
                     <height>82</height>
-                    <texture border="42" colordiffuse="44FFFFFF">skip-marker-outline.png</texture>
+                    <texture colordiffuse="FFE5A00D">$INFO[Window(10000).Property(plugin.video.plexkodiconnect.skip_marker.hide_progress_frame),skip-marker-progress/,.png]</texture>
+                    <visible>!String.IsEmpty(Window(10000).Property(plugin.video.plexkodiconnect.skip_marker.hide_progress_frame))</visible>
+                </control>
+                <control type="image">
+                    <width>450</width>
+                    <height>82</height>
+                    <texture border="12" colordiffuse="44FFFFFF">skip-marker-outline.png</texture>
                     <visible>!Control.HasFocus(3002)</visible>
                 </control>
                 <control type="image">
                     <width>450</width>
                     <height>82</height>
-                    <texture border="42" colordiffuse="DDE5A00D">skip-marker-outline.png</texture>
+                    <texture border="12" colordiffuse="DDE5A00D">skip-marker-outline.png</texture>
                     <visible>Control.HasFocus(3002)</visible>
                 </control>
                 <control type="label">
@@ -73,7 +66,7 @@
                     <top>21</top>
                     <width>62</width>
                     <height>40</height>
-                    <texture border="20" colordiffuse="24FFFFFF">skip-marker-pill.png</texture>
+                    <texture border="12" colordiffuse="24FFFFFF">skip-marker-pill.png</texture>
                     <visible>!String.IsEmpty(Window(10000).Property(plugin.video.plexkodiconnect.skip_marker.hide_remaining))</visible>
                 </control>
                 <control type="label">

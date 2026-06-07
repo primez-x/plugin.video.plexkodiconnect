@@ -51,6 +51,20 @@ class SkipMarkerStateTests(unittest.TestCase):
         self.assertEqual(properties['hide_progress_percent'], '0.0')
         self.assertEqual(properties['hide_progress_frame'], '0')
 
+    def test_progress_frame_uses_single_percent_steps_for_background_fill(self):
+        properties = self.state.build_properties(
+            marker_type='intro',
+            marker_message='Skip intro',
+            marker_end=45.0,
+            creation_time=10.0,
+            progress=13.3,
+            auto_hide_seconds=10,
+            toast_visible=True,
+        )
+
+        self.assertEqual(properties['hide_progress_percent'], '67.0')
+        self.assertEqual(properties['hide_progress_frame'], '67')
+
     def test_clear_properties_targets_every_public_marker_property(self):
         cleared = self.state.clear_properties()
 
