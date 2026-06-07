@@ -11,22 +11,44 @@ from . import fanart_lookup
 LOG = getLogger('PLEX.api')
 
 
+ARTWORK_TRANSCODE_DIMENSIONS = {
+    'poster': (1000, 1500),
+    '16:9': (1280, 720),
+    'square': (1000, 1000),
+}
+
+LANDSCAPE_ARTWORK_KINDS = ('art', 'parentArt', 'grandparentArt')
+LANDSCAPE_THUMBNAIL_TYPES = (
+    v.PLEX_TYPE_VIDEO,
+    v.PLEX_TYPE_EPISODE,
+    v.PLEX_TYPE_CLIP,
+    v.PLEX_TYPE_MUSICVIDEO,
+)
+AUDIO_ARTWORK_TYPES = getattr(v, 'PLEX_AUDIOTYPES', ())
+
+
 class Artwork(object):
+    def _aspect_for_artwork(self, art_kind, aspect=None):
+        if aspect:
+            return aspect
+        if art_kind in LANDSCAPE_ARTWORK_KINDS:
+            return '16:9'
+        if art_kind == 'thumb' and self.plex_type in LANDSCAPE_THUMBNAIL_TYPES:
+            return '16:9'
+        if art_kind in ('thumb', 'composite') and (
+                self.plex_type in AUDIO_ARTWORK_TYPES or
+                self.plex_type == v.PLEX_TYPE_PLAYLIST):
+            return 'square'
+        return 'poster'
+
     def one_artwork(self, art_kind, aspect=None):
         """
-        aspect can be: 'square', '16:9', 'poster'. Defaults to 'poster'
+        aspect can be: 'square', '16:9', 'poster'. Guessed from art_kind by default.
         """
-        aspect = 'poster' if not aspect else aspect
-        if aspect == 'poster':
-            width = 1000
-            height = 1500
-        elif aspect == '16:9':
-            width = 1920
-            height = 1080
-        elif aspect == 'square':
-            width = 1000
-            height = 1000
-        else:
+        aspect = self._aspect_for_artwork(art_kind, aspect=aspect)
+        try:
+            width, height = ARTWORK_TRANSCODE_DIMENSIONS[aspect]
+        except KeyError:
             raise NotImplementedError('aspect ratio not yet implemented: %s'
                                       % aspect)
         artwork = self.xml.get(art_kind)
@@ -40,17 +62,19 @@ class Artwork(object):
                 # height. Need to upscale for better resolution
                 artwork, args = artwork.split('?')
                 args = dict(utils.parse_qsl(args))
-                width = int(args.get('width', 400))
-                height = int(args.get('height', 400))
-                # Adjust to 4k resolution 1920x1080
-                scaling = 1920.0 / float(max(width, height))
-                width = int(scaling * width)
-                height = int(scaling * height)
+                source_width = int(args.get('width', 400))
+                source_height = int(args.get('height', 400))
+                scaling = (
+                    float(max(width, height)) /
+                    float(max(source_width, source_height))
+                )
+                width = int(scaling * source_width)
+                height = int(scaling * source_height)
             except ValueError:
                 # e.g. playlists
                 pass
             artwork = f'{artwork}?width={width}&height={height}'
-        artwork = (f'{app.CONN.server}/photo/:/transcode?width=1920&height=1920&'
+        artwork = (f'{app.CONN.server}/photo/:/transcode?width={width}&height={height}&'
                    f'minSize=1&upscale=0&url={utils.quote(artwork)}')
         artwork = self.attach_plex_token_to_url(artwork)
         return artwork_urls.normalize_plex_artwork_url(artwork)
