@@ -1,3 +1,6 @@
+version 3.12.18 (beta only):
+- Recover Kodi's fullscreen playback window after stopped videos leave no active player but the OSD remains active.
+
 version 3.12.17 (beta only):
 - Preserve the attempted playback item so failed DirectPlay startups still retry through PMS transcode after Kodi clears play state.
 

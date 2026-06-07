@@ -25,6 +25,22 @@ LOG = getLogger('PLEX.kodimonitor')
 
 WAIT_BEFORE_INIT_STREAMS = 6
 ADDITIONAL_WAIT_BEFORE_INIT_STREAMS = 10
+STRANDED_PLAYBACK_WINDOW_RECOVERY_DELAY = 1
+STRANDED_PLAYBACK_WINDOW_IDS = {
+    12005,  # Fullscreen video
+    12901,  # Fullscreen OSD / videoosd
+}
+STRANDED_PLAYBACK_WINDOW_LABELS = {
+    'Fullscreen OSD',
+    'Fullscreen Video',
+    'Full screen video',
+}
+STRANDED_PLAYBACK_WINDOW_RECOVERY_COMMANDS = (
+    'Dialog.Close(busydialog, true)',
+    'Dialog.Close(videoosd, true)',
+    'Dialog.Close(fullscreeninfo, true)',
+    'ActivateWindow(Home)',
+)
 
 
 class KodiMonitor(xbmc.Monitor):
@@ -429,7 +445,62 @@ def _playback_cleanup(ended=False):
     app.PLAYSTATE.active_players = set()
     app.PLAYSTATE.item = None
     utils.delete_temporary_subtitles()
+    backgroundthread.BGThreader.addTask(RecoverStrandedPlaybackWindow())
     LOG.debug('Finished PKC playback cleanup')
+
+
+def _current_kodi_window():
+    try:
+        result = js.JsonRPC('GUI.GetProperties').execute(
+            {'properties': ['currentwindow']})
+    except Exception:
+        LOG.debug('Could not query Kodi window for playback recovery',
+                  exc_info=True)
+        return {}
+    try:
+        return result['result']['currentwindow'] or {}
+    except (KeyError, TypeError):
+        return {}
+
+
+def _is_stranded_playback_window(window):
+    try:
+        window_id = int(window.get('id'))
+    except (TypeError, ValueError):
+        window_id = None
+    if window_id in STRANDED_PLAYBACK_WINDOW_IDS:
+        return True
+    return window.get('label') in STRANDED_PLAYBACK_WINDOW_LABELS
+
+
+class RecoverStrandedPlaybackWindow(backgroundthread.Task):
+    """
+    Kodi can leave fullscreen playback windows active after stopping a video
+    whose startup never fully completed. Recover only after Kodi confirms there
+    is no active player, so normal playback UI is left alone.
+    """
+    def __init__(self, delay=STRANDED_PLAYBACK_WINDOW_RECOVERY_DELAY):
+        self.delay = delay
+        super(RecoverStrandedPlaybackWindow, self).__init__()
+
+    def run(self):
+        if self.delay and app.APP.monitor.waitForAbort(self.delay):
+            return
+        try:
+            players = js.get_players()
+        except Exception:
+            LOG.debug('Could not query active Kodi players for playback '
+                      'window recovery', exc_info=True)
+            return
+        if players:
+            return
+        window = _current_kodi_window()
+        if not _is_stranded_playback_window(window):
+            return
+        LOG.warning('Recovering stranded Kodi playback window after playback '
+                    'stopped: %s', window)
+        for command in STRANDED_PLAYBACK_WINDOW_RECOVERY_COMMANDS:
+            xbmc.executebuiltin(command)
 
 
 def _record_playstate(status, ended):
