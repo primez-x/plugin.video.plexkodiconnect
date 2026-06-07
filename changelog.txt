@@ -1,3 +1,9 @@
+version 3.12.14 (beta only):
+- Move skip marker overlays to the lower-right viewing area and smooth their countdown bars.
+
+version 3.12.13 (beta only):
+- Reduce generated Plex artwork transcode sizes to avoid Kodi texture allocation crashes on memory-constrained devices.
+
 version 3.12.12 (beta only):
 - Modernize intro, credit, and commercial skip overlays with countdown state for skin OSD integration.
 

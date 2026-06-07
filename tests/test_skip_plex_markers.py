@@ -122,6 +122,7 @@ class SkipPlexMarkersTests(unittest.TestCase):
         self.assertEqual(properties['skip_marker.end'], '45.0')
         self.assertEqual(properties['skip_marker.toast_visible'], '1')
         self.assertEqual(properties['skip_marker.hide_remaining'], '10')
+        self.assertEqual(properties['skip_marker.hide_progress_percent'], '100.0')
         self.assertEqual(properties['skip_marker.hide_progress_frame'], '100')
         self.assertIs(app.APP.skip_markers_dialog, FakeSkipMarkerDialog.last)
         self.assertTrue(FakeSkipMarkerDialog.last.shown)
@@ -138,6 +139,7 @@ class SkipPlexMarkersTests(unittest.TestCase):
         self.assertEqual(properties['skip_marker.available'], '1')
         self.assertEqual(properties['skip_marker.toast_visible'], '')
         self.assertEqual(properties['skip_marker.hide_remaining'], '0')
+        self.assertEqual(properties['skip_marker.hide_progress_percent'], '0.0')
         self.assertEqual(properties['skip_marker.hide_progress_frame'], '0')
 
     def test_skip_active_marker_seeks_to_published_marker_end(self):

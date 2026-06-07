@@ -9,6 +9,7 @@ PROPERTY_KEYS = (
     'end',
     'toast_visible',
     'hide_remaining',
+    'hide_progress_percent',
     'hide_progress_frame',
 )
 
@@ -46,6 +47,7 @@ def build_properties(
         'end': str(marker_end),
         'toast_visible': '1' if toast_visible else '',
         'hide_remaining': str(int(ceil(remaining))),
+        'hide_progress_percent': '%.1f' % _clamp(percent_remaining, 0, 100),
         'hide_progress_frame': str(_progress_frame(percent_remaining)),
     }
 

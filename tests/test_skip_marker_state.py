@@ -31,6 +31,7 @@ class SkipMarkerStateTests(unittest.TestCase):
         self.assertEqual(properties['end'], '125.25')
         self.assertEqual(properties['toast_visible'], '1')
         self.assertEqual(properties['hide_remaining'], '7')
+        self.assertEqual(properties['hide_progress_percent'], '68.0')
         self.assertEqual(properties['hide_progress_frame'], '68')
 
     def test_keeps_osd_available_after_toast_auto_hides(self):
@@ -47,6 +48,7 @@ class SkipMarkerStateTests(unittest.TestCase):
         self.assertEqual(properties['available'], '1')
         self.assertEqual(properties['toast_visible'], '')
         self.assertEqual(properties['hide_remaining'], '0')
+        self.assertEqual(properties['hide_progress_percent'], '0.0')
         self.assertEqual(properties['hide_progress_frame'], '0')
 
     def test_clear_properties_targets_every_public_marker_property(self):
