@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+import time
+
 import xbmc
 
 from .windows.skip_marker import SkipMarkerDialog
@@ -42,6 +44,18 @@ def _publish_marker_state(marker_type, marker_definition, marker_end, creation_t
         toast_visible=toast_visible))
 
 
+def _creation_walltime(dialog, playback_progress, current_walltime):
+    creation_walltime = getattr(dialog, 'creation_walltime', None)
+    if creation_walltime is not None:
+        return creation_walltime
+
+    creation_progress = getattr(dialog, 'creation_time', None)
+    if creation_progress is None:
+        return current_walltime
+    elapsed_playback = max(0.0, float(playback_progress) - float(creation_progress))
+    return current_walltime - elapsed_playback
+
+
 def _should_skip_credits_popup():
     """
     Returns True if we should suppress the PKC credits popup.
@@ -64,7 +78,7 @@ def skip_markers(markers, markers_hidden):
         progress = app.APP.player.getTime()
     except RuntimeError:
         # XBMC is not playing any media file yet
-        return
+        return False
     within_marker = None
     marker_definition = None
     marker_start = None
@@ -87,13 +101,14 @@ def skip_markers(markers, markers_hidden):
             # this allows the skip button to show again if you rewind
             del markers_hidden[typus]
     if within_marker is not None:
+        current_walltime = time.monotonic()
         if within_marker in markers_hidden:
             # the user did not click the button within the enableAutoHideSkipTime time
             # so it was hidden. don't show this marker, but keep it available
             # to skins that expose skip controls in the OSD.
             _publish_marker_state(within_marker, marker_definition, marker_end, marker_start,
                                   progress, toast_visible=False)
-            return
+            return False
 
         if app.APP.skip_markers_dialog is None:
             # WARNING: This Dialog only seems to work if called from the main
@@ -105,33 +120,38 @@ def skip_markers(markers, markers_hidden):
                 '1080i',
                 marker_message=marker_definition[0],
                 marker_end=marker_end,
-                creation_time=progress)
+                creation_time=progress,
+                creation_walltime=current_walltime)
             if utils.settings(marker_definition[2]) == "true":
                 app.APP.skip_markers_dialog.seekTimeToEnd()
             else:
                 app.APP.skip_markers_dialog.show()
 
-        creation_time = getattr(app.APP.skip_markers_dialog, 'creation_time', None)
-        creation_time = progress if creation_time is None else creation_time
+        creation_walltime = _creation_walltime(
+            app.APP.skip_markers_dialog, progress, current_walltime)
         if _auto_hide_seconds() and \
-            (progress - creation_time) > _auto_hide_seconds():
+            (current_walltime - creation_walltime) > _auto_hide_seconds():
             # the dialog has been open for more than X seconds, so close it and
             # mark it as hidden so it won't show up again within the start/end window
             markers_hidden[within_marker] = True
             app.APP.skip_markers_dialog.close()
             app.APP.skip_markers_dialog = None
-            _publish_marker_state(within_marker, marker_definition, marker_end, creation_time,
-                                  progress, toast_visible=False)
+            _publish_marker_state(within_marker, marker_definition, marker_end,
+                                  creation_walltime, current_walltime, toast_visible=False)
+            return False
         else:
-            _publish_marker_state(within_marker, marker_definition, marker_end, creation_time,
-                                  progress, toast_visible=True)
+            _publish_marker_state(within_marker, marker_definition, marker_end,
+                                  creation_walltime, current_walltime, toast_visible=True)
+            return True
 
     elif app.APP.skip_markers_dialog is not None:
         app.APP.skip_markers_dialog.close()
         app.APP.skip_markers_dialog = None
         _clear_marker_properties()
+        return False
     else:
         _clear_marker_properties()
+        return False
 
 
 def skip_active_marker():
@@ -148,10 +168,10 @@ def skip_active_marker():
 def check():
     with app.APP.lock_playqueues:
         if len(app.PLAYSTATE.active_players) != 1:
-            return
+            return False
         playerid = list(app.PLAYSTATE.active_players)[0]
         markers = app.PLAYSTATE.player_states[playerid]['markers']
         markers_hidden = app.PLAYSTATE.player_states[playerid]['markers_hidden']
     if not markers:
-        return
-    skip_markers(markers, markers_hidden)
+        return False
+    return skip_markers(markers, markers_hidden)

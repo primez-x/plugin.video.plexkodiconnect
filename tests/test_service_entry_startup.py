@@ -61,6 +61,16 @@ class ServiceEntryStartupTests(unittest.TestCase):
 
         self.assertIs(service_entry.kodi_db, sys.modules['resources.lib.kodi_db'])
 
+    def test_visible_skip_marker_countdown_uses_fast_service_polling(self):
+        service_entry = load_service_entry()
+
+        self.assertEqual(
+            service_entry.service_loop_sleep_ms(skip_marker_countdown_visible=True),
+            33)
+        self.assertEqual(
+            service_entry.service_loop_sleep_ms(skip_marker_countdown_visible=False),
+            200)
+
 
 if __name__ == '__main__':
     unittest.main()

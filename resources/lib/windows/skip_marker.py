@@ -21,6 +21,7 @@ class SkipMarkerDialog(WindowXMLDialog):
         self.setProperty('marker_message', self.marker_message)
         self.marker_end = kwargs.pop('marker_end', None)
         self.creation_time = kwargs.pop('creation_time', None)
+        self.creation_walltime = kwargs.pop('creation_walltime', None)
 
         log.debug('SkipMarkerDialog with message %s, ends at %s',
                   self.marker_message, self.marker_end)

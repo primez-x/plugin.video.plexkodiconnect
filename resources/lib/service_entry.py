@@ -29,9 +29,18 @@ loghandler.config()
 LOG = logging.getLogger("PLEX.service")
 ###############################################################################
 
+SERVICE_LOOP_SLEEP_MS = 200
+SKIP_MARKER_COUNTDOWN_SLEEP_MS = 33
+
 WINDOW_PROPERTIES = (
     "pms_token", "plex_token", "plex_authenticated", "plex_restricteduser",
     "plex_allows_mediaDeletion", "plexkodiconnect.command", "plex_result")
+
+
+def service_loop_sleep_ms(skip_marker_countdown_visible=False):
+    if skip_marker_countdown_visible:
+        return SKIP_MARKER_COUNTDOWN_SLEEP_MS
+    return SERVICE_LOOP_SLEEP_MS
 
 
 class Service(object):
@@ -619,10 +628,11 @@ class Service(object):
                     self.companion_polling.start()
                 self.alexa_ws.start()
 
-            elif app.APP.is_playing:
-                skip_plex_markers.check()
+            skip_marker_countdown_visible = False
+            if app.APP.is_playing:
+                skip_marker_countdown_visible = skip_plex_markers.check()
 
-            xbmc.sleep(200)
+            xbmc.sleep(service_loop_sleep_ms(skip_marker_countdown_visible))
 
         # EXITING PKC
         # Tell all threads to terminate (e.g. several lib sync threads)

@@ -20,7 +20,7 @@ def _clamp(value, minimum, maximum):
 
 def _progress_frame(percent):
     percent = _clamp(percent, 0, 100)
-    return int(round(percent))
+    return int(round(percent * 10))
 
 
 def build_properties(
