@@ -56,6 +56,9 @@ class DownloadUtils(object):
         """
         User should be authenticated when this method is called
         """
+        if not reset and hasattr(self, 's'):
+            LOG.debug("Requests session already alive, reusing")
+            return
         # Start session
         self.s = requests.Session()
 

@@ -431,9 +431,11 @@ def _playback_cleanup(ended=False):
         # Stop transcoding
         if status['playmethod'] == v.PLAYBACK_METHOD_TRANSCODE:
             LOG.debug('Tell the PMS to stop transcoding')
-            DU().downloadUrl(
-                '{server}/video/:/transcode/universal/stop',
-                parameters={'session': v.PKC_MACHINE_IDENTIFIER})
+            backgroundthread.BGThreader.addTask(
+                backgroundthread.FunctionAsTask(
+                    DU().downloadUrl, None,
+                    '{server}/video/:/transcode/universal/stop',
+                    parameters={'session': v.PKC_MACHINE_IDENTIFIER}))
         if playerid == 1:
             # Bookmarks might not be pickup up correctly, so let's do them
             # manually. Applies to addon paths, but direct paths might have
@@ -739,11 +741,12 @@ def _videolibrary_onupdate(data):
         LOG.error("Could not find plex_id in plex database for a "
                   "video library update")
         return
-    # notify the server
-    if playcount > 0:
-        PF.scrobble(db_item['plex_id'], 'watched')
-    else:
-        PF.scrobble(db_item['plex_id'], 'unwatched')
+    # notify the server (async — Kodi DB is already updated at this point,
+    # PMS sync is pure propagation and must not block the UI thread)
+    state = 'watched' if playcount > 0 else 'unwatched'
+    backgroundthread.BGThreader.addTask(
+        backgroundthread.FunctionAsTask(PF.scrobble, None,
+                                        db_item['plex_id'], state))
 
 
 class PKCPlayer(xbmc.Player):

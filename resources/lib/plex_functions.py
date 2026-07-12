@@ -976,7 +976,7 @@ def scrobble(ratingKey, state):
         url = '{server}/:/unscrobble'
     else:
         return
-    DU().downloadUrl(utils.extend_url(url, args))
+    DU().downloadUrl(utils.extend_url(url, args), timeout=10)
     LOG.info("Toggled watched state for Plex item %s", ratingKey)
 
 
