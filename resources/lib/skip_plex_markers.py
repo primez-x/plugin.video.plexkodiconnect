@@ -19,7 +19,7 @@ AUTO_SKIP_COUNTDOWN_SECONDS = 10.0
 # PMS intro/credits markers tend to seek a few seconds too early — the marker
 # end time lands mid-intro. Shift the SEEK TARGET forward by this amount so
 # the skip lands cleanly past the intro/credits boundary.
-MARKER_END_OFFSET = 2.0
+MARKER_END_OFFSET = 4.0
 
 # Supported types of markers that can be skipped; values here will be
 # displayed to the user when skipping is available

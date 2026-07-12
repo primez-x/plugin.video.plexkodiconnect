@@ -32,19 +32,11 @@
                     <height>82</height>
                     <texture border="12" colordiffuse="EE121316">skip-marker-pill.png</texture>
                 </control>
-                <!-- Smooth countdown progress (single-texture, Kodi clips width) -->
-                <control type="progress">
-                    <description>Countdown progress</description>
-                    <left>0</left>
-                    <top>0</top>
+                <!-- Countdown fill (frame-swap: 1001 prerendered gradient frames) -->
+                <control type="image">
                     <width>370</width>
                     <height>82</height>
-                    <info>Window(10000).Property(plugin.video.plexkodiconnect.skip_marker.hide_progress_percent)</info>
-                    <texturebg colordiffuse="00FFFFFF">skip-marker-pill.png</texturebg>
-                    <lefttexture colordiffuse="00FFFFFF">skip-marker-pill.png</lefttexture>
-                    <midtexture border="12" colordiffuse="99E5A00D">skip-marker-pill.png</midtexture>
-                    <righttexture colordiffuse="00FFFFFF">skip-marker-pill.png</righttexture>
-                    <overlaytexture colordiffuse="00FFFFFF">skip-marker-pill.png</overlaytexture>
+                    <texture colordiffuse="FFE5A00D">$INFO[Window(10000).Property(plugin.video.plexkodiconnect.skip_marker.hide_progress_frame),skip-marker-progress/,.png]</texture>
                     <visible>!String.IsEmpty(Window(10000).Property(plugin.video.plexkodiconnect.skip_marker.hide_progress_frame))</visible>
                 </control>
                 <!-- Countdown seconds badge -->
