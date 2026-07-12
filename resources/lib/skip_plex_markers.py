@@ -16,10 +16,10 @@ LOG = getLogger('PLEX.skipmarkers')
 # user does nothing the skip fires when it reaches zero. Clicking cancels.
 AUTO_SKIP_COUNTDOWN_SECONDS = 10.0
 
-# PMS intro/credits markers tend to fire a few seconds early. Shift the
-# effective marker start forward by this amount so the skip lands closer
-# to the actual intro/credits boundary.
-MARKER_START_OFFSET = 2.0
+# PMS intro/credits markers tend to seek a few seconds too early — the marker
+# end time lands mid-intro. Shift the SEEK TARGET forward by this amount so
+# the skip lands cleanly past the intro/credits boundary.
+MARKER_END_OFFSET = 2.0
 
 # Supported types of markers that can be skipped; values here will be
 # displayed to the user when skipping is available
@@ -87,14 +87,9 @@ def _should_skip_credits_popup():
         player_state = app.PLAYSTATE.player_states.get(playerid, {})
         return player_state.get('upnext_signal_sent', False)
 
-def _effective_start(marker_start):
-    """Adjusted marker start time, shifted forward to compensate for PMS
-    marker inaccuracy."""
-    return marker_start + MARKER_START_OFFSET
-
 def _countdown_start(marker_start):
     """Wall-clock playback position at which the auto-skip countdown begins."""
-    return max(0.0, _effective_start(marker_start) - AUTO_SKIP_COUNTDOWN_SECONDS)
+    return max(0.0, marker_start - AUTO_SKIP_COUNTDOWN_SECONDS)
 
 def skip_markers(markers, markers_hidden):
     try:
@@ -117,11 +112,11 @@ def skip_markers(markers, markers_hidden):
             continue
         auto_skip = utils.settings(marker_definition[2]) == "true"
         # For auto-skip markers, widen the detection window to include the
-        # countdown phase (before the adjusted marker start).
+        # countdown phase (before the marker start).
         if auto_skip:
             trigger_start = _countdown_start(start)
         else:
-            trigger_start = _effective_start(start)
+            trigger_start = start
         # The "-1" is important since timestamps/seeks are not exact and we
         # could end up in an endless loop within start & end
         # see https://github.com/croneter/PlexKodiConnect/issues/2002
@@ -160,14 +155,18 @@ def skip_markers(markers, markers_hidden):
     # Auto-skip mode: show a countdown, then skip (unless cancelled)
     # ------------------------------------------------------------------
     if is_auto_skip:
-        eff_start = _effective_start(marker_start)
         cd_start = _countdown_start(marker_start)
 
-        if progress >= eff_start:
-            # Countdown has expired — fire the skip now
-            LOG.info('Auto-skipping %s marker, seeking to %s',
-                     within_marker, marker_end)
-            app.APP.player.seekTime(marker_end)
+        if progress >= marker_start:
+            # Countdown has expired — fire the skip now.
+            # Seek to marker_end + offset (PMS markers land a few seconds
+            # too early). Mark as hidden to prevent re-trigger loop: AML
+            # seeks are imprecise and may land inside the marker window.
+            seek_target = marker_end + MARKER_END_OFFSET
+            LOG.info('Auto-skipping %s marker, seeking to %s (end=%s, offset=%s)',
+                     within_marker, seek_target, marker_end, MARKER_END_OFFSET)
+            markers_hidden[within_marker] = True
+            app.APP.player.seekTime(seek_target)
             if app.APP.skip_markers_dialog is not None:
                 app.APP.skip_markers_dialog.close()
                 app.APP.skip_markers_dialog = None
@@ -182,7 +181,7 @@ def skip_markers(markers, markers_hidden):
                 'default',
                 '1080i',
                 marker_message=marker_definition[0],
-                marker_end=marker_end,
+                marker_end=marker_end + MARKER_END_OFFSET,
                 creation_time=cd_start,
                 creation_walltime=current_walltime,
                 auto_skip=True)
@@ -216,7 +215,7 @@ def skip_markers(markers, markers_hidden):
             'default',
             '1080i',
             marker_message=marker_definition[0],
-            marker_end=marker_end,
+            marker_end=marker_end + MARKER_END_OFFSET,
             creation_time=progress,
             creation_walltime=current_walltime)
         app.APP.skip_markers_dialog.show()
@@ -244,7 +243,9 @@ def skip_active_marker():
         marker_end = float(utils.getGlobalProperty('skip_marker.end'))
     except (TypeError, ValueError):
         return False
-    app.APP.player.seekTime(marker_end)
+    seek_target = marker_end + MARKER_END_OFFSET
+    LOG.info('Manual skip marker, seeking to %s', seek_target)
+    app.APP.player.seekTime(seek_target)
     if app.APP.skip_markers_dialog is not None:
         app.APP.skip_markers_dialog.close()
         app.APP.skip_markers_dialog = None
