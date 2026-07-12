@@ -17,14 +17,16 @@ class SkipMarkerDialog(WindowXMLDialog):
     height = 1080
 
     def __init__(self, *args, **kwargs):
+        self.auto_skip = kwargs.pop('auto_skip', False)
         self.marker_message = kwargs.pop('marker_message')
         self.setProperty('marker_message', self.marker_message)
         self.marker_end = kwargs.pop('marker_end', None)
         self.creation_time = kwargs.pop('creation_time', None)
         self.creation_walltime = kwargs.pop('creation_walltime', None)
+        self._on_hold = False
 
-        log.debug('SkipMarkerDialog with message %s, ends at %s',
-                  self.marker_message, self.marker_end)
+        log.debug('SkipMarkerDialog with message %s, ends at %s, auto_skip=%s',
+                  self.marker_message, self.marker_end, self.auto_skip)
         super().__init__(*args, **kwargs)
 
     def seekTimeToEnd(self):
@@ -33,7 +35,13 @@ class SkipMarkerDialog(WindowXMLDialog):
 
     def onClick(self, control_id):  # pylint: disable=invalid-name
         if self.marker_end and control_id == 3002:  # 3002 = Skip Marker button
-            if app.APP.is_playing:
+            if self.auto_skip:
+                # Auto-skip countdown: clicking CANCELS the pending skip
+                log.info('User cancelled auto-skip countdown')
+                self.on_hold = True
+                self.close()
+            elif app.APP.is_playing:
+                # Manual skip: clicking seeks past the marker
                 self.on_hold = True
                 self.seekTimeToEnd()
                 self.close()

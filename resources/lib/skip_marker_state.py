@@ -8,6 +8,7 @@ PROPERTY_KEYS = (
     'label',
     'end',
     'toast_visible',
+    'auto_skip',
     'hide_remaining',
     'hide_progress_percent',
     'hide_progress_frame',
@@ -30,7 +31,8 @@ def build_properties(
         creation_time,
         progress,
         auto_hide_seconds,
-        toast_visible=True):
+        toast_visible=True,
+        auto_skip=False):
     auto_hide_seconds = max(0, int(auto_hide_seconds or 0))
     elapsed = max(0.0, float(progress) - float(creation_time))
     remaining = max(0.0, auto_hide_seconds - elapsed)
@@ -46,6 +48,7 @@ def build_properties(
         'label': marker_message,
         'end': str(marker_end),
         'toast_visible': '1' if toast_visible else '',
+        'auto_skip': '1' if auto_skip else '',
         'hide_remaining': str(int(ceil(remaining))),
         'hide_progress_percent': '%.1f' % _clamp(percent_remaining, 0, 100),
         'hide_progress_frame': str(_progress_frame(percent_remaining)),
