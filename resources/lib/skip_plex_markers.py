@@ -16,11 +16,6 @@ LOG = getLogger('PLEX.skipmarkers')
 # user does nothing the skip fires when it reaches zero. Clicking cancels.
 AUTO_SKIP_COUNTDOWN_SECONDS = 10.0
 
-# PMS intro/credits markers tend to seek a few seconds too early — the marker
-# end time lands mid-intro. Shift the SEEK TARGET forward by this amount so
-# the skip lands cleanly past the intro/credits boundary.
-MARKER_END_OFFSET = 4.0
-
 # Supported types of markers that can be skipped; values here will be
 # displayed to the user when skipping is available
 MARKERS = {
@@ -28,6 +23,24 @@ MARKERS = {
     'credits': (utils.lang(30526), 'enableSkipCredits', 'enableAutoSkipCredits'),  # Skip credits
     'commercial': (utils.lang(30530), 'enableSkipCommercials', 'enableAutoSkipCommercials'),  # Skip commercial
 }
+
+
+def _marker_start_offset():
+    """User-tunable trigger offset (setting skipIntroStartOffset).
+    Positive = skip fires later, negative = fires earlier."""
+    try:
+        return float(utils.settings('skipIntroStartOffset'))
+    except (TypeError, ValueError):
+        return 5.0
+
+
+def _marker_end_offset():
+    """User-tunable landing offset (setting skipIntroEndOffset).
+    Positive = skip lands later, negative = lands earlier."""
+    try:
+        return float(utils.settings('skipIntroEndOffset'))
+    except (TypeError, ValueError):
+        return 8.0
 
 
 def _set_marker_properties(properties):
@@ -45,11 +58,11 @@ def _auto_hide_seconds():
     return int(utils.settings("enableAutoHideSkipTime"))
 
 
-def _publish_marker_state(marker_type, marker_definition, marker_end, creation_time, progress,
+def _publish_marker_state(marker_type, marker_message, marker_end, creation_time, progress,
                           toast_visible=True, auto_hide_seconds=None, auto_skip=False):
     _set_marker_properties(skip_marker_state.build_properties(
         marker_type=marker_type,
-        marker_message=marker_definition[0],
+        marker_message=marker_message,
         marker_end=marker_end,
         creation_time=creation_time,
         progress=progress,
@@ -103,6 +116,11 @@ def skip_markers(markers, markers_hidden):
     marker_end = None
     is_auto_skip = False
     for start, end, typus, _ in markers:
+        # Apply user-tunable offsets to both start and end up front so every
+        # downstream use (countdown, detection window, seek target, dialog)
+        # sees the adjusted values without needing + OFFSET at each site.
+        start += _marker_start_offset()
+        end += _marker_end_offset()
         marker_definition = MARKERS[typus]
         # Skip the PKC credits popup if Up Next is enabled (Up Next handles it)
         if typus == 'credits' and _should_skip_credits_popup():
@@ -146,27 +164,27 @@ def skip_markers(markers, markers_hidden):
     if within_marker in markers_hidden:
         # The user dismissed or cancelled this marker; keep it available to
         # skins that expose skip controls in the OSD, but don't show toast.
-        _publish_marker_state(within_marker, marker_definition, marker_end,
+        _publish_marker_state(within_marker, marker_definition[0], marker_end,
                               marker_start, progress, toast_visible=False,
                               auto_skip=is_auto_skip)
         return False
 
     # ------------------------------------------------------------------
-    # Auto-skip mode: show a countdown, then skip (unless cancelled)
+    # Auto-skip mode: countdown dialog, label "Skipping in...", then skip
     # ------------------------------------------------------------------
     if is_auto_skip:
         cd_start = _countdown_start(marker_start)
+        auto_skip_label = utils.lang(39729)  # "Skipping in..."
 
         if progress >= marker_start:
             # Countdown has expired — fire the skip now.
-            # Seek to marker_end + offset (PMS markers land a few seconds
-            # too early). Mark as hidden to prevent re-trigger loop: AML
-            # seeks are imprecise and may land inside the marker window.
-            seek_target = marker_end + MARKER_END_OFFSET
-            LOG.info('Auto-skipping %s marker, seeking to %s (end=%s, offset=%s)',
-                     within_marker, seek_target, marker_end, MARKER_END_OFFSET)
+            # marker_end is already offset. Mark as hidden to prevent
+            # re-trigger loop: AML seeks are imprecise and may land inside
+            # the marker window.
+            LOG.info('Auto-skipping %s marker, seeking to %s',
+                     within_marker, marker_end)
             markers_hidden[within_marker] = True
-            app.APP.player.seekTime(seek_target)
+            app.APP.player.seekTime(marker_end)
             if app.APP.skip_markers_dialog is not None:
                 app.APP.skip_markers_dialog.close()
                 app.APP.skip_markers_dialog = None
@@ -180,8 +198,8 @@ def skip_markers(markers, markers_hidden):
                 v.ADDON_PATH,
                 'default',
                 '1080i',
-                marker_message=marker_definition[0],
-                marker_end=marker_end + MARKER_END_OFFSET,
+                marker_message=auto_skip_label,
+                marker_end=marker_end,
                 creation_time=cd_start,
                 creation_walltime=current_walltime,
                 auto_skip=True)
@@ -192,19 +210,21 @@ def skip_markers(markers, markers_hidden):
             markers_hidden[within_marker] = True
             app.APP.skip_markers_dialog.close()
             app.APP.skip_markers_dialog = None
-            _publish_marker_state(within_marker, marker_definition, marker_end,
-                                  marker_start, progress, toast_visible=False)
+            _publish_marker_state(within_marker, marker_definition[0], marker_end,
+                                  marker_start, progress, toast_visible=False,
+                                  auto_skip=True)
             return False
 
         # Publish live countdown properties (remaining seconds, progress bar)
-        _publish_marker_state(within_marker, marker_definition, marker_end,
+        _publish_marker_state(within_marker, marker_definition[0], marker_end,
                               cd_start, progress,
                               auto_hide_seconds=AUTO_SKIP_COUNTDOWN_SECONDS,
                               toast_visible=True, auto_skip=True)
         return True
 
     # ------------------------------------------------------------------
-    # Manual skip mode: show button, auto-hide after timeout (original)
+    # Manual skip mode: persistent "Skip intro" button for the entire
+    # marker window. No countdown, no auto-hide.
     # ------------------------------------------------------------------
     if app.APP.skip_markers_dialog is None:
         # WARNING: This Dialog only seems to work if called from the main
@@ -215,27 +235,18 @@ def skip_markers(markers, markers_hidden):
             'default',
             '1080i',
             marker_message=marker_definition[0],
-            marker_end=marker_end + MARKER_END_OFFSET,
+            marker_end=marker_end,
             creation_time=progress,
             creation_walltime=current_walltime)
         app.APP.skip_markers_dialog.show()
 
-    creation_walltime = _creation_walltime(
-        app.APP.skip_markers_dialog, progress, current_walltime)
-    if _auto_hide_seconds() and \
-        (current_walltime - creation_walltime) > _auto_hide_seconds():
-        # the dialog has been open for more than X seconds, so close it and
-        # mark it as hidden so it won't show up again within the start/end window
-        markers_hidden[within_marker] = True
-        app.APP.skip_markers_dialog.close()
-        app.APP.skip_markers_dialog = None
-        _publish_marker_state(within_marker, marker_definition, marker_end,
-                              marker_start, progress, toast_visible=False)
-        return False
-    else:
-        _publish_marker_state(within_marker, marker_definition, marker_end,
-                              marker_start, progress, toast_visible=True)
-        return True
+    # Publish state without countdown (auto_hide_seconds=0 → empty countdown
+    # properties → skin hides badge and progress fill).
+    _publish_marker_state(within_marker, marker_definition[0], marker_end,
+                          marker_start, progress,
+                          auto_hide_seconds=0,
+                          toast_visible=True, auto_skip=False)
+    return True
 
 
 def skip_active_marker():
@@ -243,9 +254,8 @@ def skip_active_marker():
         marker_end = float(utils.getGlobalProperty('skip_marker.end'))
     except (TypeError, ValueError):
         return False
-    seek_target = marker_end + MARKER_END_OFFSET
-    LOG.info('Manual skip marker, seeking to %s', seek_target)
-    app.APP.player.seekTime(seek_target)
+    LOG.info('Manual skip marker, seeking to %s', marker_end)
+    app.APP.player.seekTime(marker_end)
     if app.APP.skip_markers_dialog is not None:
         app.APP.skip_markers_dialog.close()
         app.APP.skip_markers_dialog = None

@@ -39,8 +39,19 @@ def build_properties(
 
     if auto_hide_seconds:
         percent_remaining = (remaining / auto_hide_seconds) * 100.0
+        countdown_props = {
+            'hide_remaining': str(int(ceil(remaining))),
+            'hide_progress_percent': '%.1f' % _clamp(percent_remaining, 0, 100),
+            'hide_progress_frame': str(_progress_frame(percent_remaining)),
+        }
     else:
-        percent_remaining = 100.0
+        # No countdown (manual skip mode) — empty strings so the skin's
+        # !String.IsEmpty() visibility conditions hide badge + progress fill.
+        countdown_props = {
+            'hide_remaining': '',
+            'hide_progress_percent': '',
+            'hide_progress_frame': '',
+        }
 
     return {
         'available': '1',
@@ -49,9 +60,7 @@ def build_properties(
         'end': str(marker_end),
         'toast_visible': '1' if toast_visible else '',
         'auto_skip': '1' if auto_skip else '',
-        'hide_remaining': str(int(ceil(remaining))),
-        'hide_progress_percent': '%.1f' % _clamp(percent_remaining, 0, 100),
-        'hide_progress_frame': str(_progress_frame(percent_remaining)),
+        **countdown_props,
     }
 
 

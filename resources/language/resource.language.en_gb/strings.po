@@ -1739,3 +1739,32 @@ msgstr ""
 msgctxt "#39726"
 msgid "Enable transcoding using h265/HEVC codec (restart Kodi!)"
 msgstr ""
+
+# PKC Settings - Playback. Offset in seconds for when the skip trigger fires.
+# Positive = fires later, negative = fires earlier.
+msgctxt "#39727"
+msgid "Intro trigger offset (seconds)"
+msgstr ""
+
+# PKC Settings - Playback. Offset in seconds for where the skip lands.
+# Positive = lands later, negative = lands earlier.
+msgctxt "#39728"
+msgid "Intro landing offset (seconds)"
+msgstr ""
+
+# PKC. Auto-skip countdown label shown on the skip button.
+msgctxt "#39729"
+msgid "Skipping in..."
+msgstr ""
+
+# PKC. Playback setting: report playback progress (timeline) to the PMS so the
+# server applies its own "watched at X%" threshold on stop. Fixes episodes not
+# being marked watched when moving to the next via Up Next's 'play next'.
+msgctxt "#39730"
+msgid "Report playback progress to PMS"
+msgstr ""
+
+# PKC. Help text for the above setting.
+msgctxt "#39731"
+msgid "Send playback start/stop position to the Plex server so it can mark items watched with its own threshold. Recommended on."
+msgstr ""

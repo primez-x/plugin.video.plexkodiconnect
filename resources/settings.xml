@@ -892,6 +892,11 @@
         </category>
         <category id="playback" label="30516" help=""> <!-- Playback -->
             <group id="1">
+                <setting id="enablePMSTimeline" type="boolean" label="39730" help="39731"> <!-- Report playback progress to PMS (fixes watched flag on stop / Up Next) -->
+                    <level>0</level>
+                    <default>true</default>
+                    <control type="toggle" />
+                </setting>
                 <setting id="enableCinema" type="boolean" label="30518" help=""> <!-- Enable Plex Trailers (Plexpass is needed) -->
                     <level>0</level>
                     <default>false</default>
@@ -938,6 +943,36 @@
                         </dependency>
                     </dependencies>
                     <control type="toggle" />
+                </setting>
+                <setting id="skipIntroStartOffset" type="integer" label="39727" help="" parent="enableSkipIntro"> <!-- Intro trigger offset (positive=later, negative=earlier) -->
+                    <level>0</level>
+                    <default>0</default>
+                    <constraints>
+                        <minimum>-30</minimum>
+                        <step>1</step>
+                        <maximum>30</maximum>
+                    </constraints>
+                    <dependencies>
+                        <dependency type="visible">
+                            <condition operator="is" setting="enableSkipIntro">true</condition>
+                        </dependency>
+                    </dependencies>
+                    <control type="spinner" format="integer" />
+                </setting>
+                <setting id="skipIntroEndOffset" type="integer" label="39728" help="" parent="enableSkipIntro"> <!-- Intro landing offset (positive=later, negative=earlier) -->
+                    <level>0</level>
+                    <default>0</default>
+                    <constraints>
+                        <minimum>-30</minimum>
+                        <step>1</step>
+                        <maximum>30</maximum>
+                    </constraints>
+                    <dependencies>
+                        <dependency type="visible">
+                            <condition operator="is" setting="enableSkipIntro">true</condition>
+                        </dependency>
+                    </dependencies>
+                    <control type="spinner" format="integer" />
                 </setting>
                 <setting id="enableSkipCredits" type="boolean" label="30526" help=""> <!-- Skip credits -->
                     <level>0</level>
