@@ -65,6 +65,7 @@ def process_websocket_messages():
     now = timing.unix_timestamp()
     update_kodi_video_library, update_kodi_music_library = False, False
     keys_to_delete = []
+    changed_items = []
     for plex_id, message in list(WEBSOCKET_MESSAGES.items()):
         if message['state'] == 9:
             successful, video, music = process_delete_message(message)
@@ -84,6 +85,7 @@ def process_websocket_messages():
             keys_to_delete.append(plex_id)
             update_kodi_video_library = True if video else update_kodi_video_library
             update_kodi_music_library = True if music else update_kodi_music_library
+            changed_items.append((plex_id, message['plex_type']))
         else:
             # Safety net if we can't process an item
             message['attempt'] += 1
@@ -98,7 +100,8 @@ def process_websocket_messages():
     # Let Kodi know of the change
     if update_kodi_video_library or update_kodi_music_library:
         update_kodi_library(video=update_kodi_video_library,
-                            music=update_kodi_music_library)
+                            music=update_kodi_music_library,
+                            changed_items=changed_items)
 
 
 def process_new_item_message(message):
