@@ -812,6 +812,7 @@ class PKCPlayer(xbmc.Player):
         # server-side "watched at X%" threshold.
         self._tl_thread = None
         self._tl_stop = None
+        self._tl_paused = False
         self._tl_last = {
             'plex_id': None, 'container_key': None,
             'time_ms': 0, 'duration_ms': 0,
@@ -822,6 +823,47 @@ class PKCPlayer(xbmc.Player):
         """Stream actually started - clear fallback guard, open PMS session."""
         self._fallback_in_progress = False
         self._timeline_start()
+
+    def onPlayBackPaused(self):
+        """Playback paused - report position ONCE to PMS, then stop heartbeating.
+
+        Continuous heartbeating while paused broadcasts a stale position to PMS
+        indefinitely. Other devices on the same account pick up the timeline via
+        websocket and keep overwriting their local bookmark, which breaks resume
+        resets, On Deck, and Up Next handoffs. Reporting the paused position once
+        and then going quiet lets PMS save the viewOffset without continuously
+        poisoning cross-device sync.
+        """
+        if not self._tl_thread or not self._tl_stop:
+            return
+        self._tl_paused = True
+        try:
+            time_ms = int(self.getTime() * 1000)
+            duration_ms = int(self.getTotalTime() * 1000)
+        except (RuntimeError, TypeError):
+            return
+        self._tl_last['time_ms'] = time_ms
+        self._tl_last['duration_ms'] = duration_ms
+        _report_pms_timeline(self._tl_last['plex_id'], time_ms, duration_ms,
+                             'paused', self._tl_last['container_key'])
+        LOG.info('Playback paused - reported position once to PMS, '
+                 'stopping heartbeat until resume')
+
+    def onPlayBackResumed(self):
+        """Playback resumed after pause - restart heartbeat."""
+        self._tl_paused = False
+        if not self._tl_thread or not self._tl_stop:
+            return
+        try:
+            time_ms = int(self.getTime() * 1000)
+            duration_ms = int(self.getTotalTime() * 1000)
+        except (RuntimeError, TypeError):
+            return
+        self._tl_last['time_ms'] = time_ms
+        self._tl_last['duration_ms'] = duration_ms
+        _report_pms_timeline(self._tl_last['plex_id'], time_ms, duration_ms,
+                             'playing', self._tl_last['container_key'])
+        LOG.info('Playback resumed - restarted heartbeat')
 
     def onPlayBackStopped(self):
         """Playback stopped by user - finalize PMS session with last position."""
@@ -841,6 +883,7 @@ class PKCPlayer(xbmc.Player):
         if not plex_id:
             LOG.debug('timeline: no plex_id at onAVStarted; no PMS session')
             return
+        self._tl_paused = False
         self._tl_last = {
             'plex_id': plex_id,
             'container_key': '/library/metadata/%s' % plex_id,
@@ -859,6 +902,14 @@ class PKCPlayer(xbmc.Player):
         while stop is not None and not stop.is_set():
             if not self.isPlayingVideo():
                 break
+            if self._tl_paused:
+                # Paused: position already reported once on pause. Skip the
+                # heartbeat to avoid continuously broadcasting a stale position
+                # to PMS (which poisons cross-device sync). Just wait and
+                # re-check; onPlayBackResumed clears the flag.
+                if stop.wait(TIMELINE_HEARTBEAT_INTERVAL):
+                    break
+                continue
             try:
                 time_ms = int(self.getTime() * 1000)
                 duration_ms = int(self.getTotalTime() * 1000)
