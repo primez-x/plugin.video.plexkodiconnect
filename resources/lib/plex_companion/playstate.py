@@ -15,6 +15,8 @@ from .. import variables as v
 from .. import backgroundthread
 from .. import app
 from .. import timing
+from .. import utils
+from .timeline_policy import should_send_pms_timeline
 
 
 # Disable annoying requests warnings
@@ -172,13 +174,16 @@ class PlaystateMgr(backgroundthread.KillableThread):
         """
         url = f'{app.CONN.server}/:/timeline'
         self._get_requests_session()
-        if message[playerid].attrib.get('state') != 'stopped':
+        current = message[playerid].attrib
+        if current.get('state') != 'stopped':
             params = proxy_params()
-            params.update(message[playerid].attrib)
-            self.last_pms_msg[playerid] = params
+            params.update(current)
+            if not should_send_pms_timeline(
+                    self.last_pms_msg[playerid], params):
+                return
         else:
-            self.last_pms_msg[playerid].update({'state': 'stopped'})
-            params = self.last_pms_msg[playerid]
+            params = dict(self.last_pms_msg[playerid])
+            params['state'] = 'stopped'
         # Tell the PMS about our playstate progress
         try:
             req = communicate(self.s.get,
@@ -192,8 +197,16 @@ class PlaystateMgr(backgroundthread.KillableThread):
             return
         if not req.ok:
             log_error(log.error, 'Failed reporting playback progress', req)
+            return
+        self.last_pms_msg[playerid] = params
+        if params.get('state') == 'paused':
+            log.info('Reported paused playback once for player %s item %s; '
+                     'suppressing repeats until playback state changes',
+                     playerid, params.get('ratingKey'))
 
     def pms_timeline(self, players, message):
+        if utils.settings('enablePMSTimeline') == 'false':
+            return
         players = players if players else \
             {0: {'playerid': 0}, 1: {'playerid': 1}, 2: {'playerid': 2}}
         for player in players.values():

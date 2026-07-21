@@ -6,8 +6,6 @@ PKC Kodi Monitoring implementation
 from logging import getLogger
 from json import loads
 import copy
-import threading
-
 import xbmc
 
 from .plex_api import API
@@ -26,9 +24,6 @@ LOG = getLogger('PLEX.kodimonitor')
 
 WAIT_BEFORE_INIT_STREAMS = 6
 ADDITIONAL_WAIT_BEFORE_INIT_STREAMS = 10
-# PMS playback sessions expire ~10s after the last 'playing' timeline, so keep
-# heartbeats well under that. 5s gives comfortable margin without excess traffic.
-TIMELINE_HEARTBEAT_INTERVAL = 5.0
 STRANDED_PLAYBACK_WINDOW_RECOVERY_DELAY = 1
 STRANDED_PLAYBACK_WINDOW_IDS = {
     12005,  # Fullscreen video
@@ -753,48 +748,6 @@ def _videolibrary_onupdate(data):
                                         db_item['plex_id'], state))
 
 
-def _report_pms_timeline(plex_id, time_ms, duration_ms, state, container_key=None):
-    """
-    Report playback state to the PMS via /:/timeline so the PMS can track a
-    playback session and apply its own server-side "watched at X%" threshold
-    when state='stopped'.
-
-    This is the native mechanism real Plex clients use. A 'playing' report
-    MUST precede 'stopped' to establish the session, and the session must be
-    kept alive with periodic 'playing' heartbeats (the PMS expires it within
-    ~10s); otherwise the 'stopped' report is a no-op and the watched-at
-    threshold never fires.
-
-    PKC previously never reported timelines at all, so watched-state depended
-    solely on Kodi's VideoLibrary.OnUpdate -> /:/scrobble chain, which races
-    and loses during Up Next 'play next' handoffs: the incoming episode's
-    Player.OnPlay (held under the same lock_playqueues) preempts the
-    VideoLibrary.OnUpdate that should have carried the scrobble for the
-    just-finished episode. Reporting the stop position directly lets the PMS
-    apply its threshold server-side, independent of that race.
-    """
-    if not plex_id:
-        return
-    container_key = container_key or ('/library/metadata/%s' % plex_id)
-    params = {
-        'ratingKey': plex_id,
-        'key': container_key,
-        'state': state,
-        'time': int(time_ms or 0),
-        'duration': int(duration_ms or 0),
-        'type': 'video',
-        'containerKey': container_key,
-    }
-    try:
-        DU().downloadUrl(utils.extend_url('{server}/:/timeline', params),
-                         timeout=10)
-        LOG.debug('PMS timeline state=%s plex_id=%s time=%s/%s ms',
-                  state, plex_id, params['time'], params['duration'])
-    except Exception:
-        LOG.warning('PMS timeline report failed for plex_id=%s', plex_id,
-                    exc_info=True)
-
-
 class PKCPlayer(xbmc.Player):
     """
     xbmc.Player subclass that hooks onPlayBackError so PKC can fall back from
@@ -807,149 +760,11 @@ class PKCPlayer(xbmc.Player):
 
     def __init__(self):
         self._fallback_in_progress = False
-        # PMS playback-session timeline reporting. The heartbeat thread keeps
-        # the session alive so a final 'stopped' report triggers the PMS
-        # server-side "watched at X%" threshold.
-        self._tl_thread = None
-        self._tl_stop = None
-        self._tl_paused = False
-        self._tl_last = {
-            'plex_id': None, 'container_key': None,
-            'time_ms': 0, 'duration_ms': 0,
-        }
         super().__init__()
 
     def onAVStarted(self):
-        """Stream actually started - clear fallback guard, open PMS session."""
+        """Stream actually started - clear the fallback guard."""
         self._fallback_in_progress = False
-        self._timeline_start()
-
-    def onPlayBackPaused(self):
-        """Playback paused - report position ONCE to PMS, then stop heartbeating.
-
-        Continuous heartbeating while paused broadcasts a stale position to PMS
-        indefinitely. Other devices on the same account pick up the timeline via
-        websocket and keep overwriting their local bookmark, which breaks resume
-        resets, On Deck, and Up Next handoffs. Reporting the paused position once
-        and then going quiet lets PMS save the viewOffset without continuously
-        poisoning cross-device sync.
-        """
-        if not self._tl_thread or not self._tl_stop:
-            return
-        self._tl_paused = True
-        try:
-            time_ms = int(self.getTime() * 1000)
-            duration_ms = int(self.getTotalTime() * 1000)
-        except (RuntimeError, TypeError):
-            return
-        self._tl_last['time_ms'] = time_ms
-        self._tl_last['duration_ms'] = duration_ms
-        _report_pms_timeline(self._tl_last['plex_id'], time_ms, duration_ms,
-                             'paused', self._tl_last['container_key'])
-        LOG.info('Playback paused - reported position once to PMS, '
-                 'stopping heartbeat until resume')
-
-    def onPlayBackResumed(self):
-        """Playback resumed after pause - restart heartbeat."""
-        self._tl_paused = False
-        if not self._tl_thread or not self._tl_stop:
-            return
-        try:
-            time_ms = int(self.getTime() * 1000)
-            duration_ms = int(self.getTotalTime() * 1000)
-        except (RuntimeError, TypeError):
-            return
-        self._tl_last['time_ms'] = time_ms
-        self._tl_last['duration_ms'] = duration_ms
-        _report_pms_timeline(self._tl_last['plex_id'], time_ms, duration_ms,
-                             'playing', self._tl_last['container_key'])
-        LOG.info('Playback resumed - restarted heartbeat')
-
-    def onPlayBackStopped(self):
-        """Playback stopped by user - finalize PMS session with last position."""
-        self._timeline_stop()
-
-    def onPlayBackEnded(self):
-        """Playback reached the end - finalize PMS session (natural completion)."""
-        self._timeline_stop()
-
-    def _timeline_start(self):
-        # Tear down any previous session first (e.g. rapid episode transitions).
-        self._timeline_stop(shutdown=True)
-        if utils.settings('enablePMSTimeline') == 'false':
-            return
-        item = app.PLAYSTATE.item
-        plex_id = getattr(item, 'plex_id', None) if item else None
-        if not plex_id:
-            LOG.debug('timeline: no plex_id at onAVStarted; no PMS session')
-            return
-        self._tl_paused = False
-        self._tl_last = {
-            'plex_id': plex_id,
-            'container_key': '/library/metadata/%s' % plex_id,
-            'time_ms': 0,
-            'duration_ms': 0,
-        }
-        self._tl_stop = threading.Event()
-        self._tl_thread = threading.Thread(
-            target=self._timeline_loop, name='PKC-PMS-Timeline', daemon=True)
-        self._tl_thread.start()
-        LOG.info('Opened PMS playback session for plex_id=%s', plex_id)
-
-    def _timeline_loop(self):
-        stop = self._tl_stop
-        last = self._tl_last
-        while stop is not None and not stop.is_set():
-            if not self.isPlayingVideo():
-                break
-            if self._tl_paused:
-                # Paused: position already reported once on pause. Skip the
-                # heartbeat to avoid continuously broadcasting a stale position
-                # to PMS (which poisons cross-device sync). Just wait and
-                # re-check; onPlayBackResumed clears the flag.
-                if stop.wait(TIMELINE_HEARTBEAT_INTERVAL):
-                    break
-                continue
-            try:
-                time_ms = int(self.getTime() * 1000)
-                duration_ms = int(self.getTotalTime() * 1000)
-            except (RuntimeError, TypeError):
-                break
-            last['time_ms'] = time_ms
-            last['duration_ms'] = duration_ms
-            _report_pms_timeline(last['plex_id'], time_ms, duration_ms,
-                                 'playing', last['container_key'])
-            if stop.wait(TIMELINE_HEARTBEAT_INTERVAL):
-                break
-
-    def _timeline_stop(self, shutdown=False):
-        thread = self._tl_thread
-        stop = self._tl_stop
-        if stop is not None:
-            stop.set()
-        self._tl_thread = None
-        self._tl_stop = None
-        if shutdown:
-            return
-        last = self._tl_last
-        plex_id = last.get('plex_id')
-        if not plex_id:
-            return
-        # getTime() may still be valid on 'ended' (natural completion); fall
-        # back to the last position the heartbeat reported otherwise.
-        try:
-            time_ms = int(self.getTime() * 1000)
-            duration_ms = int(self.getTotalTime() * 1000)
-            if time_ms > 0:
-                last['time_ms'] = time_ms
-            if duration_ms > 0:
-                last['duration_ms'] = duration_ms
-        except (RuntimeError, TypeError):
-            pass
-        _report_pms_timeline(plex_id, last['time_ms'], last['duration_ms'],
-                             'stopped', last['container_key'])
-        LOG.info('Finalized PMS playback session for plex_id=%s at %s/%s ms',
-                 plex_id, last['time_ms'], last['duration_ms'])
 
     def onPlayBackError(self):
         """
