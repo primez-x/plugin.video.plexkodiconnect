@@ -979,6 +979,11 @@
                     <default>true</default>
                     <control type="toggle" />
                 </setting>
+                <setting id="useUpNextForEpisodeCredits" type="boolean" label="39732" help="39733"> <!-- Use Up Next for episode credits -->
+                    <level>0</level>
+                    <default>true</default>
+                    <control type="toggle" />
+                </setting>
                 <setting id="enableAutoSkipCredits" type="boolean" label="39721" help="" parent="enableSkipCredits"> <!-- Auto skip credits -->
                     <level>0</level>
                     <default>false</default>

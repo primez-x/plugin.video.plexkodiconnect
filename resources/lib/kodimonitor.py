@@ -882,6 +882,9 @@ class SendUpNextSignal(backgroundthread.Task):
             with app.APP.lock_playqueues:
                 playerid = self.item.playerid
                 app.PLAYSTATE.player_states[playerid]['upnext_signal_sent'] = signal_sent
+                app.PLAYSTATE.player_states[playerid][
+                    'upnext_replaces_credit_skip'] = bool(
+                        signal_sent and notification_time is not None)
             if not signal_sent:
                 LOG.debug('Up Next: No next episode - PKC skip credits will handle last episode')
         except Exception as err:

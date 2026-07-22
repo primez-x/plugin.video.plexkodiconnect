@@ -38,7 +38,8 @@ class PlayState(object):
         'markers_hidden': {},
         'first_credits_marker': None,
         'final_credits_marker': None,
-        'upnext_signal_sent': False  # Track if Up Next has a next episode
+        'upnext_signal_sent': False,  # Track if Up Next has a next episode
+        'upnext_replaces_credit_skip': False
     }
 
     def __init__(self):

@@ -92,13 +92,15 @@ def _should_skip_credits_popup():
     if not xbmc.getCondVisibility('System.AddonIsEnabled(service.upnext)'):
         return False
 
-    # Check if Up Next actually sent a signal (found next episode)
+    # Suppress this control only when Up Next has a next episode and is using
+    # the Plex marker as its trigger. A normal time-from-end Up Next signal is
+    # independent and must not hide PKC's credits control.
     with app.APP.lock_playqueues:
         if len(app.PLAYSTATE.active_players) != 1:
             return False
         playerid = list(app.PLAYSTATE.active_players)[0]
         player_state = app.PLAYSTATE.player_states.get(playerid, {})
-        return player_state.get('upnext_signal_sent', False)
+        return player_state.get('upnext_replaces_credit_skip', False)
 
 def _countdown_start(marker_start):
     """Wall-clock playback position at which the auto-skip countdown begins."""

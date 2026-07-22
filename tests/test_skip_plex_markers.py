@@ -85,6 +85,8 @@ def load_skip_plex_markers(progress, settings=None):
         'enableAutoSkipIntro': 'false',
         'enableAutoHideSkip': 'true',
         'enableAutoHideSkipTime': '10',
+        'skipIntroStartOffset': '0',
+        'skipIntroEndOffset': '0',
     }
     values.update(settings or {})
     properties = {}
@@ -93,6 +95,7 @@ def load_skip_plex_markers(progress, settings=None):
         30525: 'Skip intro',
         30526: 'Skip credits',
         30530: 'Skip commercial',
+        39729: 'Skipping in...',
     }[string_id]
     utils.settings = lambda key: values[key]
     utils.setGlobalProperty = lambda key, value: properties.__setitem__(key, value)
@@ -112,38 +115,70 @@ def load_skip_plex_markers(progress, settings=None):
 
 
 class SkipPlexMarkersTests(unittest.TestCase):
-    def test_active_marker_publishes_skin_properties(self):
-        skip_plex_markers, app, properties = load_skip_plex_markers(progress=12.0)
+    def test_credit_popup_is_suppressed_only_for_marker_anchored_upnext(self):
+        skip_plex_markers, app, _ = load_skip_plex_markers(progress=12.0)
+        skip_plex_markers.xbmc.getCondVisibility = lambda condition: True
+        app.PLAYSTATE.active_players = {1}
+        app.PLAYSTATE.player_states = {
+            1: {
+                'upnext_signal_sent': True,
+                'upnext_replaces_credit_skip': True,
+            },
+        }
 
-        countdown_visible = skip_plex_markers.skip_markers([(10.0, 45.0, 'intro', False)], {})
+        self.assertTrue(skip_plex_markers._should_skip_credits_popup())
+
+    def test_native_upnext_signal_does_not_hide_credit_popup(self):
+        skip_plex_markers, app, _ = load_skip_plex_markers(progress=12.0)
+        skip_plex_markers.xbmc.getCondVisibility = lambda condition: True
+        app.PLAYSTATE.active_players = {1}
+        app.PLAYSTATE.player_states = {
+            1: {
+                'upnext_signal_sent': True,
+                'upnext_replaces_credit_skip': False,
+            },
+        }
+
+        self.assertFalse(skip_plex_markers._should_skip_credits_popup())
+
+    def test_active_marker_publishes_skin_properties(self):
+        skip_plex_markers, app, properties = load_skip_plex_markers(
+            progress=12.0,
+            settings={'enableAutoSkipIntro': 'true'})
+
+        countdown_visible = skip_plex_markers.skip_markers(
+            [(20.0, 45.0, 'intro', False)], {})
 
         self.assertEqual(properties['skip_marker.available'], '1')
         self.assertEqual(properties['skip_marker.type'], 'intro')
         self.assertEqual(properties['skip_marker.label'], 'Skip intro')
         self.assertEqual(properties['skip_marker.end'], '45.0')
         self.assertEqual(properties['skip_marker.toast_visible'], '1')
-        self.assertEqual(properties['skip_marker.hide_remaining'], '10')
-        self.assertEqual(properties['skip_marker.hide_progress_percent'], '100.0')
-        self.assertEqual(properties['skip_marker.hide_progress_frame'], '1000')
+        self.assertEqual(properties['skip_marker.hide_remaining'], '8')
+        self.assertEqual(properties['skip_marker.hide_progress_percent'], '80.0')
+        self.assertEqual(properties['skip_marker.hide_progress_frame'], '800')
         self.assertIs(app.APP.skip_markers_dialog, FakeSkipMarkerDialog.last)
         self.assertTrue(FakeSkipMarkerDialog.last.shown)
         self.assertTrue(countdown_visible)
 
     def test_auto_hidden_marker_stays_available_to_osd(self):
-        skip_plex_markers, app, properties = load_skip_plex_markers(progress=22.0)
+        skip_plex_markers, app, properties = load_skip_plex_markers(
+            progress=12.0,
+            settings={'enableAutoSkipIntro': 'true'})
         app.APP.skip_markers_dialog = FakeSkipMarkerDialog(creation_time=10.0)
+        app.APP.skip_markers_dialog.on_hold = True
         markers_hidden = {}
 
         countdown_visible = skip_plex_markers.skip_markers(
-            [(10.0, 45.0, 'intro', False)], markers_hidden)
+            [(20.0, 45.0, 'intro', False)], markers_hidden)
 
         self.assertEqual(markers_hidden, {'intro': True})
         self.assertIsNone(app.APP.skip_markers_dialog)
         self.assertEqual(properties['skip_marker.available'], '1')
         self.assertEqual(properties['skip_marker.toast_visible'], '')
-        self.assertEqual(properties['skip_marker.hide_remaining'], '0')
-        self.assertEqual(properties['skip_marker.hide_progress_percent'], '0.0')
-        self.assertEqual(properties['skip_marker.hide_progress_frame'], '0')
+        self.assertEqual(properties['skip_marker.hide_remaining'], '10')
+        self.assertEqual(properties['skip_marker.hide_progress_percent'], '100.0')
+        self.assertEqual(properties['skip_marker.hide_progress_frame'], '1000')
         self.assertFalse(countdown_visible)
 
     def test_outside_marker_does_not_request_fast_countdown_polling(self):
@@ -154,20 +189,22 @@ class SkipPlexMarkersTests(unittest.TestCase):
         self.assertFalse(countdown_visible)
         self.assertEqual(properties['skip_marker.available'], '')
 
-    def test_visible_countdown_uses_wall_time_when_player_time_is_unchanged(self):
-        skip_plex_markers, app, properties = load_skip_plex_markers(progress=12.0)
+    def test_visible_countdown_stays_stable_when_player_time_is_unchanged(self):
+        skip_plex_markers, app, properties = load_skip_plex_markers(
+            progress=12.0,
+            settings={'enableAutoSkipIntro': 'true'})
         ticks = iter([100.0, 100.4])
         skip_plex_markers.time.monotonic = lambda: next(ticks)
 
-        skip_plex_markers.skip_markers([(10.0, 45.0, 'intro', False)], {})
+        skip_plex_markers.skip_markers([(20.0, 45.0, 'intro', False)], {})
         app.APP.player.progress = 12.0
         countdown_visible = skip_plex_markers.skip_markers(
-            [(10.0, 45.0, 'intro', False)], {})
+            [(20.0, 45.0, 'intro', False)], {})
 
         self.assertTrue(countdown_visible)
-        self.assertEqual(properties['skip_marker.hide_remaining'], '10')
-        self.assertEqual(properties['skip_marker.hide_progress_percent'], '96.0')
-        self.assertEqual(properties['skip_marker.hide_progress_frame'], '960')
+        self.assertEqual(properties['skip_marker.hide_remaining'], '8')
+        self.assertEqual(properties['skip_marker.hide_progress_percent'], '80.0')
+        self.assertEqual(properties['skip_marker.hide_progress_frame'], '800')
 
     def test_skip_active_marker_seeks_to_published_marker_end(self):
         skip_plex_markers, app, properties = load_skip_plex_markers(progress=15.0)

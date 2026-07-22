@@ -12,12 +12,61 @@ from json import dumps
 from base64 import b64encode
 
 import xbmc
+import xbmcaddon
 
 from . import variables as v
 from . import plex_functions as PF
+from . import utils
 from .plex_api import API
 
 LOG = getLogger('PLEX.upnext')
+UPNEXT_ADDON_ID = 'service.upnext'
+
+
+def _upnext_addon():
+    """Return a fresh Up Next settings handle so live changes are honored."""
+    return xbmcaddon.Addon(id=UPNEXT_ADDON_ID)
+
+
+def _setting_int(addon, setting):
+    value = addon.getSetting(setting)
+    if value in (None, ''):
+        raise ValueError('Up Next setting %s is empty' % setting)
+    return int(value)
+
+
+def _lead_setting(total_seconds, addon):
+    """Return Up Next's configured lead setting name and value."""
+    custom = addon.getSetting('customAutoPlayTime')
+    if custom == 'false':
+        setting = 'autoPlaySeasonTime'
+    elif custom == 'true':
+        if total_seconds > 60 * 60:
+            setting = 'autoPlayTimeXL'
+        elif total_seconds > 40 * 60:
+            setting = 'autoPlayTimeL'
+        elif total_seconds > 20 * 60:
+            setting = 'autoPlayTimeM'
+        elif total_seconds > 10 * 60:
+            setting = 'autoPlayTimeS'
+        else:
+            setting = 'autoPlayTimeXS'
+    else:
+        raise ValueError('Up Next customAutoPlayTime setting is invalid')
+    return setting, _setting_int(addon, setting)
+
+
+def credit_timing_enabled():
+    """Whether Up Next may replace PKC's credits control for this playback."""
+    if utils.settings('useUpNextForEpisodeCredits') != 'true':
+        return False
+    if not xbmc.getCondVisibility('System.AddonIsEnabled(service.upnext)'):
+        return False
+    try:
+        return _upnext_addon().getSetting('disableNextUp') != 'true'
+    except Exception as err:  # Kodi raises RuntimeError if the add-on vanished
+        LOG.warning('Could not inspect Up Next settings: %s', err)
+        return False
 
 
 def _get_art_from_api(api):
@@ -181,25 +230,37 @@ def _get_total_seconds_from_kodi_time(total_time):
         return 0
     return (total_time.get('hours', 0) * 3600 +
             total_time.get('minutes', 0) * 60 +
-            total_time.get('seconds', 0))
+            total_time.get('seconds', 0) +
+            total_time.get('milliseconds', 0) / 1000.0)
 
 
-def _calculate_notification_time(marker, total_seconds, marker_name):
+def _calculate_notification_time(marker, total_seconds, lead_seconds,
+                                 marker_name):
     """
     Calculate notification time from a credits marker.
 
     Args:
         marker: Tuple (start_time, end_time) in seconds
         total_seconds: Total duration in seconds
+        lead_seconds: Up Next's configured lead before the marker
         marker_name: Name of the marker for logging
 
     Returns:
         Notification time in seconds before end, or None if invalid
     """
-    if marker and total_seconds > 0 and marker[0] < total_seconds:
-        notification_time = total_seconds - marker[0]
-        LOG.debug('Using %s for Up Next: %s seconds before end',
-                  marker_name, notification_time)
+    try:
+        marker_start = float(marker[0])
+        total_seconds = float(total_seconds)
+        lead_seconds = max(0, float(lead_seconds))
+    except (IndexError, TypeError, ValueError):
+        return None
+    if total_seconds > 0 and 0 <= marker_start < total_seconds:
+        marker_remaining = total_seconds - marker_start
+        notification_time = min(total_seconds,
+                                marker_remaining + lead_seconds)
+        LOG.info('Using %s for Up Next: marker at %.3fs, lead %.0fs, '
+                 'showing %.3fs before end', marker_name, marker_start,
+                 lead_seconds, notification_time)
         return notification_time
     return None
 
@@ -214,16 +275,26 @@ def get_notification_time_from_markers(status):
     Returns:
         The notification time in seconds before the end, or None if not available
     """
+    if not credit_timing_enabled():
+        return None
     total_seconds = _get_total_seconds_from_kodi_time(status.get('totaltime'))
+    try:
+        setting, lead_seconds = _lead_setting(total_seconds, _upnext_addon())
+    except Exception as err:
+        LOG.warning('Could not read Up Next lead time; using its native '
+                    'time-from-end behavior: %s', err)
+        return None
+    LOG.info('Using Up Next %s=%ss for %.3fs episode', setting,
+             lead_seconds, total_seconds)
 
     # First check for first credits marker (intro to credits)
     first_credits = status.get('first_credits_marker')
     notification_time = _calculate_notification_time(
-        first_credits, total_seconds, 'first credits marker')
+        first_credits, total_seconds, lead_seconds, 'first credits marker')
     if notification_time is not None:
         return notification_time
 
     # Fall back to final credits marker
     final_credits = status.get('final_credits_marker')
     return _calculate_notification_time(
-        final_credits, total_seconds, 'final credits marker')
+        final_credits, total_seconds, lead_seconds, 'final credits marker')

@@ -1768,3 +1768,13 @@ msgstr ""
 msgctxt "#39731"
 msgid "Send playback start/stop position to the Plex server so it can mark items watched with its own threshold. Recommended on."
 msgstr ""
+
+# PKC. Use Up Next as the episode credits action when possible.
+msgctxt "#39732"
+msgid "Use Up Next for episode credits"
+msgstr ""
+
+# PKC. Help text for the above setting.
+msgctxt "#39733"
+msgid "Show Up Next before Plex-detected episode credits using Up Next's configured lead time. PKC keeps its Skip Credits control when Up Next is unavailable or there is no next episode."
+msgstr ""

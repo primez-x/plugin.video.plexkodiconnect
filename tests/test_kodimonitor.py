@@ -11,6 +11,14 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
+class DummyLock(object):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return False
+
+
 def load_kodimonitor():
     for module_name in (
         'xbmc',
@@ -114,6 +122,7 @@ def load_kodimonitor():
     )
     app.APP = SimpleNamespace(
         skip_markers_dialog=None,
+        lock_playqueues=DummyLock(),
         monitor=SimpleNamespace(
             abortRequested=lambda: False,
             waitForAbort=lambda timeout: False,
@@ -155,6 +164,34 @@ def load_kodimonitor():
 
 
 class KodiMonitorTests(unittest.TestCase):
+    def test_upnext_marker_timing_replaces_credit_skip(self):
+        kodimonitor, _, _, _ = load_kodimonitor()
+        item = SimpleNamespace(playerid=2, api='api')
+        kodimonitor.upnext.get_notification_time_from_markers = \
+            lambda status: 88.205
+        kodimonitor.upnext.send_upnext_signal = \
+            lambda api, notification_time: True
+
+        kodimonitor.SendUpNextSignal(item, {'totaltime': {}}).run()
+
+        state = kodimonitor.app.PLAYSTATE.player_states[2]
+        self.assertTrue(state['upnext_signal_sent'])
+        self.assertTrue(state['upnext_replaces_credit_skip'])
+
+    def test_native_upnext_fallback_does_not_replace_credit_skip(self):
+        kodimonitor, _, _, _ = load_kodimonitor()
+        item = SimpleNamespace(playerid=2, api='api')
+        kodimonitor.upnext.get_notification_time_from_markers = \
+            lambda status: None
+        kodimonitor.upnext.send_upnext_signal = \
+            lambda api, notification_time: True
+
+        kodimonitor.SendUpNextSignal(item, {'totaltime': {}}).run()
+
+        state = kodimonitor.app.PLAYSTATE.player_states[2]
+        self.assertTrue(state['upnext_signal_sent'])
+        self.assertFalse(state['upnext_replaces_credit_skip'])
+
     def test_playback_cleanup_schedules_stranded_window_recovery(self):
         kodimonitor, _, _, backgroundthread = load_kodimonitor()
 
