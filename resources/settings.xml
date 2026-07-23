@@ -984,6 +984,21 @@
                     <default>true</default>
                     <control type="toggle" />
                 </setting>
+                <setting id="upNextEpisodeCreditsCountdown" type="integer" label="39734" help="39735" parent="useUpNextForEpisodeCredits"> <!-- Up Next countdown at episode credits -->
+                    <level>0</level>
+                    <default>10</default>
+                    <constraints>
+                        <minimum>5</minimum>
+                        <step>1</step>
+                        <maximum>30</maximum>
+                    </constraints>
+                    <dependencies>
+                        <dependency type="visible">
+                            <condition operator="is" setting="useUpNextForEpisodeCredits">true</condition>
+                        </dependency>
+                    </dependencies>
+                    <control type="spinner" format="integer" />
+                </setting>
                 <setting id="enableAutoSkipCredits" type="boolean" label="39721" help="" parent="enableSkipCredits"> <!-- Auto skip credits -->
                     <level>0</level>
                     <default>false</default>

@@ -1776,5 +1776,15 @@ msgstr ""
 
 # PKC. Help text for the above setting.
 msgctxt "#39733"
-msgid "Show Up Next before Plex-detected episode credits using Up Next's configured lead time. PKC keeps its Skip Credits control when Up Next is unavailable or there is no next episode."
+msgid "Show Up Next when Plex-detected episode credits begin. PKC keeps its Skip Credits control when Up Next is unavailable or there is no next episode."
+msgstr ""
+
+# PKC. Duration of the Up Next countdown after episode credits begin.
+msgctxt "#39734"
+msgid "Up Next countdown at credits (seconds)"
+msgstr ""
+
+# PKC. Help text for the above setting.
+msgctxt "#39735"
+msgid "How long Up Next counts down after the Plex credits marker before starting the next episode."
 msgstr ""

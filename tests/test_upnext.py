@@ -12,18 +12,11 @@ if str(REPO_ROOT) not in sys.path:
 
 DEFAULT_UPNEXT_SETTINGS = {
     'disableNextUp': 'false',
-    'customAutoPlayTime': 'true',
-    'autoPlaySeasonTime': '30',
-    'autoPlayTimeXS': '15',
-    'autoPlayTimeS': '30',
-    'autoPlayTimeM': '40',
-    'autoPlayTimeL': '50',
-    'autoPlayTimeXL': '60',
 }
 
 
 def load_upnext(pkc_enabled='true', system_enabled=True,
-                service_settings=None, addon_error=False):
+                service_settings=None, pkc_settings=None, addon_error=False):
     for module_name in (
             'xbmc',
             'xbmcaddon',
@@ -55,9 +48,12 @@ def load_upnext(pkc_enabled='true', system_enabled=True,
     xbmcaddon.Addon = Addon
     sys.modules['xbmcaddon'] = xbmcaddon
 
+    pkc_values = {
+        'useUpNextForEpisodeCredits': pkc_enabled,
+    }
+    pkc_values.update(pkc_settings or {})
     utils = types.ModuleType('resources.lib.utils')
-    utils.settings = lambda setting: (
-        pkc_enabled if setting == 'useUpNextForEpisodeCredits' else '')
+    utils.settings = lambda setting: pkc_values.get(setting, '')
     sys.modules['resources.lib.utils'] = utils
 
     variables = types.ModuleType('resources.lib.variables')
@@ -92,41 +88,23 @@ def status(total_seconds, first=None, final=None):
 
 
 class UpNextCreditTimingTests(unittest.TestCase):
-    def test_dynamic_lead_uses_upnext_runtime_buckets(self):
+    def test_notification_fires_at_marker_for_every_runtime_bucket(self):
         upnext = load_upnext()
-        cases = (
-            (600, 15),
-            (601, 30),
-            (1201, 40),
-            (2401, 50),
-            (3601, 60),
-        )
-        for total_seconds, lead in cases:
+        for total_seconds in (600, 601, 1201, 2401, 3601):
             with self.subTest(total_seconds=total_seconds):
                 marker = (total_seconds - 100, total_seconds, 'credits', True)
                 actual = upnext.get_notification_time_from_markers(
                     status(total_seconds, final=marker))
-                self.assertEqual(actual, 100 + lead)
+                self.assertEqual(actual, 100)
 
-    def test_fixed_lead_uses_upnext_season_setting(self):
-        upnext = load_upnext(service_settings={
-            'customAutoPlayTime': 'false',
-            'autoPlaySeasonTime': '25',
-        })
-
-        actual = upnext.get_notification_time_from_markers(
-            status(1400, final=(1350, 1400, 'credits', True)))
-
-        self.assertEqual(actual, 75)
-
-    def test_marker_remaining_and_lead_include_milliseconds(self):
+    def test_marker_remaining_includes_milliseconds(self):
         upnext = load_upnext()
 
         actual = upnext.get_notification_time_from_markers(
             status(1422.050,
                    final=(1373.845, 1422.051, 'credits', True)))
 
-        self.assertAlmostEqual(actual, 88.205, places=3)
+        self.assertAlmostEqual(actual, 48.205, places=3)
 
     def test_first_credit_marker_is_preferred(self):
         upnext = load_upnext()
@@ -136,7 +114,7 @@ class UpNextCreditTimingTests(unittest.TestCase):
                    first=(800, 850, 'credits', False),
                    final=(950, 1000, 'credits', True)))
 
-        self.assertEqual(actual, 230)
+        self.assertEqual(actual, 200)
 
     def test_invalid_first_marker_falls_back_to_final_marker(self):
         upnext = load_upnext()
@@ -146,15 +124,7 @@ class UpNextCreditTimingTests(unittest.TestCase):
                    first=(1000, 1050, 'credits', False),
                    final=(950, 1000, 'credits', True)))
 
-        self.assertEqual(actual, 80)
-
-    def test_lead_is_clamped_to_episode_runtime(self):
-        upnext = load_upnext(service_settings={'autoPlayTimeXS': '120'})
-
-        actual = upnext.get_notification_time_from_markers(
-            status(100, final=(10, 100, 'credits', True)))
-
-        self.assertEqual(actual, 100)
+        self.assertEqual(actual, 50)
 
     def test_missing_marker_uses_native_upnext_timing(self):
         upnext = load_upnext()
@@ -174,11 +144,30 @@ class UpNextCreditTimingTests(unittest.TestCase):
                     status(1400,
                            final=(1350, 1400, 'credits', True))))
 
-    def test_unreadable_lead_setting_uses_native_upnext_timing(self):
-        upnext = load_upnext(service_settings={'autoPlayTimeM': ''})
+    def test_invalid_markers_use_native_upnext_timing(self):
+        upnext = load_upnext()
 
         self.assertIsNone(upnext.get_notification_time_from_markers(
-            status(1400, final=(1350, 1400, 'credits', True))))
+            status(1400, first=('bad',), final=(1500, 1600))))
+
+    def test_credit_countdown_defaults_to_ten_seconds(self):
+        upnext = load_upnext()
+
+        self.assertEqual(upnext.credit_countdown_seconds(), 10)
+
+    def test_credit_countdown_is_configurable_and_bounded(self):
+        cases = (
+            ('2', 5),
+            ('7', 7),
+            ('120', 30),
+            ('invalid', 10),
+        )
+        for configured, expected in cases:
+            with self.subTest(configured=configured):
+                upnext = load_upnext(pkc_settings={
+                    'upNextEpisodeCreditsCountdown': configured,
+                })
+                self.assertEqual(upnext.credit_countdown_seconds(), expected)
 
     def test_signal_contains_marker_anchored_notification_time(self):
         upnext = load_upnext()
@@ -209,6 +198,7 @@ class UpNextCreditTimingTests(unittest.TestCase):
 
         self.assertTrue(upnext.send_upnext_signal(current, 88.205))
         self.assertEqual(captured[0]['notification_time'], 88.205)
+        self.assertEqual(captured[0]['notification_duration'], 10)
 
     def test_signal_omits_notification_time_for_native_fallback(self):
         upnext = load_upnext()
@@ -239,6 +229,7 @@ class UpNextCreditTimingTests(unittest.TestCase):
 
         self.assertTrue(upnext.send_upnext_signal(current, None))
         self.assertNotIn('notification_time', captured[0])
+        self.assertNotIn('notification_duration', captured[0])
 
 
 if __name__ == '__main__':
