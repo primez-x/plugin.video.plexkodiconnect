@@ -84,6 +84,12 @@ def triage(mode, params, path, arguments, itemid):
     elif mode == "watchlist_remove_key":
         transfer.plex_command("WATCHLIST_REMOVE_KEY?%s" % urlencode(params))
         return
+    elif mode == "watchlist_add_tmdb":
+        transfer.plex_command("WATCHLIST_ADD_TMDB?%s" % urlencode(params))
+        return
+    elif mode == "watchlist_remove_tmdb":
+        transfer.plex_command("WATCHLIST_REMOVE_TMDB?%s" % urlencode(params))
+        return
     elif mode == "watchlist_add_search":
         transfer.plex_command("WATCHLIST_ADD_SEARCH?%s" % urlencode(params))
         return

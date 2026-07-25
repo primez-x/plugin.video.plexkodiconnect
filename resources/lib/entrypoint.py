@@ -162,6 +162,7 @@ def show_main_menu(content_type=None):
     directory_item(utils.lang(137), "plugin://%s?mode=search" % v.ADDON_ID)
     # Plex Watch later and Watchlist
     if content_type not in ("image", "audio"):
+        directory_item("Plex Discover", "plugin://%s?mode=discover_hubs" % v.ADDON_ID)
         directory_item(utils.lang(39211), "plugin://%s?mode=watchlater" % v.ADDON_ID)
         directory_item(utils.lang(39212), "plugin://%s?mode=watchlist" % v.ADDON_ID)
     # Plex Channels

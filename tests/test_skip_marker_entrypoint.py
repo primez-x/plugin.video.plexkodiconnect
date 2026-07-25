@@ -65,6 +65,22 @@ class SkipMarkerEntrypointTests(unittest.TestCase):
 
         self.assertEqual(commands, ['skip-marker'])
 
+    def test_tmdb_watchlist_mode_sends_exact_id_service_command(self):
+        default, commands = load_default_entrypoint()
+
+        default.triage(
+            'watchlist_add_tmdb',
+            {'tmdb_id': '603', 'tmdb_type': 'movie'},
+            '',
+            '',
+            '',
+        )
+
+        self.assertEqual(
+            commands,
+            ['WATCHLIST_ADD_TMDB?tmdb_id=603&tmdb_type=movie'],
+        )
+
 
 if __name__ == '__main__':
     unittest.main()
