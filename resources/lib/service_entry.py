@@ -29,6 +29,76 @@ loghandler.config()
 LOG = logging.getLogger("PLEX.service")
 ###############################################################################
 
+
+def _discover_search_ratingkey(title, year, search_type):
+    """Search Plex discover for a title (+optional year) and return the
+    best-matching ratingKey, or None if no confident match is found.
+
+    Used to resolve non-library items (e.g. TMDb Helper listitems that
+    only carry a tmdb_id) to a Plex discover ratingKey so they can be
+    added to / removed from the Plex Watchlist.
+
+    The discover search endpoint serialises Metadata as a broken
+    ``"[object Object]"`` string in XML mode, so we MUST request JSON
+    via the ``Accept`` header — DU().downloadUrl() then returns a dict.
+    """
+    from urllib.parse import quote_plus
+
+    url = (
+        "https://discover.provider.plex.tv/library/search?"
+        "query=%s&searchTypes=%s&searchProviders=discover"
+        "&includeMetadata=1&limit=10" % (quote_plus(title), search_type)
+    )
+    headers = clientinfo.getXArgsDeviceInfo(
+        {"X-Plex-Token": utils.window("plex_token"), "Accept": "application/json"},
+        include_token=False,
+    )
+    data = downloadutils.DownloadUtils().downloadUrl(
+        url, authenticate=False, headerOptions=headers
+    )
+    if not isinstance(data, dict):
+        LOG.warning(
+            "_discover_search_ratingkey: unexpected response type %r", type(data)
+        )
+        return None
+    results = []
+    container = data.get("MediaContainer", {})
+    for sr in container.get("SearchResults", []):
+        for res in sr.get("SearchResult", []):
+            md = res.get("Metadata", {})
+            if md and md.get("ratingKey"):
+                results.append(
+                    {
+                        "score": float(res.get("score", 0)),
+                        "title": (md.get("title") or "").lower(),
+                        "year": str(md.get("year") or ""),
+                        "ratingKey": md["ratingKey"],
+                    }
+                )
+    if not results:
+        return None
+    title_lower = title.lower()
+    year_str = str(year or "").strip()
+    # 1) Exact title + exact year (strongest match)
+    if year_str:
+        for r in results:
+            if r["title"] == title_lower and r["year"] == year_str:
+                return r["ratingKey"]
+    # 2) Exact title, highest score (year unknown / mismatch)
+    exact_title = [r for r in results if r["title"] == title_lower]
+    if exact_title:
+        exact_title.sort(key=lambda r: r["score"], reverse=True)
+        return exact_title[0]["ratingKey"]
+    # 3) No exact title match — do NOT guess.  Better to skip than to add
+    #    the wrong movie to the user's watchlist.
+    LOG.info(
+        "_discover_search_ratingkey: no exact title match for %r among %d results",
+        title,
+        len(results),
+    )
+    return None
+
+
 SERVICE_LOOP_SLEEP_MS = 200
 SKIP_MARKER_COUNTDOWN_SLEEP_MS = 33
 
@@ -356,6 +426,62 @@ class Service(object):
         xbmc.executebuiltin("Container.Refresh")
         return True
 
+    def watchlist_add_search(self, raw_params):
+        return self.watchlist_modify_search("addToWatchlist", raw_params)
+
+    def watchlist_remove_search(self, raw_params):
+        return self.watchlist_modify_search("removeFromWatchlist", raw_params)
+
+    def watchlist_modify_search(self, api_type, raw_params):
+        """Resolve a non-library item (e.g. from TMDb Helper) to a Plex
+        discover ratingKey via title+year search, then add/remove from
+        watchlist.  Falls back gracefully if no confident match is found."""
+        params = dict(utils.parse_qsl(raw_params))
+        title = params.get("title", "")
+        year = params.get("year", "")
+        plex_type = params.get("plex_type", "movie")
+        if not title:
+            LOG.error("watchlist_modify_search: no title in params")
+            return False
+        search_type = "tv" if plex_type in ("tvshow", "show") else "movies"
+        rating_key = _discover_search_ratingkey(title, year, search_type)
+        if not rating_key:
+            LOG.warning(
+                "watchlist_modify_search: no confident Plex match for "
+                "title=%r year=%r type=%r — aborting %s",
+                title,
+                year,
+                plex_type,
+                api_type,
+            )
+            utils.dialog(
+                "notification",
+                utils.lang(29999),
+                "Could not find a Plex match for %s" % title,
+                icon="{plex}",
+                time=3000,
+                sound=False,
+            )
+            return False
+        LOG.info(
+            "watchlist_modify_search %s %r (%s) -> ratingKey=%s",
+            api_type,
+            title,
+            year,
+            rating_key,
+        )
+        downloadutils.DownloadUtils().downloadUrl(
+            "https://discover.provider.plex.tv/actions/%s?ratingKey=%s"
+            % (api_type, rating_key),
+            action_type="PUT",
+            authenticate=False,
+            headerOptions=clientinfo.getXArgsDeviceInfo(
+                {"X-Plex-Token": utils.window("plex_token")}, include_token=False
+            ),
+        )
+        xbmc.executebuiltin("Container.Refresh")
+        return True
+
     def authenticate(self):
         """
         Authenticate the current user or prompt to log-in
@@ -640,6 +766,18 @@ class Service(object):
                         self.watchlist_remove_key,
                         None,
                         plex_command.replace("WATCHLIST_REMOVE_KEY?", ""),
+                    )
+                elif plex_command.startswith("WATCHLIST_ADD_SEARCH?"):
+                    task = backgroundthread.FunctionAsTask(
+                        self.watchlist_add_search,
+                        None,
+                        plex_command.replace("WATCHLIST_ADD_SEARCH?", ""),
+                    )
+                elif plex_command.startswith("WATCHLIST_REMOVE_SEARCH?"):
+                    task = backgroundthread.FunctionAsTask(
+                        self.watchlist_remove_search,
+                        None,
+                        plex_command.replace("WATCHLIST_REMOVE_SEARCH?", ""),
                     )
                 elif plex_command == "choose_pms_server":
                     task = backgroundthread.FunctionAsTask(self.choose_pms_server, None)

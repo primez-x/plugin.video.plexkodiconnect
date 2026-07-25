@@ -84,6 +84,12 @@ def triage(mode, params, path, arguments, itemid):
     elif mode == "watchlist_remove_key":
         transfer.plex_command("WATCHLIST_REMOVE_KEY?%s" % urlencode(params))
         return
+    elif mode == "watchlist_add_search":
+        transfer.plex_command("WATCHLIST_ADD_SEARCH?%s" % urlencode(params))
+        return
+    elif mode == "watchlist_remove_search":
+        transfer.plex_command("WATCHLIST_REMOVE_SEARCH?%s" % urlencode(params))
+        return
     # Listings: we list ListItems and need to tell Kodi when we're done
     try:
         if mode == "browseplex":
