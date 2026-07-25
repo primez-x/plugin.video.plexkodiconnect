@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import logging
 from sys import argv
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlencode
 
 import xbmc
 import xbmcgui
@@ -91,13 +91,18 @@ def triage(mode, params, path, arguments, itemid):
         watchlist.set_tmdb(params, "absent")
         return
     elif mode == "watchlist_status_key":
-        watchlist.status_key(params)
+        watchlist.bootstrap_status_key(params)
+        transfer.plex_command("WATCHLIST_STATUS_KEY?%s" % urlencode(params))
         return
     elif mode == "watchlist_status_tmdb":
-        watchlist.status_tmdb(params)
+        watchlist.bootstrap_status_tmdb(params)
+        transfer.plex_command("WATCHLIST_STATUS_TMDB?%s" % urlencode(params))
         return
     elif mode == "watchlist_status_monitor":
-        watchlist.status_monitor()
+        transfer.plex_command("WATCHLIST_STATUS_MONITOR")
+        return
+    elif mode == "discover_detail":
+        entrypoint.discover_detail(params.get("rating_key"))
         return
     elif mode == "watchlist_add_search":
         watchlist.set_tmdb(params, "present")

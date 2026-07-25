@@ -11,12 +11,14 @@ import copy
 import xml.etree.ElementTree as etree
 
 import xbmc
+import xbmcgui
 import xbmcplugin
 from xbmcgui import ListItem
 
 from . import utils
 from . import clientinfo
 from . import path_ops
+from . import plex_discover
 from .downloadutils import DownloadUtils as DU
 from .plex_api import API, mass_api
 from . import plex_functions as PF
@@ -29,6 +31,7 @@ from .library_sync.nodes import NODE_TYPES
 LOG = getLogger("PLEX.entrypoint")
 
 WATCHLIST_PAGE_SIZE = 100
+DISCOVER_REDIRECT_STATUS_CODES = (301, 302, 303, 307, 308)
 
 
 class ListingException(Exception):
@@ -39,6 +42,79 @@ class ListingException(Exception):
     """
 
     pass
+
+
+def _provider_headers():
+    return clientinfo.getXArgsDeviceInfo(
+        {"X-Plex-Token": utils.window("plex_token")}, include_token=False
+    )
+
+
+def _provider_xmls(url, allowed_redirect_hosts):
+    """Download trusted provider XML, safely following bounded redirects."""
+    downloader = DU()
+    response = downloader.downloadUrl(
+        url,
+        authenticate=False,
+        headerOptions=_provider_headers(),
+        return_response=True,
+        allow_redirects=False,
+    )
+    if response is None:
+        return []
+    responses = [response]
+    if response.status_code in DISCOVER_REDIRECT_STATUS_CODES:
+        locations = plex_discover.provider_redirect_urls(
+            response.headers.get("Location"), allowed_redirect_hosts
+        )
+        if not locations:
+            LOG.warning("Rejected unsafe Plex provider redirect for %s", url)
+            return []
+        if len(locations) > 1:
+            # A provider redirect can contain every streaming service from an
+            # account.  Following every request-safe batch serially makes a
+            # small Kodi widget noticeably slower.  One bounded batch keeps
+            # the redirect usable without turning a 20-tile hub into several
+            # network loads.
+            LOG.warning(
+                "Plex provider redirect contained %d preferred-service batches; "
+                "using the first bounded batch for %s",
+                len(locations),
+                url,
+            )
+            locations = locations[:1]
+        responses = []
+        for location in locations:
+            redirected = downloader.downloadUrl(
+                location,
+                authenticate=False,
+                headerOptions=_provider_headers(),
+                return_response=True,
+                allow_redirects=False,
+            )
+            if redirected is None or redirected.status_code not in (200, 201):
+                LOG.warning(
+                    "Plex provider redirect failed for %s with HTTP %s",
+                    url,
+                    getattr(redirected, "status_code", "unknown"),
+                )
+                return []
+            responses.append(redirected)
+    xmls = []
+    for provider_response in responses:
+        if provider_response.status_code not in (200, 201):
+            LOG.warning(
+                "Plex provider request failed for %s with HTTP %s",
+                url,
+                provider_response.status_code,
+            )
+            return []
+        try:
+            xmls.append(etree.fromstring(provider_response.content))
+        except (TypeError, etree.ParseError):
+            LOG.warning("Plex provider returned invalid XML for %s", url)
+            return []
+    return xmls
 
 
 def guess_video_or_audio():
@@ -584,35 +660,34 @@ def discover_hubs():
         LOG.error("No discover hubs - restricted user")
         raise ListingException
     app.init(entrypoint=True)
-    xml = DU().downloadUrl(
+    xmls = _provider_xmls(
         "https://discover.provider.plex.tv/hubs/sections/home?includeMetadata=1",
-        authenticate=False,
-        headerOptions=clientinfo.getXArgsDeviceInfo(
-            {"X-Plex-Token": utils.window("plex_token")}, include_token=False
-        ),
+        (plex_discover.DISCOVER_PROVIDER_HOST,),
     )
-    try:
-        xml.attrib
-    except AttributeError:
+    if not xmls:
         LOG.error("Could not download discover hubs from plex.tv")
         raise ListingException
     xbmcplugin.setContent(int(sys.argv[1]), v.CONTENT_TYPE_FILE)
-    for hub in xml:
-        title = hub.get("title")
-        key = hub.get("key")
-        if not title or not key:
-            continue
-        # The hub 'key' is the full API path, e.g.
-        # /hubs/sections/home/top_watchlisted
-        # Use the last path segment as the hub_id so discover_hub() constructs
-        # the correct URL.  Do NOT use hubIdentifier (e.g. 'home.top_watchlisted')
-        # — that produces a 404 because the API expects the bare slug.
-        hub_slug = key.rsplit("/", 1)[-1]
-        path = "plugin://%s/?mode=discover_hub&hub_id=%s" % (
-            v.ADDON_ID,
-            hub_slug,
-        )
-        directory_item(title, path)
+    seen_keys = set()
+    for xml in xmls:
+        for hub in xml:
+            title = hub.get("title")
+            key = hub.get("key")
+            if not title or not key or key in seen_keys:
+                continue
+            seen_keys.add(key)
+            # The hub 'key' is the full API path, e.g.
+            # /hubs/sections/home/top_watchlisted
+            # Use the last path segment as the hub_id so discover_hub()
+            # constructs the correct URL. Do not use hubIdentifier (for
+            # example, 'home.top_watchlisted') because the API expects the
+            # bare slug.
+            hub_slug = key.rsplit("/", 1)[-1]
+            path = "plugin://%s/?mode=discover_hub&hub_id=%s" % (
+                v.ADDON_ID,
+                hub_slug,
+            )
+            directory_item(title, path)
     xbmcplugin.addSortMethod(int(sys.argv[1]), xbmcplugin.SORT_METHOD_UNSORTED)
 
 
@@ -632,20 +707,22 @@ def discover_hub(hub_id):
         "https://discover.provider.plex.tv/hubs/sections/home/%s"
         "?includeMetadata=1&limit=20" % hub_id
     )
-    xml = DU().downloadUrl(
-        url,
-        authenticate=False,
-        headerOptions=clientinfo.getXArgsDeviceInfo(
-            {"X-Plex-Token": utils.window("plex_token")}, include_token=False
-        ),
-    )
-    try:
-        xml.attrib
-    except AttributeError:
+    xmls = _provider_xmls(url, (plex_discover.DISCOVER_PROVIDER_HOST,))
+    if not xmls:
         LOG.error("Could not download discover hub %s from plex.tv", hub_id)
         raise ListingException
     # Filter out placeholder items (spacers)
-    metadata = [child for child in xml if child.get("type") != "placeholder"]
+    metadata = []
+    seen_rating_keys = set()
+    for xml in xmls:
+        for child in xml:
+            rating_key = plex_discover.normalize_rating_key(child.get("ratingKey"))
+            if child.get("type") == "placeholder" or rating_key is None:
+                continue
+            if rating_key in seen_rating_keys:
+                continue
+            seen_rating_keys.add(rating_key)
+            metadata.append(child)
     if not metadata:
         LOG.info("No items in discover hub %s", hub_id)
         return
@@ -659,25 +736,91 @@ def discover_hub(hub_id):
     widgets.SECTION_ID = None
     widgets.KEY = None
     all_items = []
-    for child in metadata:
-        api = API(child)
+    for api in mass_api(metadata):
         item = widgets.generate_item(api)
         if item is None:
             continue
-        # Set ratingKey and plexguid properties so the watchlist context menu
-        # items work for non-library (discover) items
+        child = api.xml
+        rating_key = plex_discover.normalize_rating_key(child.get("ratingKey"))
+        if rating_key is None:
+            continue
+        # Keep the provider identity for direct Watchlist actions and route
+        # selection to native details rather than local-PMS playback.
         props = item.setdefault("extraproperties", {})
-        rating_key = child.get("ratingKey")
-        if rating_key:
-            props["ratingKey"] = rating_key
+        props["ratingKey"] = rating_key
         guid = child.get("guid")
         if guid:
             props["plexguid"] = guid
+        props["PlexDiscoverDetail"] = "true"
+        item["file"] = utils.extend_url(
+            "plugin://%s" % v.ADDON_ID,
+            {
+                "mode": "discover_detail",
+                "rating_key": rating_key,
+                "plex_type": api.plex_type,
+            },
+        )
+        item["isFolder"] = False
+        item["IsPlayable"] = "false"
         all_items.append(item)
     all_items = [widgets.prepare_listitem(item) for item in all_items]
     all_items = [widgets.create_listitem(item) for item in all_items]
     xbmcplugin.addDirectoryItems(int(sys.argv[1]), all_items, len(all_items))
     xbmcplugin.addSortMethod(int(sys.argv[1]), xbmcplugin.SORT_METHOD_UNSORTED)
+
+
+def discover_detail(rating_key):
+    """Open native details for one provider-only Discover item."""
+    rating_key = plex_discover.normalize_rating_key(rating_key)
+    if rating_key is None:
+        LOG.error("Cannot open Plex Discover details with an invalid rating key")
+        return False
+    _wait_for_auth()
+    if utils.window("plex_token") == "":
+        LOG.error("No Plex Discover details - not signed in to plex.tv")
+        return False
+    if utils.window("plex_restricteduser") == "true":
+        LOG.error("No Plex Discover details - restricted user")
+        return False
+    app.init(entrypoint=True)
+    xmls = _provider_xmls(
+        plex_discover.METADATA_ITEM_URL % rating_key,
+        (plex_discover.METADATA_PROVIDER_HOST,),
+    )
+    metadata = [
+        child
+        for xml in xmls
+        for child in xml
+        if plex_discover.normalize_rating_key(child.get("ratingKey")) == rating_key
+    ]
+    if not metadata:
+        LOG.error("Could not load Plex Discover metadata for %s", rating_key)
+        return False
+    api = mass_api([metadata[0]])[0]
+    widgets.PLEX_TYPE = api.plex_type
+    widgets.SYNCHED = False
+    widgets.SECTION_ID = None
+    widgets.KEY = None
+    item = widgets.generate_item(api)
+    if item is None:
+        LOG.error("Could not build Plex Discover details for %s", rating_key)
+        return False
+    props = item.setdefault("extraproperties", {})
+    props["ratingKey"] = rating_key
+    guid = metadata[0].get("guid")
+    if guid:
+        props["plexguid"] = guid
+    props["PlexDiscoverDetail"] = "true"
+    # The provider item has no local PMS playback path.  Present it as
+    # non-playable so Arctic Fuse's first action remains Watchlist.
+    item["file"] = ""
+    item["isFolder"] = False
+    item["IsPlayable"] = "false"
+    listitem = widgets.create_listitem(
+        widgets.prepare_listitem(item), as_tuple=False
+    )
+    xbmcgui.Dialog().info(listitem)
+    return True
 
 
 def browse_plex(

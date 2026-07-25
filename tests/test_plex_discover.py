@@ -42,6 +42,44 @@ class PlexDiscoverTests(unittest.TestCase):
         )
         self.assertIsNone(plex_discover.normalize_rating_key("key/with/path"))
 
+    def test_provider_redirect_splits_oversized_preferred_services_safely(self):
+        services = ["service-%s" % index for index in range(41)]
+        location = (
+            "https://discover.provider.plex.tv/hubs/sections/home/new-for-you?"
+            "x-plex-preferred-services%%5B%%5D=%s&other=value"
+            % "&x-plex-preferred-services%5B%5D=".join(services)
+        )
+
+        urls = plex_discover.provider_redirect_urls(
+            location, (plex_discover.DISCOVER_PROVIDER_HOST,)
+        )
+
+        self.assertEqual(len(urls), 3)
+        self.assertTrue(
+            all(url.startswith("https://discover.provider.plex.tv/") for url in urls)
+        )
+        self.assertTrue(all("other=value" in url for url in urls))
+        self.assertTrue(
+            all(
+                url.count("x-plex-preferred-services%5B%5D=") <= 20
+                for url in urls
+            )
+        )
+        self.assertEqual(
+            plex_discover.provider_redirect_urls(
+                "https://untrusted.example/hubs",
+                (plex_discover.DISCOVER_PROVIDER_HOST,),
+            ),
+            [],
+        )
+        self.assertEqual(
+            plex_discover.provider_redirect_urls(
+                "https://discover.provider.plex.tv:invalid/hubs",
+                (plex_discover.DISCOVER_PROVIDER_HOST,),
+            ),
+            [],
+        )
+
     def test_extracts_authoritative_watchlist_state_from_user_state(self):
         watched = {
             "MediaContainer": {

@@ -58,6 +58,8 @@ def load_default_entrypoint():
     watchlist.status_tmdb = commands.append
     watchlist.status_key = commands.append
     watchlist.status_monitor = lambda: commands.append('watchlist_monitor')
+    watchlist.bootstrap_status_tmdb = lambda params: None
+    watchlist.bootstrap_status_key = lambda params: None
     sys.modules['resources.lib.watchlist'] = watchlist
 
     utils = types.ModuleType('resources.lib.utils')
@@ -95,6 +97,26 @@ class SkipMarkerEntrypointTests(unittest.TestCase):
         self.assertEqual(
             commands,
             [('watchlist_tmdb', {'tmdb_id': '603', 'tmdb_type': 'movie'}, 'present')],
+        )
+
+    def test_watchlist_status_modes_enqueue_the_service_worker(self):
+        default, commands = load_default_entrypoint()
+
+        default.triage(
+            'watchlist_status_tmdb',
+            {'tmdb_id': '603', 'tmdb_type': 'movie'},
+            '',
+            '',
+            '',
+        )
+        default.triage('watchlist_status_monitor', {}, '', '', '')
+
+        self.assertEqual(
+            commands,
+            [
+                'WATCHLIST_STATUS_TMDB?tmdb_id=603&tmdb_type=movie',
+                'WATCHLIST_STATUS_MONITOR',
+            ],
         )
 
 

@@ -4,6 +4,7 @@
 
 from logging import getLogger
 import threading
+from time import time
 from uuid import uuid4
 
 import xbmc
@@ -21,6 +22,7 @@ WATCHLIST_VERIFY_SLEEP_MS = 250
 WATCHLIST_HTTP_TIMEOUT = (3.0, 8.0)
 WATCHLIST_MONITOR_ATTEMPTS = 25
 WATCHLIST_MONITOR_SLEEP_MS = 200
+WATCHLIST_STATE_CACHE_SECONDS = 300
 
 DETAIL_IDENTITY = "PKC.Watchlist.Detail.Identity"
 DETAIL_STATE = "PKC.Watchlist.Detail.State"
@@ -34,6 +36,8 @@ DETAIL_CONTEXT_LABEL = "PKC.Watchlist.Detail.Context.Label"
 DETAIL_CONTEXT_DBTYPE = "PKC.Watchlist.Detail.Context.DBType"
 DETAIL_TMDB_ID = "PKC.Watchlist.Detail.TMDbId"
 DETAIL_TMDB_TYPE = "PKC.Watchlist.Detail.TMDbType"
+DETAIL_RATING_KEY = "PKC.Watchlist.Detail.RatingKey"
+DETAIL_MONITOR_REVISION = "PKC.Watchlist.Detail.MonitorRevision"
 ITEM_STATE_PREFIX = "PKC.Watchlist.Item."
 
 TMDB_MONITOR_ID = "TMDbHelper.ListItem.Monitor.TMDb_ID"
@@ -88,6 +92,18 @@ def discover_tmdb_ratingkey(tmdb_id, tmdb_type):
         LOG.warning("discover_tmdb_ratingkey: Plex returned no unique exact match")
         return None
     return match["rating_key"]
+
+
+def _rating_key_for_tmdb(params, identity):
+    rating_key = _cached_rating_key(identity)
+    if rating_key is not None:
+        return rating_key
+    rating_key = discover_tmdb_ratingkey(
+        params.get("tmdb_id"), params.get("tmdb_type") or params.get("plex_type")
+    )
+    if rating_key is not None:
+        _remember_rating_key(identity, rating_key)
+    return rating_key
 
 
 def state(rating_key):
@@ -199,6 +215,54 @@ def _item_state_property(identity):
     return "%s%s.State" % (ITEM_STATE_PREFIX, identity)
 
 
+def _item_state_timestamp_property(identity):
+    return "%s%s.StateUpdated" % (ITEM_STATE_PREFIX, identity)
+
+
+def _item_rating_key_property(identity):
+    return "%s%s.RatingKey" % (ITEM_STATE_PREFIX, identity)
+
+
+def _remember_state(identity, state_name):
+    if identity is None or state_name not in ("present", "absent"):
+        return
+    utils.window(_item_state_property(identity), value=state_name)
+    utils.window(_item_state_timestamp_property(identity), value=str(time()))
+
+
+def _cached_state(identity):
+    if identity is None:
+        return None
+    state_name = utils.window(_item_state_property(identity))
+    if state_name not in ("present", "absent"):
+        return None
+    try:
+        updated = float(utils.window(_item_state_timestamp_property(identity)))
+    except (TypeError, ValueError):
+        return None
+    if time() - updated > WATCHLIST_STATE_CACHE_SECONDS:
+        return None
+    return state_name
+
+
+def _remember_rating_key(identity, rating_key):
+    rating_key = plex_discover.normalize_rating_key(rating_key)
+    if identity is None or rating_key is None:
+        return
+    utils.window(_item_rating_key_property(identity), value=rating_key)
+    if utils.window(DETAIL_IDENTITY) == identity:
+        utils.window(DETAIL_RATING_KEY, value=rating_key)
+
+
+def _cached_rating_key(identity):
+    if identity is None:
+        return None
+    rating_key = plex_discover.normalize_rating_key(utils.window(DETAIL_RATING_KEY))
+    if utils.window(DETAIL_IDENTITY) == identity and rating_key is not None:
+        return rating_key
+    return plex_discover.normalize_rating_key(utils.window(_item_rating_key_property(identity)))
+
+
 def _identity_for_key(params):
     rating_key = plex_discover.normalize_rating_key(params.get("rating_key"))
     return "plex.%s" % rating_key if rating_key else None
@@ -211,8 +275,8 @@ def _identity_for_tmdb(params):
 
 
 def _known_state(identity):
-    value = utils.window(_item_state_property(identity))
-    if value in ("present", "absent"):
+    value = _cached_state(identity)
+    if value is not None:
         return value
     if utils.window(DETAIL_IDENTITY) == identity:
         value = utils.window(DETAIL_STATE)
@@ -254,7 +318,7 @@ def _project_mutation(identity, request_id, observed_state):
     state_name = _state_name(observed_state)
     if identity is None or state_name is None:
         return False
-    utils.window(_item_state_property(identity), value=state_name)
+    _remember_state(identity, state_name)
     if (
         utils.window(DETAIL_IDENTITY) != identity
         or utils.window(DETAIL_REVISION) != request_id
@@ -272,7 +336,7 @@ def _project_mutation(identity, request_id, observed_state):
 def _project_failure(identity, request_id, observed_state, previous_state):
     confirmed_name = _state_name(observed_state)
     if confirmed_name is not None and identity is not None:
-        utils.window(_item_state_property(identity), value=confirmed_name)
+        _remember_state(identity, confirmed_name)
     if (
         not identity
         or not request_id
@@ -331,9 +395,7 @@ def set_tmdb(params, desired):
         notify_error("Plex could not uniquely match this TMDb item for Watchlist.")
         return False
     request_id, previous_state = _begin(identity, desired)
-    rating_key = discover_tmdb_ratingkey(
-        params.get("tmdb_id"), params.get("tmdb_type") or params.get("plex_type")
-    )
+    rating_key = _rating_key_for_tmdb(params, identity)
     if rating_key is None:
         if request_id is not None:
             _project_failure(identity, request_id, None, previous_state)
@@ -379,9 +441,42 @@ def _project_status(identity, status_revision, mutation_revision, observed_state
         or utils.window(DETAIL_PENDING)
     ):
         return False
-    utils.window(_item_state_property(identity), value=state_name)
+    _remember_state(identity, state_name)
     utils.window(DETAIL_STATE, value=state_name)
     return True
+
+
+def _project_cached_status(identity, status_revision, mutation_revision):
+    cached = _cached_state(identity)
+    if cached is None:
+        return False
+    return _project_status(
+        identity, status_revision, mutation_revision, cached == "present"
+    )
+
+
+def _bootstrap_cached_status(identity):
+    """Project a local state immediately, without delaying a dialog on I/O."""
+    revision = _capture_status(identity)
+    if revision is None:
+        return False
+    return _project_cached_status(identity, revision[0], revision[1])
+
+
+def bootstrap_status_key(params):
+    """Immediately restore a cached state for a direct Plex detail item."""
+    identity = params.get("watchlist_identity") or _identity_for_key(params)
+    if identity is None:
+        return False
+    return _bootstrap_cached_status(identity)
+
+
+def bootstrap_status_tmdb(params):
+    """Immediately restore a cached state for a TMDb detail item."""
+    identity = params.get("watchlist_identity") or _identity_for_tmdb(params)
+    if identity is None:
+        return False
+    return _bootstrap_cached_status(identity)
 
 
 def status_key(params):
@@ -393,6 +488,7 @@ def status_key(params):
     revision = _capture_status(identity)
     if revision is None:
         return False
+    _project_cached_status(identity, revision[0], revision[1])
     return _project_status(identity, revision[0], revision[1], state(rating_key))
 
 
@@ -404,9 +500,8 @@ def status_tmdb(params):
     revision = _capture_status(identity)
     if revision is None:
         return False
-    rating_key = discover_tmdb_ratingkey(
-        params.get("tmdb_id"), params.get("tmdb_type") or params.get("plex_type")
-    )
+    _project_cached_status(identity, revision[0], revision[1])
+    rating_key = _rating_key_for_tmdb(params, identity)
     if rating_key is None:
         return False
     return _project_status(identity, revision[0], revision[1], state(rating_key))
@@ -424,9 +519,14 @@ def status_monitor():
     expected_label, expected_dbtype = _monitor_context()
     if not expected_label or expected_dbtype not in ("movie", "tvshow"):
         return False
+    monitor_revision = uuid4().hex
+    utils.window(DETAIL_MONITOR_REVISION, value=monitor_revision)
 
     for attempt in range(WATCHLIST_MONITOR_ATTEMPTS):
-        if _monitor_context() != (expected_label, expected_dbtype):
+        if (
+            utils.window(DETAIL_MONITOR_REVISION) != monitor_revision
+            or _monitor_context() != (expected_label, expected_dbtype)
+        ):
             return False
         if utils.window(DETAIL_IDENTITY) or utils.window(DETAIL_PENDING):
             return False
@@ -440,6 +540,8 @@ def status_monitor():
             and monitor_label == expected_label
             and monitor_dbtype == expected_dbtype
         ):
+            if utils.window(DETAIL_MONITOR_REVISION) != monitor_revision:
+                return False
             identity = plex_discover.tmdb_watchlist_identity(tmdb_id, tmdb_type)
             if identity is None:
                 return False
@@ -448,6 +550,8 @@ def status_monitor():
             utils.window(DETAIL_IDENTITY, value=identity)
             utils.window(DETAIL_TMDB_ID, value=tmdb_id)
             utils.window(DETAIL_TMDB_TYPE, value=tmdb_type)
+            if utils.window(DETAIL_MONITOR_REVISION) != monitor_revision:
+                return False
             return status_tmdb(
                 {
                     "tmdb_id": tmdb_id,

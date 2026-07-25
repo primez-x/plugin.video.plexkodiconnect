@@ -290,6 +290,19 @@ class Service(object):
     def watchlist_add(self, raw_params):
         return self.watchlist_modify("addToWatchlist", raw_params)
 
+
+    def watchlist_status_key(self, raw_params):
+        return watchlist.status_key(dict(utils.parse_qsl(raw_params)))
+
+
+    def watchlist_status_tmdb(self, raw_params):
+        return watchlist.status_tmdb(dict(utils.parse_qsl(raw_params)))
+
+
+    def watchlist_status_monitor(self):
+        return watchlist.status_monitor()
+
+
     def watchlist_remove(self, raw_params):
         return self.watchlist_modify("removeFromWatchlist", raw_params)
 
@@ -649,6 +662,7 @@ class Service(object):
                 # instances (default.py and context.py instead of service.py)
                 utils.window("plexkodiconnect.command", clear=True)
                 task = None
+                normal_priority = False
                 if plex_command.startswith("PLAY-"):
                     # Add-on path playback!
                     task = playback_starter.PlaybackTask(
@@ -695,6 +709,25 @@ class Service(object):
                         None,
                         plex_command.replace("WATCHLIST_REMOVE_TMDB?", ""),
                     )
+                elif plex_command.startswith("WATCHLIST_STATUS_KEY?"):
+                    task = backgroundthread.FunctionAsTask(
+                        self.watchlist_status_key,
+                        None,
+                        plex_command.replace("WATCHLIST_STATUS_KEY?", ""),
+                    )
+                    normal_priority = True
+                elif plex_command.startswith("WATCHLIST_STATUS_TMDB?"):
+                    task = backgroundthread.FunctionAsTask(
+                        self.watchlist_status_tmdb,
+                        None,
+                        plex_command.replace("WATCHLIST_STATUS_TMDB?", ""),
+                    )
+                    normal_priority = True
+                elif plex_command == "WATCHLIST_STATUS_MONITOR":
+                    task = backgroundthread.FunctionAsTask(
+                        self.watchlist_status_monitor, None
+                    )
+                    normal_priority = True
                 elif plex_command.startswith("WATCHLIST_ADD_SEARCH?"):
                     task = backgroundthread.FunctionAsTask(
                         self.watchlist_add_search,
@@ -742,7 +775,10 @@ class Service(object):
                 else:
                     raise RuntimeError("Unknown command: %s", plex_command)
                 if task:
-                    backgroundthread.BGThreader.addTasksToFront([task])
+                    if normal_priority:
+                        backgroundthread.BGThreader.addTask(task)
+                    else:
+                        backgroundthread.BGThreader.addTasksToFront([task])
                 continue
 
             if app.APP.suspend:

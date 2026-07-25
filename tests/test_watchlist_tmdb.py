@@ -432,6 +432,73 @@ class TmdbWatchlistTests(unittest.TestCase):
             properties[watchlist._item_state_property(identity)], "present"
         )
 
+    def test_tmdb_status_reuses_the_active_canonical_rating_key(self):
+        service_entry, _, _, properties = load_service_entry()
+        watchlist = service_entry.watchlist
+        identity = "tmdb.movie.603"
+        properties[watchlist.DETAIL_IDENTITY] = identity
+        properties[watchlist.DETAIL_RATING_KEY] = self.MOVIE_KEY
+        downloader = DownloadRecorder(
+            [FakeResponse(self._watchlist_state_payload(self.MOVIE_KEY, True))]
+        )
+        watchlist.downloadutils.DownloadUtils = lambda: downloader
+
+        self.assertTrue(
+            watchlist.status_tmdb({"tmdb_id": "603", "tmdb_type": "movie"})
+        )
+
+        self.assertEqual(len(downloader.calls), 1)
+        self.assertEqual(
+            downloader.calls[0][0],
+            watchlist.WATCHLIST_USER_STATE_URL % self.MOVIE_KEY,
+        )
+        self.assertEqual(properties[watchlist.DETAIL_STATE], "present")
+
+    def test_cached_status_is_projected_before_authoritative_refresh(self):
+        service_entry, _, _, properties = load_service_entry()
+        watchlist = service_entry.watchlist
+        identity = "plex.%s" % self.MOVIE_KEY
+        properties[watchlist.DETAIL_IDENTITY] = identity
+        watchlist._remember_state(identity, "present")
+        projections = []
+        original_project = watchlist._project_status
+
+        def recording_project(identity_arg, status_revision, mutation_revision, observed_state):
+            projections.append(observed_state)
+            return original_project(
+                identity_arg, status_revision, mutation_revision, observed_state
+            )
+
+        watchlist._project_status = recording_project
+        watchlist.state = lambda rating_key: False
+        try:
+            self.assertTrue(
+                watchlist.status_key({"rating_key": self.MOVIE_KEY})
+            )
+        finally:
+            watchlist._project_status = original_project
+
+        self.assertEqual(projections, [True, False])
+        self.assertEqual(properties[watchlist.DETAIL_STATE], "absent")
+
+    def test_status_bootstrap_restores_cached_state_without_network(self):
+        service_entry, _, _, properties = load_service_entry()
+        watchlist = service_entry.watchlist
+        identity = "tmdb.movie.603"
+        properties[watchlist.DETAIL_IDENTITY] = identity
+        watchlist._remember_state(identity, "present")
+        watchlist.state = lambda rating_key: self.fail(
+            "bootstrap must not use Plex I/O"
+        )
+
+        self.assertTrue(
+            watchlist.bootstrap_status_tmdb(
+                {"tmdb_id": "603", "tmdb_type": "movie"}
+            )
+        )
+
+        self.assertEqual(properties[watchlist.DETAIL_STATE], "present")
+
     def test_reopened_detail_rejects_a_stale_status_from_the_prior_dialog(self):
         service_entry, _, _, properties = load_service_entry()
         watchlist = service_entry.watchlist

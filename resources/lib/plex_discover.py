@@ -2,8 +2,14 @@
 # -*- coding: utf-8 -*-
 """Kodi-independent validation for Plex Discover metadata identities."""
 
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 METADATA_MATCH_URL = "https://metadata.provider.plex.tv/library/metadata/matches"
+METADATA_ITEM_URL = "https://metadata.provider.plex.tv/library/metadata/%s"
+DISCOVER_PROVIDER_HOST = "discover.provider.plex.tv"
+METADATA_PROVIDER_HOST = "metadata.provider.plex.tv"
+DISCOVER_PREFERRED_SERVICES_KEY = "x-plex-preferred-services[]"
+DISCOVER_PREFERRED_SERVICES_BATCH_SIZE = 20
 
 
 def _as_list(value):
@@ -43,6 +49,70 @@ def normalize_rating_key(value):
     ):
         return None
     return value
+
+
+def provider_redirect_urls(
+    location,
+    allowed_hosts,
+    batch_size=DISCOVER_PREFERRED_SERVICES_BATCH_SIZE,
+):
+    """Return trusted provider redirect URLs with bounded preferred-service lists.
+
+    Plex can redirect a Discover request with an account-specific preferred
+    services query that is large enough for the next request to be rejected
+    with HTTP 431.  The redirect remains authoritative, but it must be split
+    into request-safe batches before following it.
+    """
+    if not isinstance(location, str) or not isinstance(
+        allowed_hosts, (tuple, list, set)
+    ):
+        return []
+    if not isinstance(batch_size, int) or batch_size < 1:
+        return []
+    try:
+        parsed = urlsplit(location)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return []
+    trusted_hosts = {str(host).lower() for host in allowed_hosts}
+    if (
+        parsed.scheme.lower() != "https"
+        or hostname not in trusted_hosts
+        or parsed.username
+        or parsed.password
+        or port is not None
+    ):
+        return []
+    query_items = parse_qsl(parsed.query, keep_blank_values=True)
+    preferred_services = [
+        value for key, value in query_items if key == DISCOVER_PREFERRED_SERVICES_KEY
+    ]
+    if len(preferred_services) <= batch_size:
+        return [location]
+    base_query = [
+        (key, value)
+        for key, value in query_items
+        if key != DISCOVER_PREFERRED_SERVICES_KEY
+    ]
+    urls = []
+    for start in range(0, len(preferred_services), batch_size):
+        query = base_query + [
+            (DISCOVER_PREFERRED_SERVICES_KEY, value)
+            for value in preferred_services[start : start + batch_size]
+        ]
+        urls.append(
+            urlunsplit(
+                (
+                    parsed.scheme,
+                    parsed.netloc,
+                    parsed.path,
+                    urlencode(query),
+                    "",
+                )
+            )
+        )
+    return urls
 
 
 def watchlist_state_from_payload(payload, rating_key):

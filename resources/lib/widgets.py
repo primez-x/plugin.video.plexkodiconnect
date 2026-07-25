@@ -491,7 +491,7 @@ def create_listitem(item, as_tuple=True, offscreen=True,
             offscreen=offscreen)
 
         # only set isPlayable prop if really needed
-        if item.get("isFolder", False):
+        if item.get("isFolder", False) or item.get("IsPlayable") == "false":
             liz.setProperty('IsPlayable', 'false')
         elif "plugin://script.skin.helper" not in item['file']:
             liz.setProperty('IsPlayable', 'true')

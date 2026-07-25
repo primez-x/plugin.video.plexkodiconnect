@@ -115,7 +115,7 @@ class DownloadUtils(object):
     def downloadUrl(self, url, action_type="GET", postBody=None,
                     parameters=None, authenticate=True, headerOptions=None,
                     verifySSL=True, timeout=None, return_response=False,
-                    headerOverride=None, reraise=False):
+                    headerOverride=None, reraise=False, allow_redirects=True):
         """
         Override SSL check with verifySSL=False
 
@@ -129,9 +129,10 @@ class DownloadUtils(object):
                                (unauthorized) or other http error codes
             xml                xml etree root object, if applicable
             json               json() object, if applicable
-            <response-object>  if return_response=True is set (200, 201 only)
+            <response-object>  if return_response=True is set
         """
         kwargs = {'timeout': self.timeout}
+        kwargs['allow_redirects'] = allow_redirects
         if authenticate is True:
             # Get requests session
             try:
