@@ -32,6 +32,8 @@ DETAIL_REQUEST_ID = "PKC.Watchlist.Detail.RequestId"
 DETAIL_REVISION = "PKC.Watchlist.Detail.Revision"
 DETAIL_STATUS_REVISION = "PKC.Watchlist.Detail.StatusRevision"
 DETAIL_ERROR = "PKC.Watchlist.Detail.Error"
+DETAIL_OPTIMISTIC_STATE = "PKC.Watchlist.Detail.OptimisticState"
+DETAIL_OPTIMISTIC_IDENTITY = "PKC.Watchlist.Detail.OptimisticIdentity"
 DETAIL_CONTEXT_LABEL = "PKC.Watchlist.Detail.Context.Label"
 DETAIL_CONTEXT_DBTYPE = "PKC.Watchlist.Detail.Context.DBType"
 DETAIL_TMDB_ID = "PKC.Watchlist.Detail.TMDbId"
@@ -223,6 +225,10 @@ def _item_rating_key_property(identity):
     return "%s%s.RatingKey" % (ITEM_STATE_PREFIX, identity)
 
 
+def _item_mutation_request_property(identity):
+    return "%s%s.MutationRequest" % (ITEM_STATE_PREFIX, identity)
+
+
 def _remember_state(identity, state_name):
     if identity is None or state_name not in ("present", "absent"):
         return
@@ -301,6 +307,7 @@ def _begin(identity, desired):
     utils.window(DETAIL_PREVIOUS_STATE, value=previous_state)
     utils.window(DETAIL_REQUEST_ID, value=request_id)
     utils.window(DETAIL_REVISION, value=request_id)
+    utils.window(_item_mutation_request_property(identity), value=request_id)
     utils.window(DETAIL_ERROR, clear=True)
     utils.window(DETAIL_STATE, value=desired)
     return request_id, previous_state
@@ -322,18 +329,66 @@ def _mutation_pending(identity):
     )
 
 
+def _optimistic_projection_active(identity=None):
+    if utils.window(DETAIL_OPTIMISTIC_STATE) not in ("present", "absent"):
+        return False
+    optimistic_identity = utils.window(DETAIL_OPTIMISTIC_IDENTITY)
+    return identity is None or not optimistic_identity or optimistic_identity == identity
+
+
+def _clear_optimistic_projection(identity=None):
+    optimistic_identity = utils.window(DETAIL_OPTIMISTIC_IDENTITY)
+    if identity is not None and optimistic_identity and optimistic_identity != identity:
+        return False
+    utils.window(DETAIL_OPTIMISTIC_STATE, clear=True)
+    utils.window(DETAIL_OPTIMISTIC_IDENTITY, clear=True)
+    return True
+
+
+def _clear_current_optimistic_projection():
+    """Drop a local projection only when it belongs to the active detail."""
+    identity = utils.window(DETAIL_IDENTITY)
+    if identity:
+        _clear_optimistic_projection(identity)
+
+
+def _worker_request_is_current(identity, request_id):
+    return bool(
+        identity
+        and request_id
+        and utils.window(_item_mutation_request_property(identity)) == request_id
+    )
+
+
+def _clear_worker_request(identity, request_id):
+    if _worker_request_is_current(identity, request_id):
+        utils.window(_item_mutation_request_property(identity), clear=True)
+        return True
+    return False
+
+
+def _detail_request_is_current(identity, request_id):
+    return bool(
+        identity
+        and request_id
+        and utils.window(DETAIL_IDENTITY) == identity
+        and utils.window(DETAIL_PENDING) == request_id
+        and utils.window(DETAIL_REQUEST_ID) == request_id
+        and utils.window(DETAIL_REVISION) == request_id
+    )
+
+
 def _project_mutation(identity, request_id, observed_state):
     state_name = _state_name(observed_state)
     if identity is None or state_name is None:
         return False
-    _remember_state(identity, state_name)
-    if (
-        utils.window(DETAIL_IDENTITY) != identity
-        or utils.window(DETAIL_REVISION) != request_id
-        or utils.window(DETAIL_REQUEST_ID) != request_id
-    ):
+    if not _clear_worker_request(identity, request_id):
         return False
+    _remember_state(identity, state_name)
+    if not _detail_request_is_current(identity, request_id):
+        return True
     utils.window(DETAIL_STATE, value=state_name)
+    _clear_optimistic_projection(identity)
     utils.window(DETAIL_ERROR, clear=True)
     utils.window(DETAIL_REQUEST_ID, clear=True)
     # Clear last: this is the skin's double-click guard.
@@ -343,18 +398,15 @@ def _project_mutation(identity, request_id, observed_state):
 
 def _project_failure(identity, request_id, observed_state, previous_state):
     confirmed_name = _state_name(observed_state)
-    if confirmed_name is not None and identity is not None:
-        _remember_state(identity, confirmed_name)
-    if (
-        not identity
-        or not request_id
-        or utils.window(DETAIL_IDENTITY) != identity
-        or utils.window(DETAIL_REVISION) != request_id
-        or utils.window(DETAIL_REQUEST_ID) != request_id
-    ):
+    if not _clear_worker_request(identity, request_id):
         return False
+    if confirmed_name is not None:
+        _remember_state(identity, confirmed_name)
+    if not _detail_request_is_current(identity, request_id):
+        return True
     fallback_state = previous_state if previous_state in ("present", "absent") else "absent"
     utils.window(DETAIL_STATE, value=confirmed_name or fallback_state)
+    _clear_optimistic_projection(identity)
     utils.window(DETAIL_ERROR, value="verification-failed")
     utils.window(DETAIL_REQUEST_ID, clear=True)
     # Clear last: this is the skin's double-click guard.
@@ -362,70 +414,161 @@ def _project_failure(identity, request_id, observed_state, previous_state):
     return True
 
 
-def _set(api_type, params, identity, rating_key):
-    if identity is None or rating_key is None:
-        notify_error()
-        return False
+def _api_type_for_desired(desired):
+    return {"present": "addToWatchlist", "absent": "removeFromWatchlist"}.get(
+        desired
+    )
+
+
+def _begin_detail_request(params, desired, identity):
+    if _api_type_for_desired(desired) is None or identity is None:
+        if identity is not None:
+            _clear_optimistic_projection(identity)
+        return None
     if _mutation_pending(identity):
         LOG.debug("Ignoring duplicate Watchlist mutation for %s", identity)
-        return False
-    request_id, previous_state = _begin(identity, _state_name(_desired_state(api_type)))
-    success, observed_state = change(api_type, rating_key)
+        return None
+    request_id, previous_state = _begin(identity, desired)
     if request_id is None:
-        if not success:
-            notify_error()
-        return success
+        _clear_optimistic_projection(identity)
+        return None
+    request = dict(params)
+    request.update(
+        {
+            "desired": desired,
+            "watchlist_identity": identity,
+            "request_id": request_id,
+            "previous_state": previous_state,
+        }
+    )
+    return request
+
+
+def begin_key(params, desired):
+    """Project a detail mutation immediately and return its worker payload."""
+    rating_key = plex_discover.normalize_rating_key(params.get("rating_key"))
+    identity = _identity_for_key(params)
+    if rating_key is None or identity is None:
+        _clear_current_optimistic_projection()
+        notify_error()
+        return None
+    return _begin_detail_request({"rating_key": rating_key}, desired, identity)
+
+
+def begin_tmdb(params, desired):
+    """Project an exact-TMDb detail mutation without performing network I/O."""
+    identity = _identity_for_tmdb(params)
+    if identity is None:
+        _clear_current_optimistic_projection()
+        notify_error("Plex could not uniquely match this TMDb item for Watchlist.")
+        return None
+    tmdb_type = params.get("tmdb_type") or params.get("plex_type")
+    return _begin_detail_request(
+        {"tmdb_id": params.get("tmdb_id"), "tmdb_type": tmdb_type},
+        desired,
+        identity,
+    )
+
+
+def _complete_detail_request(
+    api_type, identity, request_id, previous_state, rating_key
+):
+    if not _worker_request_is_current(identity, request_id):
+        LOG.debug("Ignoring stale Watchlist worker request for %s", identity)
+        return False
+    success, observed_state = change(api_type, rating_key)
     if success:
-        _project_mutation(identity, request_id, observed_state)
-        return True
-    _project_failure(identity, request_id, observed_state, previous_state)
-    notify_error()
+        return _project_mutation(identity, request_id, observed_state)
+    if _project_failure(identity, request_id, observed_state, previous_state):
+        notify_error()
     return False
 
 
-def set_key(params, desired):
-    """Optimistically update a direct Plex Discover item, then verify it."""
-    api_type = {"present": "addToWatchlist", "absent": "removeFromWatchlist"}.get(
-        desired
+def _detail_request_parts(params, identity):
+    request_id = params.get("request_id")
+    previous_state = params.get("previous_state")
+    desired = params.get("desired")
+    api_type = _api_type_for_desired(desired)
+    if api_type is None or not _worker_request_is_current(identity, request_id):
+        return None
+    return api_type, request_id, previous_state
+
+
+def complete_key(params):
+    """Verify and finish a previously projected rating-key detail mutation."""
+    identity = _identity_for_key(params)
+    if identity is None or params.get("watchlist_identity") != identity:
+        return False
+    request = _detail_request_parts(params, identity)
+    rating_key = plex_discover.normalize_rating_key(params.get("rating_key"))
+    if request is None or rating_key is None:
+        return False
+    api_type, request_id, previous_state = request
+    return _complete_detail_request(
+        api_type, identity, request_id, previous_state, rating_key
     )
+
+
+def complete_tmdb(params):
+    """Resolve, verify, and finish a previously projected TMDb detail mutation."""
+    identity = _identity_for_tmdb(params)
+    if identity is None or params.get("watchlist_identity") != identity:
+        return False
+    request = _detail_request_parts(params, identity)
+    if request is None:
+        return False
+    api_type, request_id, previous_state = request
+    rating_key = _rating_key_for_tmdb(params, identity)
+    if rating_key is None:
+        if _project_failure(identity, request_id, None, previous_state):
+            notify_error("Plex could not uniquely match this TMDb item for Watchlist.")
+        return False
+    return _complete_detail_request(
+        api_type, identity, request_id, previous_state, rating_key
+    )
+
+
+def _legacy_change(api_type, rating_key):
+    """Keep non-detail callers on the prior verified synchronous contract."""
+    success, _ = change(api_type, rating_key)
+    if not success:
+        notify_error()
+    return success
+
+
+def set_key(params, desired):
+    """Synchronously update a direct item for legacy callers."""
+    api_type = _api_type_for_desired(desired)
+    rating_key = plex_discover.normalize_rating_key(params.get("rating_key"))
+    identity = _identity_for_key(params)
     if api_type is None:
         return False
-    rating_key = plex_discover.normalize_rating_key(params.get("rating_key"))
-    return _set(api_type, params, _identity_for_key(params), rating_key)
+    if rating_key is None or identity is None:
+        notify_error()
+        return False
+    if utils.window(DETAIL_IDENTITY) != identity:
+        return _legacy_change(api_type, rating_key)
+    request = begin_key(params, desired)
+    return complete_key(request) if request is not None else False
 
 
 def set_tmdb(params, desired):
-    """Optimistically update an exact TMDb item, then verify Plex membership."""
-    api_type = {"present": "addToWatchlist", "absent": "removeFromWatchlist"}.get(
-        desired
-    )
+    """Synchronously update a TMDb item for legacy callers."""
+    api_type = _api_type_for_desired(desired)
     if api_type is None:
         return False
     identity = _identity_for_tmdb(params)
     if identity is None:
         notify_error("Plex could not uniquely match this TMDb item for Watchlist.")
         return False
-    if _mutation_pending(identity):
-        LOG.debug("Ignoring duplicate Watchlist mutation for %s", identity)
-        return False
-    request_id, previous_state = _begin(identity, desired)
-    rating_key = _rating_key_for_tmdb(params, identity)
-    if rating_key is None:
-        if request_id is not None:
-            _project_failure(identity, request_id, None, previous_state)
-        notify_error("Plex could not uniquely match this TMDb item for Watchlist.")
-        return False
-    success, observed_state = change(api_type, rating_key)
-    if request_id is None:
-        if not success:
-            notify_error()
-        return success
-    if success:
-        _project_mutation(identity, request_id, observed_state)
-        return True
-    _project_failure(identity, request_id, observed_state, previous_state)
-    notify_error()
-    return False
+    if utils.window(DETAIL_IDENTITY) != identity:
+        rating_key = _rating_key_for_tmdb(params, identity)
+        if rating_key is None:
+            notify_error("Plex could not uniquely match this TMDb item for Watchlist.")
+            return False
+        return _legacy_change(api_type, rating_key)
+    request = begin_tmdb(params, desired)
+    return complete_tmdb(request) if request is not None else False
 
 
 def _capture_status(identity):
@@ -435,6 +578,7 @@ def _capture_status(identity):
     if (
         utils.window(DETAIL_IDENTITY) != identity
         or utils.window(DETAIL_PENDING)
+        or _optimistic_projection_active(identity)
         or utils.window(DETAIL_REVISION) != mutation_revision
     ):
         return None
@@ -453,6 +597,7 @@ def _project_status(identity, status_revision, mutation_revision, observed_state
         or utils.window(DETAIL_STATUS_REVISION) != status_revision
         or utils.window(DETAIL_REVISION) != mutation_revision
         or utils.window(DETAIL_PENDING)
+        or _optimistic_projection_active(identity)
     ):
         return False
     _remember_state(identity, state_name)

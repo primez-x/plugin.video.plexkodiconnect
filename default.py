@@ -7,10 +7,30 @@ import xbmc
 import xbmcgui
 import xbmcplugin
 
-from resources.lib import entrypoint, utils, transfer, variables as v, watchlist, loghandler
+from resources.lib import utils, transfer, variables as v, watchlist, loghandler
 
 loghandler.config()
 LOG = logging.getLogger("PLEX.default")
+
+
+WATCHLIST_ACTION_MODES = frozenset(
+    (
+        "watchlist_add_key",
+        "watchlist_remove_key",
+        "watchlist_add_tmdb",
+        "watchlist_remove_tmdb",
+        "watchlist_status_key",
+        "watchlist_status_tmdb",
+        "watchlist_status_monitor",
+        "watchlist_add_search",
+        "watchlist_remove_search",
+    )
+)
+
+
+def _enqueue_watchlist_detail(command, request):
+    if request is not None:
+        transfer.plex_command("%s?%s" % (command, urlencode(request)))
 
 
 def triage(mode, params, path, arguments, itemid):
@@ -79,16 +99,24 @@ def triage(mode, params, path, arguments, itemid):
         transfer.plex_command("fanart-scan")
         return
     elif mode == "watchlist_add_key":
-        watchlist.set_key(params, "present")
+        _enqueue_watchlist_detail(
+            "WATCHLIST_DETAIL_KEY", watchlist.begin_key(params, "present")
+        )
         return
     elif mode == "watchlist_remove_key":
-        watchlist.set_key(params, "absent")
+        _enqueue_watchlist_detail(
+            "WATCHLIST_DETAIL_KEY", watchlist.begin_key(params, "absent")
+        )
         return
     elif mode == "watchlist_add_tmdb":
-        watchlist.set_tmdb(params, "present")
+        _enqueue_watchlist_detail(
+            "WATCHLIST_DETAIL_TMDB", watchlist.begin_tmdb(params, "present")
+        )
         return
     elif mode == "watchlist_remove_tmdb":
-        watchlist.set_tmdb(params, "absent")
+        _enqueue_watchlist_detail(
+            "WATCHLIST_DETAIL_TMDB", watchlist.begin_tmdb(params, "absent")
+        )
         return
     elif mode == "watchlist_status_key":
         watchlist.bootstrap_status_key(params)
@@ -102,14 +130,19 @@ def triage(mode, params, path, arguments, itemid):
         transfer.plex_command("WATCHLIST_STATUS_MONITOR")
         return
     elif mode == "discover_detail":
+        from resources.lib import entrypoint
+
         entrypoint.discover_detail(params.get("rating_key"))
         return
     elif mode == "watchlist_add_search":
-        watchlist.set_tmdb(params, "present")
+        transfer.plex_command("WATCHLIST_ADD_SEARCH?%s" % urlencode(params))
         return
     elif mode == "watchlist_remove_search":
-        watchlist.set_tmdb(params, "absent")
+        transfer.plex_command("WATCHLIST_REMOVE_SEARCH?%s" % urlencode(params))
         return
+
+    from resources.lib import entrypoint
+
     # Listings: we list ListItems and need to tell Kodi when we're done
     try:
         if mode == "browseplex":
@@ -209,17 +242,17 @@ def main():
     path = argv[0]
     arguments = argv[2]
     itemid = params.get("id", "")
+    if mode not in WATCHLIST_ACTION_MODES:
+        v.database_paths()
     triage(mode, params, path, arguments, itemid)
 
 
 if __name__ == "__main__":
     LOG.info("%s started" % v.ADDON_ID)
     try:
-        v.database_paths()
+        main()
     except RuntimeError as err:
         # Database does not exists
         LOG.error("The current Kodi version is incompatible")
         LOG.error("Error: %s", err)
-    else:
-        main()
     LOG.info("%s stopped" % v.ADDON_ID)

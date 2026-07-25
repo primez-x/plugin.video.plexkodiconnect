@@ -303,6 +303,14 @@ class Service(object):
         return watchlist.status_monitor()
 
 
+    def watchlist_detail_key(self, raw_params):
+        return watchlist.complete_key(dict(utils.parse_qsl(raw_params)))
+
+
+    def watchlist_detail_tmdb(self, raw_params):
+        return watchlist.complete_tmdb(dict(utils.parse_qsl(raw_params)))
+
+
     def watchlist_remove(self, raw_params):
         return self.watchlist_modify("removeFromWatchlist", raw_params)
 
@@ -684,6 +692,18 @@ class Service(object):
                         self.watchlist_remove,
                         None,
                         plex_command.replace("WATCHLIST_REMOVE?", ""),
+                    )
+                elif plex_command.startswith("WATCHLIST_DETAIL_KEY?"):
+                    task = backgroundthread.FunctionAsTask(
+                        self.watchlist_detail_key,
+                        None,
+                        plex_command.replace("WATCHLIST_DETAIL_KEY?", ""),
+                    )
+                elif plex_command.startswith("WATCHLIST_DETAIL_TMDB?"):
+                    task = backgroundthread.FunctionAsTask(
+                        self.watchlist_detail_tmdb,
+                        None,
+                        plex_command.replace("WATCHLIST_DETAIL_TMDB?", ""),
                     )
                 elif plex_command.startswith("WATCHLIST_ADD_KEY?"):
                     task = backgroundthread.FunctionAsTask(

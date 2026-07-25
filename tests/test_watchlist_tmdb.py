@@ -3,7 +3,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlencode
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -355,6 +355,133 @@ class TmdbWatchlistTests(unittest.TestCase):
         self.assertEqual(properties[watchlist.DETAIL_STATE], "present")
         self.assertEqual(notifications, [])
 
+    def test_detail_tmdb_worker_runs_after_the_foreground_projection(self):
+        service_entry, _, notifications, properties = load_service_entry()
+        watchlist = service_entry.watchlist
+        identity = "tmdb.movie.603"
+        properties[watchlist.DETAIL_IDENTITY] = identity
+        properties[watchlist.DETAIL_OPTIMISTIC_STATE] = "present"
+
+        request = watchlist.begin_tmdb(
+            {"tmdb_id": "603", "tmdb_type": "movie"}, "present"
+        )
+
+        self.assertEqual(request["watchlist_identity"], identity)
+        self.assertEqual(request["desired"], "present")
+        self.assertEqual(properties[watchlist.DETAIL_STATE], "present")
+        self.assertEqual(properties[watchlist.DETAIL_PENDING], request["request_id"])
+        self.assertEqual(properties[watchlist.DETAIL_OPTIMISTIC_STATE], "present")
+
+        downloader = DownloadRecorder(
+            [
+                FakeResponse(self._metadata_payload()),
+                FakeResponse(self._watchlist_state_payload(self.MOVIE_KEY, False)),
+                FakeResponse(),
+                FakeResponse(self._watchlist_state_payload(self.MOVIE_KEY, True)),
+            ]
+        )
+        watchlist.downloadutils.DownloadUtils = lambda: downloader
+
+        self.assertTrue(
+            service_entry.Service.watchlist_detail_tmdb(
+                service_proxy(service_entry), urlencode(request)
+            )
+        )
+        self.assertEqual(len(downloader.calls), 4)
+        self.assertEqual(properties[watchlist.DETAIL_STATE], "present")
+        self.assertNotIn(watchlist.DETAIL_PENDING, properties)
+        self.assertNotIn(watchlist.DETAIL_OPTIMISTIC_STATE, properties)
+        self.assertEqual(notifications, [])
+
+    def test_detail_worker_commits_after_the_detail_dialog_closes(self):
+        service_entry, _, notifications, properties = load_service_entry()
+        watchlist = service_entry.watchlist
+        identity = "plex.%s" % self.THE_ODYSSEY_KEY
+        properties[watchlist.DETAIL_IDENTITY] = identity
+        properties[watchlist.DETAIL_OPTIMISTIC_STATE] = "present"
+        properties[watchlist.DETAIL_OPTIMISTIC_IDENTITY] = identity
+        request = watchlist.begin_key(
+            {"rating_key": self.THE_ODYSSEY_KEY}, "present"
+        )
+        for property_name in (
+            watchlist.DETAIL_IDENTITY,
+            watchlist.DETAIL_STATE,
+            watchlist.DETAIL_PREVIOUS_STATE,
+            watchlist.DETAIL_PENDING,
+            watchlist.DETAIL_REQUEST_ID,
+            watchlist.DETAIL_REVISION,
+            watchlist.DETAIL_OPTIMISTIC_STATE,
+            watchlist.DETAIL_OPTIMISTIC_IDENTITY,
+        ):
+            properties.pop(property_name, None)
+        changed = []
+        watchlist.change = lambda *args: changed.append(args) or (True, True)
+
+        self.assertTrue(watchlist.complete_key(request))
+        self.assertEqual(
+            changed, [("addToWatchlist", self.THE_ODYSSEY_KEY)]
+        )
+        self.assertEqual(
+            properties[watchlist._item_state_property(identity)], "present"
+        )
+        self.assertNotIn(
+            watchlist._item_mutation_request_property(identity), properties
+        )
+        self.assertNotIn(watchlist.DETAIL_STATE, properties)
+        self.assertEqual(notifications, [])
+
+    def test_newer_detail_request_supersedes_a_queued_worker(self):
+        service_entry, _, notifications, properties = load_service_entry()
+        watchlist = service_entry.watchlist
+        identity = "plex.%s" % self.THE_ODYSSEY_KEY
+        properties[watchlist.DETAIL_IDENTITY] = identity
+        first_request = watchlist.begin_key(
+            {"rating_key": self.THE_ODYSSEY_KEY}, "present"
+        )
+        for property_name in (
+            watchlist.DETAIL_IDENTITY,
+            watchlist.DETAIL_STATE,
+            watchlist.DETAIL_PREVIOUS_STATE,
+            watchlist.DETAIL_PENDING,
+            watchlist.DETAIL_REQUEST_ID,
+            watchlist.DETAIL_REVISION,
+        ):
+            properties.pop(property_name, None)
+        properties[watchlist.DETAIL_IDENTITY] = identity
+        second_request = watchlist.begin_key(
+            {"rating_key": self.THE_ODYSSEY_KEY}, "absent"
+        )
+        changed = []
+        watchlist.change = lambda *args: changed.append(args) or (True, False)
+
+        self.assertFalse(watchlist.complete_key(first_request))
+        self.assertTrue(watchlist.complete_key(second_request))
+        self.assertEqual(
+            changed, [("removeFromWatchlist", self.THE_ODYSSEY_KEY)]
+        )
+        self.assertEqual(
+            properties[watchlist._item_state_property(identity)], "absent"
+        )
+        self.assertEqual(notifications, [])
+
+    def test_detail_worker_failure_reverts_and_clears_skin_projection(self):
+        service_entry, _, notifications, properties = load_service_entry()
+        watchlist = service_entry.watchlist
+        identity = "plex.%s" % self.THE_ODYSSEY_KEY
+        properties[watchlist.DETAIL_IDENTITY] = identity
+        properties[watchlist.DETAIL_STATE] = "absent"
+        properties[watchlist.DETAIL_OPTIMISTIC_STATE] = "present"
+        request = watchlist.begin_key(
+            {"rating_key": self.THE_ODYSSEY_KEY}, "present"
+        )
+        watchlist.change = lambda api_type, rating_key: (False, None)
+
+        self.assertFalse(watchlist.complete_key(request))
+        self.assertEqual(properties[watchlist.DETAIL_STATE], "absent")
+        self.assertNotIn(watchlist.DETAIL_PENDING, properties)
+        self.assertNotIn(watchlist.DETAIL_OPTIMISTIC_STATE, properties)
+        self.assertEqual(notifications[0][0][2], "Plex Watchlist could not be updated.")
+
     def test_duplicate_mutation_is_ignored_while_the_detail_is_pending(self):
         service_entry, _, notifications, properties = load_service_entry()
         watchlist = service_entry.watchlist
@@ -375,6 +502,64 @@ class TmdbWatchlistTests(unittest.TestCase):
             watchlist.set_tmdb({"tmdb_id": "603", "tmdb_type": "movie"}, "present")
         )
         self.assertEqual(changed, [])
+        self.assertEqual(notifications, [])
+
+    def test_declined_begin_clears_only_its_matching_skin_projection(self):
+        service_entry, _, notifications, properties = load_service_entry()
+        watchlist = service_entry.watchlist
+        identity = "plex.%s" % self.THE_ODYSSEY_KEY
+        properties[watchlist.DETAIL_IDENTITY] = "plex.newer-item"
+        properties[watchlist.DETAIL_OPTIMISTIC_STATE] = "present"
+        properties[watchlist.DETAIL_OPTIMISTIC_IDENTITY] = identity
+
+        self.assertIsNone(
+            watchlist.begin_key({"rating_key": self.THE_ODYSSEY_KEY}, "present")
+        )
+        self.assertNotIn(watchlist.DETAIL_OPTIMISTIC_STATE, properties)
+        self.assertNotIn(watchlist.DETAIL_OPTIMISTIC_IDENTITY, properties)
+        self.assertEqual(notifications, [])
+
+    def test_duplicate_begin_keeps_the_active_skin_projection(self):
+        service_entry, _, notifications, properties = load_service_entry()
+        watchlist = service_entry.watchlist
+        identity = "plex.%s" % self.THE_ODYSSEY_KEY
+        properties[watchlist.DETAIL_IDENTITY] = identity
+        properties[watchlist.DETAIL_PENDING] = "in-flight"
+        properties[watchlist.DETAIL_OPTIMISTIC_STATE] = "present"
+        properties[watchlist.DETAIL_OPTIMISTIC_IDENTITY] = identity
+
+        self.assertIsNone(
+            watchlist.begin_key({"rating_key": self.THE_ODYSSEY_KEY}, "present")
+        )
+        self.assertEqual(properties[watchlist.DETAIL_OPTIMISTIC_STATE], "present")
+        self.assertEqual(properties[watchlist.DETAIL_OPTIMISTIC_IDENTITY], identity)
+        self.assertEqual(notifications, [])
+
+    def test_legacy_set_key_mutates_without_an_active_detail(self):
+        service_entry, _, notifications, _ = load_service_entry()
+        watchlist = service_entry.watchlist
+        changed = []
+        watchlist.change = lambda *args: changed.append(args) or (True, True)
+
+        self.assertTrue(
+            watchlist.set_key({"rating_key": self.THE_ODYSSEY_KEY}, "present")
+        )
+        self.assertEqual(
+            changed, [("addToWatchlist", self.THE_ODYSSEY_KEY)]
+        )
+        self.assertEqual(notifications, [])
+
+    def test_legacy_set_tmdb_mutates_without_an_active_detail(self):
+        service_entry, _, notifications, _ = load_service_entry()
+        watchlist = service_entry.watchlist
+        changed = []
+        watchlist.discover_tmdb_ratingkey = lambda tmdb_id, tmdb_type: self.MOVIE_KEY
+        watchlist.change = lambda *args: changed.append(args) or (True, True)
+
+        self.assertTrue(
+            watchlist.set_tmdb({"tmdb_id": "603", "tmdb_type": "movie"}, "present")
+        )
+        self.assertEqual(changed, [("addToWatchlist", self.MOVIE_KEY)])
         self.assertEqual(notifications, [])
 
     def test_action_marks_the_detail_pending_before_its_revision(self):
@@ -424,6 +609,26 @@ class TmdbWatchlistTests(unittest.TestCase):
         self.assertLess(
             reads.index(watchlist.DETAIL_REVISION),
             reads.index(watchlist.DETAIL_PENDING),
+        )
+
+    def test_status_probe_cannot_overwrite_the_skin_optimistic_projection(self):
+        service_entry, _, _, properties = load_service_entry()
+        watchlist = service_entry.watchlist
+        identity = "tmdb.movie.603"
+        properties[watchlist.DETAIL_IDENTITY] = identity
+        properties[watchlist.DETAIL_REVISION] = "before-action"
+        properties[watchlist.DETAIL_OPTIMISTIC_STATE] = "present"
+
+        self.assertIsNone(watchlist._capture_status(identity))
+
+        properties.pop(watchlist.DETAIL_OPTIMISTIC_STATE)
+        status_revision, mutation_revision = watchlist._capture_status(identity)
+        properties[watchlist.DETAIL_OPTIMISTIC_STATE] = "present"
+
+        self.assertFalse(
+            watchlist._project_status(
+                identity, status_revision, mutation_revision, False
+            )
         )
 
     def test_status_probe_cannot_overwrite_a_newer_mutation(self):

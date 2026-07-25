@@ -3,6 +3,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
+from urllib.parse import parse_qsl
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -55,6 +56,22 @@ def load_default_entrypoint():
     watchlist.set_key = lambda params, desired: commands.append(
         ('watchlist_key', dict(params), desired)
     )
+    watchlist.begin_key = lambda params, desired: {
+        'rating_key': params.get('rating_key'),
+        'desired': desired,
+        'watchlist_identity': 'plex.%s' % params.get('rating_key'),
+        'request_id': 'request-id',
+        'previous_state': 'absent',
+    }
+    watchlist.begin_tmdb = lambda params, desired: {
+        'tmdb_id': params.get('tmdb_id'),
+        'tmdb_type': params.get('tmdb_type'),
+        'desired': desired,
+        'watchlist_identity': 'tmdb.%s.%s'
+        % (params.get('tmdb_type'), params.get('tmdb_id')),
+        'request_id': 'request-id',
+        'previous_state': 'absent',
+    }
     watchlist.status_tmdb = commands.append
     watchlist.status_key = commands.append
     watchlist.status_monitor = lambda: commands.append('watchlist_monitor')
@@ -68,6 +85,7 @@ def load_default_entrypoint():
 
     variables = types.ModuleType('resources.lib.variables')
     variables.ADDON_ID = 'plugin.video.plexkodiconnect'
+    variables.database_paths = lambda: commands.append('database_paths')
     sys.modules['resources.lib.variables'] = variables
 
     module = importlib.import_module('default')
@@ -83,7 +101,7 @@ class SkipMarkerEntrypointTests(unittest.TestCase):
 
         self.assertEqual(commands, ['skip-marker'])
 
-    def test_tmdb_watchlist_mode_uses_the_direct_verified_worker(self):
+    def test_tmdb_watchlist_mode_begins_then_enqueues_the_verified_worker(self):
         default, commands = load_default_entrypoint()
 
         default.triage(
@@ -94,9 +112,47 @@ class SkipMarkerEntrypointTests(unittest.TestCase):
             '',
         )
 
+        self.assertEqual(len(commands), 1)
+        command, _, raw_params = commands[0].partition('?')
+        self.assertEqual(command, 'WATCHLIST_DETAIL_TMDB')
         self.assertEqual(
-            commands,
-            [('watchlist_tmdb', {'tmdb_id': '603', 'tmdb_type': 'movie'}, 'present')],
+            dict(parse_qsl(raw_params)),
+            {
+                'tmdb_id': '603',
+                'tmdb_type': 'movie',
+                'desired': 'present',
+                'watchlist_identity': 'tmdb.movie.603',
+                'request_id': 'request-id',
+                'previous_state': 'absent',
+            },
+        )
+
+    def test_watchlist_action_bypasses_database_initialization(self):
+        default, commands = load_default_entrypoint()
+        default.argv = [
+            'plugin://plugin.video.plexkodiconnect',
+            '-1',
+            '?mode=watchlist_add_tmdb&tmdb_id=603&tmdb_type=movie',
+        ]
+
+        default.main()
+
+        self.assertNotIn('database_paths', commands)
+        self.assertEqual(commands[0].partition('?')[0], 'WATCHLIST_DETAIL_TMDB')
+
+    def test_legacy_search_watchlist_mode_keeps_its_service_command(self):
+        default, commands = load_default_entrypoint()
+
+        default.triage(
+            'watchlist_add_search',
+            {'tmdb_id': '603', 'tmdb_type': 'movie'},
+            '',
+            '',
+            '',
+        )
+
+        self.assertEqual(
+            commands, ['WATCHLIST_ADD_SEARCH?tmdb_id=603&tmdb_type=movie']
         )
 
     def test_watchlist_status_modes_enqueue_the_service_worker(self):
