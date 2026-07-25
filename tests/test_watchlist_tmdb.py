@@ -355,6 +355,28 @@ class TmdbWatchlistTests(unittest.TestCase):
         self.assertEqual(properties[watchlist.DETAIL_STATE], "present")
         self.assertEqual(notifications, [])
 
+    def test_duplicate_mutation_is_ignored_while_the_detail_is_pending(self):
+        service_entry, _, notifications, properties = load_service_entry()
+        watchlist = service_entry.watchlist
+        direct_identity = "plex.%s" % self.THE_ODYSSEY_KEY
+        tmdb_identity = "tmdb.movie.603"
+        properties[watchlist.DETAIL_IDENTITY] = direct_identity
+        properties[watchlist.DETAIL_PENDING] = "in-flight"
+        changed = []
+        watchlist.change = lambda *args: changed.append(args) or (True, True)
+
+        self.assertFalse(
+            watchlist.set_key({"rating_key": self.THE_ODYSSEY_KEY}, "present")
+        )
+        self.assertEqual(changed, [])
+
+        properties[watchlist.DETAIL_IDENTITY] = tmdb_identity
+        self.assertFalse(
+            watchlist.set_tmdb({"tmdb_id": "603", "tmdb_type": "movie"}, "present")
+        )
+        self.assertEqual(changed, [])
+        self.assertEqual(notifications, [])
+
     def test_action_marks_the_detail_pending_before_its_revision(self):
         service_entry, _, _, properties = load_service_entry()
         watchlist = service_entry.watchlist

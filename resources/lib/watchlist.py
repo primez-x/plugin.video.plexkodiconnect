@@ -314,6 +314,14 @@ def _state_name(value):
     return None
 
 
+def _mutation_pending(identity):
+    return bool(
+        identity
+        and utils.window(DETAIL_IDENTITY) == identity
+        and utils.window(DETAIL_PENDING)
+    )
+
+
 def _project_mutation(identity, request_id, observed_state):
     state_name = _state_name(observed_state)
     if identity is None or state_name is None:
@@ -358,6 +366,9 @@ def _set(api_type, params, identity, rating_key):
     if identity is None or rating_key is None:
         notify_error()
         return False
+    if _mutation_pending(identity):
+        LOG.debug("Ignoring duplicate Watchlist mutation for %s", identity)
+        return False
     request_id, previous_state = _begin(identity, _state_name(_desired_state(api_type)))
     success, observed_state = change(api_type, rating_key)
     if request_id is None:
@@ -393,6 +404,9 @@ def set_tmdb(params, desired):
     identity = _identity_for_tmdb(params)
     if identity is None:
         notify_error("Plex could not uniquely match this TMDb item for Watchlist.")
+        return False
+    if _mutation_pending(identity):
+        LOG.debug("Ignoring duplicate Watchlist mutation for %s", identity)
         return False
     request_id, previous_state = _begin(identity, desired)
     rating_key = _rating_key_for_tmdb(params, identity)
