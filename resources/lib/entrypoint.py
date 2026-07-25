@@ -19,6 +19,8 @@ from . import utils
 from . import clientinfo
 from . import path_ops
 from . import plex_discover
+from . import discover_cache
+from . import watchlist as watchlist_state
 from .downloadutils import DownloadUtils as DU
 from .plex_api import API, mass_api
 from . import plex_functions as PF
@@ -33,6 +35,9 @@ LOG = getLogger("PLEX.entrypoint")
 WATCHLIST_PAGE_SIZE = 100
 DISCOVER_REDIRECT_STATUS_CODES = (301, 302, 303, 307, 308)
 DISCOVER_DETAIL_TYPES = frozenset(("movie", "show"))
+DISCOVER_HUBS_CACHE_SECONDS = 300
+DISCOVER_HUB_CACHE_SECONDS = 120
+DISCOVER_DETAIL_CACHE_SECONDS = 300
 
 
 class ListingException(Exception):
@@ -51,8 +56,13 @@ def _provider_headers():
     )
 
 
-def _provider_xmls(url, allowed_redirect_hosts):
+def _provider_xmls(url, allowed_redirect_hosts, cache_seconds=0):
     """Download trusted provider XML, safely following bounded redirects."""
+    if cache_seconds:
+        cached_xmls = discover_cache.get_xml(url, cache_seconds)
+        if cached_xmls is not None:
+            LOG.debug("Using cached Plex Discover provider response for %s", url)
+            return cached_xmls
     downloader = DU()
     response = downloader.downloadUrl(
         url,
@@ -115,6 +125,8 @@ def _provider_xmls(url, allowed_redirect_hosts):
         except (TypeError, etree.ParseError):
             LOG.warning("Plex provider returned invalid XML for %s", url)
             return []
+    if cache_seconds:
+        discover_cache.put_xml(url, xmls)
     return xmls
 
 
@@ -664,6 +676,7 @@ def discover_hubs():
     xmls = _provider_xmls(
         "https://discover.provider.plex.tv/hubs/sections/home?includeMetadata=1",
         (plex_discover.DISCOVER_PROVIDER_HOST,),
+        DISCOVER_HUBS_CACHE_SECONDS,
     )
     if not xmls:
         LOG.error("Could not download discover hubs from plex.tv")
@@ -716,7 +729,11 @@ def discover_hub(hub_id):
         "https://discover.provider.plex.tv/hubs/sections/home/%s"
         "?includeMetadata=1&limit=20" % hub_id
     )
-    xmls = _provider_xmls(url, (plex_discover.DISCOVER_PROVIDER_HOST,))
+    xmls = _provider_xmls(
+        url,
+        (plex_discover.DISCOVER_PROVIDER_HOST,),
+        DISCOVER_HUB_CACHE_SECONDS,
+    )
     if not xmls:
         LOG.error("Could not download discover hub %s from plex.tv", hub_id)
         raise ListingException
@@ -747,33 +764,51 @@ def discover_hub(hub_id):
     widgets.SYNCHED = False
     widgets.SECTION_ID = None
     widgets.KEY = None
+    # Arctic Fuse opens the native information dialog directly from a hub
+    # tile, rather than first invoking that tile's discover_detail route.
+    # Resolve the provider GUID before emitting the tile so a synced library
+    # item carries its normal DBID and playable PKC path into that dialog.
+    # Keep the provider XML untouched: its opaque ratingKey remains the only
+    # valid identity for a provider-only Watchlist item.
+    local_apis_by_guid = {}
+    for local_api in mass_api(copy.deepcopy(metadata), check_by_guid=True):
+        local_guid = local_api.xml.get("guid")
+        if local_guid:
+            local_apis_by_guid.setdefault(local_guid, local_api)
     all_items = []
-    for api in mass_api(metadata):
+    for provider_api in mass_api(metadata):
+        child = provider_api.xml
+        local_api = local_apis_by_guid.get(child.get("guid"))
+        api = local_api or provider_api
         item = widgets.generate_item(api)
         if item is None:
             continue
-        child = api.xml
         rating_key = plex_discover.normalize_rating_key(child.get("ratingKey"))
         if rating_key is None:
             continue
-        # Keep the provider identity for direct Watchlist actions and route
-        # selection to native details rather than local-PMS playback.
+        # Keep the provider identity for direct Watchlist actions. A local
+        # match deliberately retains its native PKC playback route; only
+        # provider-only items need a detail route and a non-playable state.
         props = item.setdefault("extraproperties", {})
         props["ratingKey"] = rating_key
+        watchlist_hint = watchlist_state.provider_state_hint(child.get("userState"))
+        if watchlist_hint:
+            props[watchlist_state.DISCOVER_HINT_PROPERTY] = watchlist_hint
         guid = child.get("guid")
         if guid:
             props["plexguid"] = guid
         props["PlexDiscoverDetail"] = "true"
-        item["file"] = utils.extend_url(
-            "plugin://%s" % v.ADDON_ID,
-            {
-                "mode": "discover_detail",
-                "rating_key": rating_key,
-                "plex_type": api.plex_type,
-            },
-        )
-        item["isFolder"] = False
-        item["IsPlayable"] = "false"
+        if local_api is None:
+            item["file"] = utils.extend_url(
+                "plugin://%s" % v.ADDON_ID,
+                {
+                    "mode": "discover_detail",
+                    "rating_key": rating_key,
+                    "plex_type": provider_api.plex_type,
+                },
+            )
+            item["isFolder"] = False
+            item["IsPlayable"] = "false"
         all_items.append(item)
     all_items = [widgets.prepare_listitem(item) for item in all_items]
     all_items = [widgets.create_listitem(item) for item in all_items]
@@ -798,6 +833,7 @@ def discover_detail(rating_key):
     xmls = _provider_xmls(
         plex_discover.METADATA_ITEM_URL % rating_key,
         (plex_discover.METADATA_PROVIDER_HOST,),
+        DISCOVER_DETAIL_CACHE_SECONDS,
     )
     metadata = [
         child
@@ -829,6 +865,9 @@ def discover_detail(rating_key):
         return False
     props = item.setdefault("extraproperties", {})
     props["ratingKey"] = rating_key
+    watchlist_hint = watchlist_state.provider_state_hint(metadata[0].get("userState"))
+    if watchlist_hint:
+        props[watchlist_state.DISCOVER_HINT_PROPERTY] = watchlist_hint
     guid = metadata[0].get("guid")
     if guid:
         props["plexguid"] = guid

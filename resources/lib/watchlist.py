@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import xbmc
 
-from . import app, clientinfo, downloadutils, plex_discover, utils
+from . import app, clientinfo, discover_cache, downloadutils, plex_discover, utils
 
 
 LOG = getLogger("PLEX.watchlist")
@@ -23,6 +23,7 @@ WATCHLIST_HTTP_TIMEOUT = (3.0, 8.0)
 WATCHLIST_MONITOR_ATTEMPTS = 25
 WATCHLIST_MONITOR_SLEEP_MS = 200
 WATCHLIST_STATE_CACHE_SECONDS = 300
+DISCOVER_HINT_PROPERTY = "PlexWatchlistHint"
 
 DETAIL_IDENTITY = "PKC.Watchlist.Detail.Identity"
 DETAIL_STATE = "PKC.Watchlist.Detail.State"
@@ -179,6 +180,7 @@ def change(api_type, rating_key):
     with _lock(rating_key):
         current_state = state(rating_key)
         if current_state is desired_state:
+            discover_cache.invalidate()
             return True, current_state
 
         action_acknowledged = _action(api_type, rating_key)
@@ -186,6 +188,7 @@ def change(api_type, rating_key):
         for attempt in range(WATCHLIST_VERIFY_ATTEMPTS):
             observed_state = state(rating_key)
             if observed_state is desired_state:
+                discover_cache.invalidate()
                 return True, observed_state
             if attempt + 1 < WATCHLIST_VERIFY_ATTEMPTS:
                 xbmc.sleep(WATCHLIST_VERIFY_SLEEP_MS)
@@ -241,6 +244,14 @@ def _item_mutation_completed_property(identity):
     return "%s%s.MutationCompleted" % (ITEM_STATE_PREFIX, identity)
 
 
+def _item_mutation_marker(identity):
+    """Return the per-item mutation generation visible to status readers."""
+    return (
+        utils.window(_item_mutation_request_property(identity)),
+        utils.window(_item_mutation_completed_property(identity)),
+    )
+
+
 def _remember_state(identity, state_name):
     if identity is None or state_name not in ("present", "absent"):
         return
@@ -289,6 +300,41 @@ def _identity_for_key(params):
 def supports_key_watchlist(params):
     """Plex accepts Watchlist mutations only for movie and show metadata."""
     return plex_discover.normalize_tmdb_type(params.get("plex_type")) is not None
+
+
+def provider_state_hint(value):
+    """Normalize Plex Discover's non-authoritative ``userState`` hint."""
+    if value is None:
+        return None
+    return {
+        "1": "present",
+        "true": "present",
+        "0": "absent",
+        "false": "absent",
+    }.get(str(value).strip().lower())
+
+
+def seed_key_status_hint(params):
+    """Seed an unknown direct-item state without displacing a live mutation."""
+    identity = params.get("watchlist_identity") or _identity_for_key(params)
+    hint = provider_state_hint(params.get("watchlist_hint"))
+    if (
+        identity is None
+        or hint is None
+        or not supports_key_watchlist(params)
+        or _current_mutation_intent(identity) is not None
+        or utils.window(_item_state_property(identity)) in ("present", "absent")
+    ):
+        return False
+    # Do not allow a stale provider listing to replace the foreground's
+    # optimistic projection while a mutation is being published.
+    if (
+        utils.window(DETAIL_IDENTITY) == identity
+        and (utils.window(DETAIL_PENDING) or _optimistic_projection_active(identity))
+    ):
+        return False
+    _remember_state(identity, hint)
+    return True
 
 
 def _identity_for_tmdb(params):
@@ -747,6 +793,23 @@ def _project_cached_status(identity, status_revision, mutation_revision):
     )
 
 
+def _remember_status_if_current(identity, mutation_marker, observed_state):
+    """Warm the item cache after I/O without resurrecting a stale mutation."""
+    state_name = _state_name(observed_state)
+    if state_name is None or _item_mutation_marker(identity) != mutation_marker:
+        return False
+    # `_begin()` writes Pending before its item-level mutation marker.  This
+    # prevents a status response that races that short publication window from
+    # caching the pre-mutation server state.
+    if (
+        utils.window(DETAIL_IDENTITY) == identity
+        and utils.window(DETAIL_PENDING)
+    ):
+        return False
+    _remember_state(identity, state_name)
+    return True
+
+
 def _bootstrap_cached_status(identity):
     """Project a local state immediately, without delaying a dialog on I/O."""
     revision = _capture_status(identity)
@@ -760,6 +823,7 @@ def bootstrap_status_key(params):
     identity = params.get("watchlist_identity") or _identity_for_key(params)
     if identity is None:
         return False
+    seed_key_status_hint(params)
     return _bootstrap_cached_status(identity)
 
 
@@ -777,11 +841,15 @@ def status_key(params):
     rating_key = plex_discover.normalize_rating_key(params.get("rating_key"))
     if identity is None or rating_key is None or not supports_key_watchlist(params):
         return False
+    seed_key_status_hint(params)
     revision = _capture_status(identity)
     if revision is None:
         return False
+    mutation_marker = _item_mutation_marker(identity)
     _project_cached_status(identity, revision[0], revision[1])
-    return _project_status(identity, revision[0], revision[1], state(rating_key))
+    observed_state = state(rating_key)
+    _remember_status_if_current(identity, mutation_marker, observed_state)
+    return _project_status(identity, revision[0], revision[1], observed_state)
 
 
 def status_tmdb(params):
@@ -792,11 +860,14 @@ def status_tmdb(params):
     revision = _capture_status(identity)
     if revision is None:
         return False
+    mutation_marker = _item_mutation_marker(identity)
     _project_cached_status(identity, revision[0], revision[1])
     rating_key = _rating_key_for_tmdb(params, identity)
     if rating_key is None:
         return False
-    return _project_status(identity, revision[0], revision[1], state(rating_key))
+    observed_state = state(rating_key)
+    _remember_status_if_current(identity, mutation_marker, observed_state)
+    return _project_status(identity, revision[0], revision[1], observed_state)
 
 
 def _monitor_context():

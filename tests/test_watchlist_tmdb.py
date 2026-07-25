@@ -38,6 +38,7 @@ def load_service_entry():
         "xbmc",
         "xbmcvfs",
         "resources.lib.service_entry",
+        "resources.lib.discover_cache",
         "resources.lib.plex_discover",
         "resources.lib.utils",
         "resources.lib.clientinfo",
@@ -64,8 +65,10 @@ def load_service_entry():
         sys.modules.pop(module_name, None)
     sys.modules.pop("resources.lib.watchlist", None)
     resources_lib = sys.modules.get("resources.lib")
-    if resources_lib is not None and hasattr(resources_lib, "watchlist"):
-        delattr(resources_lib, "watchlist")
+    if resources_lib is not None:
+        for attribute in ("watchlist", "discover_cache"):
+            if hasattr(resources_lib, attribute):
+                delattr(resources_lib, attribute)
 
     xbmc = types.ModuleType("xbmc")
     xbmc.commands = []
@@ -1023,6 +1026,106 @@ class TmdbWatchlistTests(unittest.TestCase):
             notifications[0][0][2],
             "Plex could not uniquely match this TMDb item for Watchlist.",
         )
+
+    def test_status_response_warms_the_item_cache_after_the_detail_changes(self):
+        service_entry, _, _, properties = load_service_entry()
+        watchlist = service_entry.watchlist
+        identity = "plex.%s" % self.MOVIE_KEY
+        properties[watchlist.DETAIL_IDENTITY] = identity
+
+        def state_after_detail_closes(rating_key):
+            self.assertEqual(rating_key, self.MOVIE_KEY)
+            properties[watchlist.DETAIL_IDENTITY] = "plex.next-item"
+            return True
+
+        watchlist.state = state_after_detail_closes
+
+        self.assertFalse(
+            watchlist.status_key(
+                {"rating_key": self.MOVIE_KEY, "plex_type": "movie"}
+            )
+        )
+        self.assertEqual(
+            properties[watchlist._item_state_property(identity)], "present"
+        )
+
+    def test_provider_user_state_hint_bootstraps_a_direct_detail_without_network(self):
+        service_entry, _, _, properties = load_service_entry()
+        watchlist = service_entry.watchlist
+        identity = "plex.%s" % self.MOVIE_KEY
+        properties[watchlist.DETAIL_IDENTITY] = identity
+
+        self.assertTrue(
+            watchlist.bootstrap_status_key(
+                {
+                    "rating_key": self.MOVIE_KEY,
+                    "plex_type": "movie",
+                    "watchlist_hint": "1",
+                }
+            )
+        )
+        self.assertEqual(
+            properties[watchlist._item_state_property(identity)], "present"
+        )
+        self.assertEqual(watchlist.provider_state_hint("0"), "absent")
+        self.assertEqual(watchlist.provider_state_hint(0), "absent")
+        self.assertIsNone(watchlist.provider_state_hint("unrecognized"))
+
+    def test_provider_user_state_hint_cannot_replace_a_pending_mutation(self):
+        service_entry, _, _, properties = load_service_entry()
+        watchlist = service_entry.watchlist
+        identity = "plex.%s" % self.MOVIE_KEY
+        properties[watchlist.DETAIL_IDENTITY] = identity
+        watchlist.begin_key(
+            {"rating_key": self.MOVIE_KEY, "plex_type": "movie"}, "present"
+        )
+
+        self.assertFalse(
+            watchlist.seed_key_status_hint(
+                {
+                    "rating_key": self.MOVIE_KEY,
+                    "plex_type": "movie",
+                    "watchlist_hint": "0",
+                }
+            )
+        )
+        self.assertNotIn(watchlist._item_state_property(identity), properties)
+
+    def test_status_response_cannot_overwrite_a_mutation_that_started_during_io(self):
+        service_entry, _, _, properties = load_service_entry()
+        watchlist = service_entry.watchlist
+        identity = "plex.%s" % self.MOVIE_KEY
+        properties[watchlist.DETAIL_IDENTITY] = identity
+
+        def stale_state(rating_key):
+            self.assertEqual(rating_key, self.MOVIE_KEY)
+            watchlist.begin_key(
+                {"rating_key": self.MOVIE_KEY, "plex_type": "movie"}, "present"
+            )
+            return False
+
+        watchlist.state = stale_state
+
+        self.assertFalse(
+            watchlist.status_key(
+                {"rating_key": self.MOVIE_KEY, "plex_type": "movie"}
+            )
+        )
+        self.assertNotIn(watchlist._item_state_property(identity), properties)
+
+    def test_verified_watchlist_change_invalidates_discovery_rankings(self):
+        service_entry, _, _, _ = load_service_entry()
+        watchlist = service_entry.watchlist
+        invalidations = []
+        states = iter((False, True))
+        watchlist.state = lambda rating_key: next(states)
+        watchlist._action = lambda api_type, rating_key: True
+        watchlist.discover_cache.invalidate = lambda: invalidations.append(True)
+
+        self.assertEqual(
+            watchlist.change("addToWatchlist", self.MOVIE_KEY), (True, True)
+        )
+        self.assertEqual(invalidations, [True])
 
 
 if __name__ == "__main__":

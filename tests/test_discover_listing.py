@@ -18,6 +18,7 @@ def load_entrypoint():
         "xbmcgui",
         "xbmcplugin",
         "resources.lib.entrypoint",
+        "resources.lib.discover_cache",
         "resources.lib.utils",
         "resources.lib.clientinfo",
         "resources.lib.path_ops",
@@ -34,6 +35,8 @@ def load_entrypoint():
     if resources_lib is not None:
         for attribute in (
             "entrypoint",
+            "discover_cache",
+            "watchlist",
             "utils",
             "clientinfo",
             "path_ops",
@@ -49,6 +52,7 @@ def load_entrypoint():
                 delattr(resources_lib, attribute)
     for module_name in module_names:
         sys.modules.pop(module_name, None)
+    sys.modules.pop("resources.lib.watchlist", None)
 
     xbmc = types.ModuleType("xbmc")
     xbmc.sleep = lambda milliseconds: None
@@ -133,20 +137,89 @@ def load_entrypoint():
     return entrypoint, directory_calls, dialog_calls, mass_api_calls
 
 
-def provider_metadata(rating_key="abc123"):
+def provider_metadata(rating_key="abc123", user_state=None):
     root = ET.Element("MediaContainer")
-    ET.SubElement(
-        root,
-        "Video",
-        type="movie",
-        title="Provider Movie",
-        ratingKey=rating_key,
-        guid="plex://movie/%s" % rating_key,
-    )
+    attributes = {
+        "type": "movie",
+        "title": "Provider Movie",
+        "ratingKey": rating_key,
+        "guid": "plex://movie/%s" % rating_key,
+    }
+    if user_state is not None:
+        attributes["userState"] = str(user_state)
+    ET.SubElement(root, "Video", **attributes)
     return root
 
 
 class DiscoverListingTests(unittest.TestCase):
+    def test_provider_cache_returns_a_fresh_listing_without_a_network_request(self):
+        entrypoint, _, _, _ = load_entrypoint()
+        cached = [provider_metadata("cached")]
+        calls = []
+
+        class Cache(object):
+            @staticmethod
+            def get_xml(url, cache_seconds):
+                calls.append(("get", url, cache_seconds))
+                return cached
+
+            @staticmethod
+            def put_xml(url, xmls):
+                raise AssertionError("a cache hit must not be written or fetched")
+
+        entrypoint.discover_cache = Cache()
+
+        xmls = entrypoint._provider_xmls(
+            "https://discover.provider.plex.tv/hubs/sections/home/new-for-you",
+            ("discover.provider.plex.tv",),
+            120,
+        )
+
+        self.assertEqual(xmls, cached)
+        self.assertEqual(calls[0][0], "get")
+        self.assertEqual(calls[0][2], 120)
+
+    def test_provider_cache_miss_falls_back_to_network_then_stores_response(self):
+        entrypoint, _, _, _ = load_entrypoint()
+        stored = []
+
+        class Cache(object):
+            @staticmethod
+            def get_xml(url, cache_seconds):
+                return None
+
+            @staticmethod
+            def put_xml(url, xmls):
+                stored.append((url, list(xmls)))
+                return True
+
+        class Response(object):
+            status_code = 200
+            content = ET.tostring(provider_metadata("network"))
+            headers = {}
+
+        class Downloader(object):
+            calls = []
+
+            def downloadUrl(self, url, **kwargs):
+                self.calls.append((url, kwargs))
+                return Response()
+
+        downloader = Downloader()
+        entrypoint.discover_cache = Cache()
+        entrypoint.DU = lambda: downloader
+
+        xmls = entrypoint._provider_xmls(
+            "https://discover.provider.plex.tv/hubs/sections/home/new-for-you",
+            ("discover.provider.plex.tv",),
+            120,
+        )
+
+        self.assertEqual(len(downloader.calls), 1)
+        self.assertEqual(xmls[0][0].get("ratingKey"), "network")
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0][1][0][0].get("ratingKey"), "network")
+
     def test_provider_redirect_uses_one_bounded_batch_for_widget_latency(self):
         entrypoint, _, _, _ = load_entrypoint()
         services = ["service-%s" % index for index in range(41)]
@@ -204,7 +277,10 @@ class DiscoverListingTests(unittest.TestCase):
 
         entrypoint.discover_hub("new-for-you")
 
-        self.assertEqual(mass_api_calls, [([xml[0]], False)])
+        self.assertEqual(
+            [check_by_guid for _, check_by_guid in mass_api_calls],
+            [True, False],
+        )
         self.assertEqual(len(directory_calls), 1)
         _, items, _ = directory_calls[0]
         path, item, is_folder = items[0]
@@ -214,6 +290,22 @@ class DiscoverListingTests(unittest.TestCase):
         self.assertEqual(item["IsPlayable"], "false")
         self.assertEqual(item["extraproperties"]["ratingKey"], "abc123")
         self.assertEqual(item["extraproperties"]["PlexDiscoverDetail"], "true")
+
+    def test_hub_and_detail_publish_the_provider_watchlist_hint(self):
+        entrypoint, directory_calls, dialog_calls, _ = load_entrypoint()
+        xml = provider_metadata(user_state=0)
+        entrypoint._provider_xmls = lambda *args, **kwargs: [xml]
+
+        entrypoint.discover_hub("new-for-you")
+        _, items, _ = directory_calls[0]
+        self.assertEqual(
+            items[0][1]["extraproperties"]["PlexWatchlistHint"], "absent"
+        )
+
+        self.assertTrue(entrypoint.discover_detail("abc123"))
+        self.assertEqual(
+            dialog_calls[0]["extraproperties"]["PlexWatchlistHint"], "absent"
+        )
 
     def test_hub_filters_trailer_clips_before_detail_or_watchlist_actions(self):
         entrypoint, directory_calls, _, mass_api_calls = load_entrypoint()
@@ -230,10 +322,63 @@ class DiscoverListingTests(unittest.TestCase):
 
         entrypoint.discover_hub("new-for-you")
 
-        self.assertEqual(mass_api_calls, [([xml[0]], False)])
+        self.assertEqual(
+            [check_by_guid for _, check_by_guid in mass_api_calls],
+            [True, False],
+        )
         _, items, _ = directory_calls[0]
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0][1]["extraproperties"]["ratingKey"], "abc123")
+
+    def test_hub_prefers_an_exact_guid_library_match_for_native_playback(self):
+        entrypoint, directory_calls, _, _ = load_entrypoint()
+        xml = provider_metadata()
+        entrypoint._provider_xmls = lambda *args, **kwargs: [xml]
+
+        class LocalAPI(object):
+            plex_type = "movie"
+
+            def __init__(self):
+                self.xml = ET.Element(
+                    "Video",
+                    type="movie",
+                    title="Provider Movie",
+                    ratingKey="42",
+                    guid="plex://movie/abc123",
+                )
+
+        local_api = LocalAPI()
+        lookup_calls = []
+
+        def mass_api(metadata, check_by_guid=False):
+            lookup_calls.append(check_by_guid)
+            if check_by_guid:
+                return [local_api]
+            return [entrypoint.API(child) for child in metadata]
+
+        entrypoint.mass_api = mass_api
+        entrypoint.widgets.generate_item = lambda api: {
+            "title": api.xml.get("title"),
+            "label": api.xml.get("title"),
+            "type": api.plex_type,
+            "movieid": 42,
+            "file": "plugin://plugin.video.plexkodiconnect.movies/?plex_id=42&mode=play",
+            "extraproperties": {"DBID": "42"},
+        }
+
+        entrypoint.discover_hub("new-for-you")
+
+        self.assertEqual(lookup_calls, [True, False])
+        _, items, _ = directory_calls[0]
+        path, item, is_folder = items[0]
+        self.assertEqual(
+            path,
+            "plugin://plugin.video.plexkodiconnect.movies/?plex_id=42&mode=play",
+        )
+        self.assertFalse(is_folder)
+        self.assertNotEqual(item.get("IsPlayable"), "false")
+        self.assertEqual(item["extraproperties"]["DBID"], "42")
+        self.assertEqual(item["extraproperties"]["ratingKey"], "abc123")
 
     def test_detail_rejects_a_trailer_clip_without_building_a_dead_play_item(self):
         entrypoint, _, dialog_calls, mass_api_calls = load_entrypoint()
