@@ -524,6 +524,100 @@ def watchlist(section_id=None):
     show_listing(xml, None, section_id, False, "watchlist")
 
 
+def discover_hubs():
+    """
+    Listing for Plex Discover hub categories (if signed in to plex.tv)
+    """
+    _wait_for_auth()
+    if utils.window("plex_token") == "":
+        LOG.error("No discover hubs - not signed in to plex.tv")
+        raise ListingException
+    app.init(entrypoint=True)
+    xml = DU().downloadUrl(
+        "https://discover.provider.plex.tv/hubs/sections/home?includeMetadata=1",
+        authenticate=False,
+        headerOptions=clientinfo.getXArgsDeviceInfo(
+            {"X-Plex-Token": utils.window("plex_token")}, include_token=False
+        ),
+    )
+    try:
+        xml.attrib
+    except AttributeError:
+        LOG.error("Could not download discover hubs from plex.tv")
+        raise ListingException
+    xbmcplugin.setContent(int(sys.argv[1]), v.CONTENT_TYPE_FILE)
+    for hub in xml:
+        title = hub.get("title")
+        hub_identifier = hub.get("hubIdentifier")
+        if not title or not hub_identifier:
+            continue
+        if not utils.cast(int, hub.get("size")):
+            continue
+        path = "plugin://%s/?mode=discover_hub&hub_id=%s" % (
+            v.ADDON_ID,
+            hub_identifier,
+        )
+        directory_item(title, path)
+    xbmcplugin.addSortMethod(int(sys.argv[1]), xbmcplugin.SORT_METHOD_UNSORTED)
+
+
+def discover_hub(hub_id):
+    """
+    Listing for a specific Plex Discover hub (if signed in to plex.tv)
+    """
+    _wait_for_auth()
+    if utils.window("plex_token") == "":
+        LOG.error("No discover hub - not signed in to plex.tv")
+        raise ListingException
+    app.init(entrypoint=True)
+    url = (
+        "https://discover.provider.plex.tv/hubs/sections/home/%s"
+        "?includeMetadata=1&limit=20" % hub_id
+    )
+    xml = DU().downloadUrl(
+        url,
+        authenticate=False,
+        headerOptions=clientinfo.getXArgsDeviceInfo(
+            {"X-Plex-Token": utils.window("plex_token")}, include_token=False
+        ),
+    )
+    try:
+        xml.attrib
+    except AttributeError:
+        LOG.error("Could not download discover hub %s from plex.tv", hub_id)
+        raise ListingException
+    # Filter out placeholder items (spacers)
+    metadata = [child for child in xml if child.get("type") != "placeholder"]
+    if not metadata:
+        LOG.info("No items in discover hub %s", hub_id)
+        return
+    # Determine content type from first item
+    first_api = API(metadata[0])
+    plex_type = first_api.plex_type
+    content_type = v.CONTENT_FROM_PLEX_TYPE.get(plex_type, v.CONTENT_TYPE_FILE)
+    xbmcplugin.setContent(int(sys.argv[1]), content_type)
+    widgets.PLEX_TYPE = plex_type
+    widgets.SYNCHED = False
+    widgets.SECTION_ID = None
+    widgets.KEY = None
+    all_items = []
+    for child in metadata:
+        api = API(child)
+        item = widgets.generate_item(api)
+        if item is None:
+            continue
+        # Set ratingKey property so watchlist context menu items work for
+        # non-library (discover) items
+        rating_key = child.get("ratingKey")
+        if rating_key:
+            item.setdefault("extraproperties", {})["ratingKey"] = rating_key
+        all_items.append(item)
+    all_items = [widgets.prepare_listitem(item) for item in all_items]
+    all_items = [widgets.create_listitem(item) for item in all_items]
+    xbmcplugin.addDirectoryItems(int(sys.argv[1]), all_items, len(all_items))
+    xbmcplugin.addSortMethod(int(sys.argv[1]), xbmcplugin.SORT_METHOD_UNSORTED)
+
+
 def browse_plex(
     key=None,
     plex_type=None,
