@@ -532,6 +532,9 @@ def discover_hubs():
     if utils.window("plex_token") == "":
         LOG.error("No discover hubs - not signed in to plex.tv")
         raise ListingException
+    if utils.window("plex_restricteduser") == "true":
+        LOG.error("No discover hubs - restricted user")
+        raise ListingException
     app.init(entrypoint=True)
     xml = DU().downloadUrl(
         "https://discover.provider.plex.tv/hubs/sections/home?includeMetadata=1",
@@ -548,14 +551,18 @@ def discover_hubs():
     xbmcplugin.setContent(int(sys.argv[1]), v.CONTENT_TYPE_FILE)
     for hub in xml:
         title = hub.get("title")
-        hub_identifier = hub.get("hubIdentifier")
-        if not title or not hub_identifier:
+        key = hub.get("key")
+        if not title or not key:
             continue
-        if not utils.cast(int, hub.get("size")):
-            continue
+        # The hub 'key' is the full API path, e.g.
+        # /hubs/sections/home/top_watchlisted
+        # Use the last path segment as the hub_id so discover_hub() constructs
+        # the correct URL.  Do NOT use hubIdentifier (e.g. 'home.top_watchlisted')
+        # — that produces a 404 because the API expects the bare slug.
+        hub_slug = key.rsplit("/", 1)[-1]
         path = "plugin://%s/?mode=discover_hub&hub_id=%s" % (
             v.ADDON_ID,
-            hub_identifier,
+            hub_slug,
         )
         directory_item(title, path)
     xbmcplugin.addSortMethod(int(sys.argv[1]), xbmcplugin.SORT_METHOD_UNSORTED)
@@ -568,6 +575,9 @@ def discover_hub(hub_id):
     _wait_for_auth()
     if utils.window("plex_token") == "":
         LOG.error("No discover hub - not signed in to plex.tv")
+        raise ListingException
+    if utils.window("plex_restricteduser") == "true":
+        LOG.error("No discover hub - restricted user")
         raise ListingException
     app.init(entrypoint=True)
     url = (
@@ -606,11 +616,15 @@ def discover_hub(hub_id):
         item = widgets.generate_item(api)
         if item is None:
             continue
-        # Set ratingKey property so watchlist context menu items work for
-        # non-library (discover) items
+        # Set ratingKey and plexguid properties so the watchlist context menu
+        # items work for non-library (discover) items
+        props = item.setdefault("extraproperties", {})
         rating_key = child.get("ratingKey")
         if rating_key:
-            item.setdefault("extraproperties", {})["ratingKey"] = rating_key
+            props["ratingKey"] = rating_key
+        guid = child.get("guid")
+        if guid:
+            props["plexguid"] = guid
         all_items.append(item)
     all_items = [widgets.prepare_listitem(item) for item in all_items]
     all_items = [widgets.create_listitem(item) for item in all_items]
