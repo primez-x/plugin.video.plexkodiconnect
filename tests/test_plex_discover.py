@@ -27,6 +27,52 @@ class PlexDiscoverTests(unittest.TestCase):
         self.assertIsNone(plex_discover.tmdb_match_parameters("603x", "movie"))
         self.assertIsNone(plex_discover.tmdb_match_parameters("603", "episode"))
 
+    def test_watchlist_identities_and_rating_keys_are_normalized(self):
+        self.assertEqual(
+            plex_discover.tmdb_watchlist_identity("603", "movie"),
+            "tmdb.movie.603",
+        )
+        self.assertEqual(
+            plex_discover.tmdb_watchlist_identity("132159", "tvshow"),
+            "tmdb.tv.132159",
+        )
+        self.assertIsNone(plex_discover.tmdb_watchlist_identity("603x", "movie"))
+        self.assertEqual(
+            plex_discover.normalize_rating_key(self.MOVIE_KEY), self.MOVIE_KEY
+        )
+        self.assertIsNone(plex_discover.normalize_rating_key("key/with/path"))
+
+    def test_extracts_authoritative_watchlist_state_from_user_state(self):
+        watched = {
+            "MediaContainer": {
+                "UserState": {"ratingKey": self.MOVIE_KEY, "watchlistedAt": 1}
+            }
+        }
+        absent = {"MediaContainer": {"UserState": []}}
+        unwatchlisted = {
+            "MediaContainer": {
+                "UserState": {"ratingKey": self.MOVIE_KEY, "watchlistedAt": 0}
+            }
+        }
+        mismatched = {
+            "MediaContainer": {
+                "UserState": {"ratingKey": self.SHOW_KEY, "watchlistedAt": 1}
+            }
+        }
+
+        self.assertTrue(
+            plex_discover.watchlist_state_from_payload(watched, self.MOVIE_KEY)
+        )
+        self.assertFalse(
+            plex_discover.watchlist_state_from_payload(absent, self.MOVIE_KEY)
+        )
+        self.assertFalse(
+            plex_discover.watchlist_state_from_payload(unwatchlisted, self.MOVIE_KEY)
+        )
+        self.assertIsNone(
+            plex_discover.watchlist_state_from_payload(mismatched, self.MOVIE_KEY)
+        )
+
     def test_resolves_a_single_canonical_match_without_title_or_year(self):
         payload = {
             "MediaContainer": {

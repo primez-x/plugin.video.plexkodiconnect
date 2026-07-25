@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 import logging
 from sys import argv
-from urllib.parse import parse_qsl, urlencode
+from urllib.parse import parse_qsl
 
 import xbmc
 import xbmcgui
 import xbmcplugin
 
-from resources.lib import entrypoint, utils, transfer, variables as v, loghandler
+from resources.lib import entrypoint, utils, transfer, variables as v, watchlist, loghandler
 
 loghandler.config()
 LOG = logging.getLogger("PLEX.default")
@@ -79,22 +79,31 @@ def triage(mode, params, path, arguments, itemid):
         transfer.plex_command("fanart-scan")
         return
     elif mode == "watchlist_add_key":
-        transfer.plex_command("WATCHLIST_ADD_KEY?%s" % urlencode(params))
+        watchlist.set_key(params, "present")
         return
     elif mode == "watchlist_remove_key":
-        transfer.plex_command("WATCHLIST_REMOVE_KEY?%s" % urlencode(params))
+        watchlist.set_key(params, "absent")
         return
     elif mode == "watchlist_add_tmdb":
-        transfer.plex_command("WATCHLIST_ADD_TMDB?%s" % urlencode(params))
+        watchlist.set_tmdb(params, "present")
         return
     elif mode == "watchlist_remove_tmdb":
-        transfer.plex_command("WATCHLIST_REMOVE_TMDB?%s" % urlencode(params))
+        watchlist.set_tmdb(params, "absent")
+        return
+    elif mode == "watchlist_status_key":
+        watchlist.status_key(params)
+        return
+    elif mode == "watchlist_status_tmdb":
+        watchlist.status_tmdb(params)
+        return
+    elif mode == "watchlist_status_monitor":
+        watchlist.status_monitor()
         return
     elif mode == "watchlist_add_search":
-        transfer.plex_command("WATCHLIST_ADD_SEARCH?%s" % urlencode(params))
+        watchlist.set_tmdb(params, "present")
         return
     elif mode == "watchlist_remove_search":
-        transfer.plex_command("WATCHLIST_REMOVE_SEARCH?%s" % urlencode(params))
+        watchlist.set_tmdb(params, "absent")
         return
     # Listings: we list ListItems and need to tell Kodi when we're done
     try:

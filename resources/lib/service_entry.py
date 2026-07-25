@@ -21,8 +21,7 @@ from . import app
 from . import loghandler
 from . import backgroundthread
 from . import skip_plex_markers
-from . import downloadutils
-from . import plex_discover
+from . import watchlist
 from .windows import userselect
 
 ###############################################################################
@@ -30,87 +29,16 @@ loghandler.config()
 LOG = logging.getLogger("PLEX.service")
 ###############################################################################
 
-
 def _discover_tmdb_ratingkey(tmdb_id, tmdb_type):
-    """Resolve one TMDb ID to Plex's canonical opaque Watchlist key."""
-    parameters = plex_discover.tmdb_match_parameters(tmdb_id, tmdb_type)
-    if parameters is None:
-        return None
-    headers = clientinfo.getXArgsDeviceInfo(
-        {"X-Plex-Token": utils.window("plex_token"), "Accept": "application/json"},
-        include_token=False,
-    )
-    response = downloadutils.DownloadUtils().downloadUrl(
-        plex_discover.METADATA_MATCH_URL,
-        parameters=parameters,
-        authenticate=False,
-        headerOptions=headers,
-        return_response=True,
-    )
-    if response is None or not getattr(response, "ok", False):
-        LOG.warning(
-            "_discover_tmdb_ratingkey: Plex metadata match returned HTTP %s",
-            getattr(response, "status_code", "unknown"),
-        )
-        return None
-    try:
-        payload = response.json()
-    except (TypeError, ValueError):
-        LOG.warning("_discover_tmdb_ratingkey: Plex metadata match returned invalid JSON")
-        return None
-    match = plex_discover.resolve_tmdb_match(payload, tmdb_type)
-    if match is None:
-        LOG.warning("_discover_tmdb_ratingkey: Plex returned no unique exact match")
-        return None
-    return match["rating_key"]
+    return watchlist.discover_tmdb_ratingkey(tmdb_id, tmdb_type)
 
 
-def _watchlist_action(api_type, rating_key):
-    """Run a provider Watchlist action and report whether Plex accepted it."""
-    response = downloadutils.DownloadUtils().downloadUrl(
-        "https://discover.provider.plex.tv/actions/%s" % api_type,
-        action_type="PUT",
-        parameters={"ratingKey": rating_key},
-        authenticate=False,
-        headerOptions=clientinfo.getXArgsDeviceInfo(
-            {"X-Plex-Token": utils.window("plex_token")}, include_token=False
-        ),
-        return_response=True,
-    )
-    if response is None or not getattr(response, "ok", False):
-        LOG.warning(
-            "Plex Watchlist %s returned HTTP %s",
-            api_type,
-            getattr(response, "status_code", "unknown"),
-        )
-        return False
-    return True
+def _watchlist_change(api_type, rating_key):
+    return watchlist.change(api_type, rating_key)
 
 
 def _watchlist_notification(message):
-    utils.dialog(
-        "notification",
-        utils.lang(29999),
-        message,
-        icon="{error}",
-        time=3500,
-        sound=False,
-    )
-
-
-def _watchlist_success_notification(api_type):
-    message = {
-        "addToWatchlist": "Added to Plex Watchlist.",
-        "removeFromWatchlist": "Removed from Plex Watchlist.",
-    }.get(api_type)
-    if message:
-        utils.dialog(
-            "notification",
-            utils.lang(29999),
-            message,
-            time=3500,
-            sound=False,
-        )
+    watchlist.notify_error(message)
 
 
 SERVICE_LOOP_SLEEP_MS = 200
@@ -398,20 +326,15 @@ class Service(object):
         if watchlist_plex_guid is None:
             return False
 
-        # ratingKey query param accepts the last section in the plex_guid
+        # ratingKey accepts the last section in the Plex GUID.
         watchlist_rating_key = watchlist_plex_guid.split("/")[-1]
-
-        downloadutils.DownloadUtils().downloadUrl(
-            "https://discover.provider.plex.tv/actions/%s?ratingKey=%s"
-            % (api_type, watchlist_rating_key),
-            action_type="PUT",
-            authenticate=False,
-            headerOptions=clientinfo.getXArgsDeviceInfo(
-                {"X-Plex-Token": utils.window("plex_token")}, include_token=False
-            ),
-        )
+        success, _ = _watchlist_change(api_type, watchlist_rating_key)
+        if not success:
+            _watchlist_notification("Plex Watchlist could not be updated.")
+            return False
 
         xbmc.executebuiltin("UpdateLibrary(video)")
+        return True
 
     def watchlist_add_key(self, raw_params):
         return self.watchlist_modify_key("addToWatchlist", raw_params)
@@ -426,13 +349,14 @@ class Service(object):
         rating_key = params.get("rating_key")
         if not rating_key:
             LOG.error("watchlist_modify_key: no rating_key in params")
-            return False
-        LOG.info("watchlist_modify_key %s %s", api_type, rating_key)
-        if not _watchlist_action(api_type, rating_key):
             _watchlist_notification("Plex Watchlist could not be updated.")
             return False
-        LOG.info("watchlist_modify_key: %s succeeded", api_type)
-        _watchlist_success_notification(api_type)
+        LOG.info("watchlist_modify_key %s %s", api_type, rating_key)
+        success, _ = _watchlist_change(api_type, rating_key)
+        if not success:
+            _watchlist_notification("Plex Watchlist could not be updated.")
+            return False
+        LOG.info("watchlist_modify_key: %s verified", api_type)
         xbmc.executebuiltin("Container.Refresh")
         return True
 
@@ -460,11 +384,11 @@ class Service(object):
                 "Plex could not uniquely match this TMDb item for Watchlist."
             )
             return False
-        if not _watchlist_action(api_type, rating_key):
+        success, _ = _watchlist_change(api_type, rating_key)
+        if not success:
             _watchlist_notification("Plex Watchlist could not be updated.")
             return False
-        LOG.info("watchlist_modify_tmdb: %s succeeded", api_type)
-        _watchlist_success_notification(api_type)
+        LOG.info("watchlist_modify_tmdb: %s verified", api_type)
         xbmc.executebuiltin("Container.Refresh")
         return True
 

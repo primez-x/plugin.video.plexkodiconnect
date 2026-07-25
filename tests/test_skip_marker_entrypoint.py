@@ -11,6 +11,9 @@ if str(REPO_ROOT) not in sys.path:
 
 
 def load_default_entrypoint():
+    resources_lib = sys.modules.get('resources.lib')
+    if resources_lib is not None and hasattr(resources_lib, 'watchlist'):
+        delattr(resources_lib, 'watchlist')
     for module_name in (
         'xbmc',
         'xbmcgui',
@@ -18,6 +21,7 @@ def load_default_entrypoint():
         'resources.lib.entrypoint',
         'resources.lib.loghandler',
         'resources.lib.transfer',
+        'resources.lib.watchlist',
         'resources.lib.utils',
         'resources.lib.variables',
         'default',
@@ -44,6 +48,18 @@ def load_default_entrypoint():
     transfer.plex_command = commands.append
     sys.modules['resources.lib.transfer'] = transfer
 
+    watchlist = types.ModuleType('resources.lib.watchlist')
+    watchlist.set_tmdb = lambda params, desired: commands.append(
+        ('watchlist_tmdb', dict(params), desired)
+    )
+    watchlist.set_key = lambda params, desired: commands.append(
+        ('watchlist_key', dict(params), desired)
+    )
+    watchlist.status_tmdb = commands.append
+    watchlist.status_key = commands.append
+    watchlist.status_monitor = lambda: commands.append('watchlist_monitor')
+    sys.modules['resources.lib.watchlist'] = watchlist
+
     utils = types.ModuleType('resources.lib.utils')
     utils.lang = lambda string_id: str(string_id)
     sys.modules['resources.lib.utils'] = utils
@@ -65,7 +81,7 @@ class SkipMarkerEntrypointTests(unittest.TestCase):
 
         self.assertEqual(commands, ['skip-marker'])
 
-    def test_tmdb_watchlist_mode_sends_exact_id_service_command(self):
+    def test_tmdb_watchlist_mode_uses_the_direct_verified_worker(self):
         default, commands = load_default_entrypoint()
 
         default.triage(
@@ -78,7 +94,7 @@ class SkipMarkerEntrypointTests(unittest.TestCase):
 
         self.assertEqual(
             commands,
-            ['WATCHLIST_ADD_TMDB?tmdb_id=603&tmdb_type=movie'],
+            [('watchlist_tmdb', {'tmdb_id': '603', 'tmdb_type': 'movie'}, 'present')],
         )
 
 

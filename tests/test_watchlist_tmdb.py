@@ -62,10 +62,15 @@ def load_service_entry():
     )
     for module_name in module_names:
         sys.modules.pop(module_name, None)
+    sys.modules.pop("resources.lib.watchlist", None)
+    resources_lib = sys.modules.get("resources.lib")
+    if resources_lib is not None and hasattr(resources_lib, "watchlist"):
+        delattr(resources_lib, "watchlist")
 
     xbmc = types.ModuleType("xbmc")
     xbmc.commands = []
     xbmc.executebuiltin = xbmc.commands.append
+    xbmc.sleep = lambda milliseconds: None
     sys.modules["xbmc"] = xbmc
     sys.modules["xbmcvfs"] = types.ModuleType("xbmcvfs")
 
@@ -75,9 +80,22 @@ def load_service_entry():
         sys.modules[module_name] = modules[module_name]
 
     notifications = []
+    window_properties = {}
     utils = modules["resources.lib.utils"]
     utils.parse_qsl = parse_qsl
-    utils.window = lambda key, value=None: "plex-token" if key == "plex_token" else ""
+
+    def window(key, value=None, clear=False):
+        if key == "plex_token" and value is None:
+            return "plex-token"
+        if clear:
+            window_properties.pop(key, None)
+            return None
+        if value is not None:
+            window_properties[key] = value
+            return None
+        return window_properties.get(key, "")
+
+    utils.window = window
     utils.lang = lambda string_id: "PlexKodiConnect"
     utils.dialog = lambda *args, **kwargs: notifications.append((args, kwargs))
 
@@ -88,12 +106,14 @@ def load_service_entry():
 
     modules["resources.lib.clientinfo"].getXArgsDeviceInfo = get_headers
     modules["resources.lib.loghandler"].config = lambda: None
+    modules["resources.lib.app"].CONN = object()
+    modules["resources.lib.app"].init = lambda entrypoint=False: None
     modules["resources.lib.windows"].userselect = modules[
         "resources.lib.windows.userselect"
     ]
 
     service_entry = importlib.import_module("resources.lib.service_entry")
-    return service_entry, xbmc, notifications
+    return service_entry, xbmc, notifications, window_properties
 
 
 def service_proxy(service_entry):
@@ -127,24 +147,37 @@ class TmdbWatchlistTests(unittest.TestCase):
             }
         }
 
+    def _watchlist_state_payload(self, rating_key, watchlisted):
+        user_state = []
+        if watchlisted:
+            user_state.append({"ratingKey": rating_key, "watchlistedAt": 1})
+        return {"MediaContainer": {"UserState": user_state}}
+
     def test_tmdb_watchlist_action_resolves_exact_id_then_mutates(self):
-        service_entry, xbmc, notifications = load_service_entry()
+        service_entry, xbmc, notifications, _ = load_service_entry()
         downloader = DownloadRecorder(
-            [FakeResponse(self._metadata_payload()), FakeResponse()]
+            [
+                FakeResponse(self._metadata_payload()),
+                FakeResponse(self._watchlist_state_payload(self.MOVIE_KEY, False)),
+                FakeResponse(),
+                FakeResponse(self._watchlist_state_payload(self.MOVIE_KEY, True)),
+            ]
         )
-        service_entry.downloadutils.DownloadUtils = lambda: downloader
+        service_entry.watchlist.downloadutils.DownloadUtils = lambda: downloader
 
         result = service_entry.Service.watchlist_add_tmdb(
             service_proxy(service_entry), "tmdb_id=603&tmdb_type=movie"
         )
 
         self.assertTrue(result)
-        self.assertEqual(notifications[0][0][2], "Added to Plex Watchlist.")
+        self.assertEqual(notifications, [])
         self.assertEqual(xbmc.commands, ["Container.Refresh"])
-        self.assertEqual(len(downloader.calls), 2)
+        self.assertEqual(len(downloader.calls), 4)
 
         metadata_url, _, metadata_kwargs = downloader.calls[0]
-        self.assertEqual(metadata_url, service_entry.plex_discover.METADATA_MATCH_URL)
+        self.assertEqual(
+            metadata_url, service_entry.watchlist.plex_discover.METADATA_MATCH_URL
+        )
         self.assertEqual(
             metadata_kwargs["parameters"], {"guid": "tmdb://603", "type": 1}
         )
@@ -155,7 +188,14 @@ class TmdbWatchlistTests(unittest.TestCase):
         self.assertTrue(metadata_kwargs["return_response"])
         self.assertFalse(metadata_kwargs["authenticate"])
 
-        action_url, _, action_kwargs = downloader.calls[1]
+        state_url, _, state_kwargs = downloader.calls[1]
+        self.assertEqual(
+            state_url,
+            service_entry.watchlist.WATCHLIST_USER_STATE_URL % self.MOVIE_KEY,
+        )
+        self.assertEqual(state_kwargs["headerOptions"]["Accept"], "application/json")
+
+        action_url, _, action_kwargs = downloader.calls[2]
         self.assertEqual(
             action_url,
             "https://discover.provider.plex.tv/actions/addToWatchlist",
@@ -166,14 +206,17 @@ class TmdbWatchlistTests(unittest.TestCase):
         self.assertFalse(action_kwargs["authenticate"])
 
     def test_failed_action_does_not_refresh_or_claim_success(self):
-        service_entry, xbmc, notifications = load_service_entry()
+        service_entry, xbmc, notifications, _ = load_service_entry()
+        service_entry.watchlist.WATCHLIST_VERIFY_ATTEMPTS = 1
         downloader = DownloadRecorder(
             [
                 FakeResponse(self._metadata_payload()),
+                FakeResponse(self._watchlist_state_payload(self.MOVIE_KEY, False)),
                 FakeResponse(ok=False, status_code=500),
+                FakeResponse(self._watchlist_state_payload(self.MOVIE_KEY, False)),
             ]
         )
-        service_entry.downloadutils.DownloadUtils = lambda: downloader
+        service_entry.watchlist.downloadutils.DownloadUtils = lambda: downloader
 
         result = service_entry.Service.watchlist_add_tmdb(
             service_proxy(service_entry), "tmdb_id=603&tmdb_type=movie"
@@ -181,13 +224,305 @@ class TmdbWatchlistTests(unittest.TestCase):
 
         self.assertFalse(result)
         self.assertEqual(xbmc.commands, [])
-        self.assertEqual(len(downloader.calls), 2)
+        self.assertEqual(len(downloader.calls), 4)
         self.assertEqual(notifications[0][0][2], "Plex Watchlist could not be updated.")
 
+    def test_http_ok_without_the_desired_state_is_a_failure(self):
+        service_entry, xbmc, notifications, _ = load_service_entry()
+        service_entry.watchlist.WATCHLIST_VERIFY_ATTEMPTS = 1
+        downloader = DownloadRecorder(
+            [
+                FakeResponse(self._metadata_payload()),
+                FakeResponse(self._watchlist_state_payload(self.MOVIE_KEY, False)),
+                FakeResponse(),
+                FakeResponse(self._watchlist_state_payload(self.MOVIE_KEY, False)),
+            ]
+        )
+        service_entry.watchlist.downloadutils.DownloadUtils = lambda: downloader
+
+        result = service_entry.Service.watchlist_add_tmdb(
+            service_proxy(service_entry), "tmdb_id=603&tmdb_type=movie"
+        )
+
+        self.assertFalse(result)
+        self.assertEqual(xbmc.commands, [])
+        self.assertEqual(len(notifications), 1)
+        self.assertEqual(notifications[0][0][2], "Plex Watchlist could not be updated.")
+
+    def test_existing_desired_state_is_silently_confirmed_without_a_put(self):
+        service_entry, xbmc, notifications, _ = load_service_entry()
+        downloader = DownloadRecorder(
+            [
+                FakeResponse(self._metadata_payload()),
+                FakeResponse(self._watchlist_state_payload(self.MOVIE_KEY, True)),
+            ]
+        )
+        service_entry.watchlist.downloadutils.DownloadUtils = lambda: downloader
+
+        result = service_entry.Service.watchlist_add_tmdb(
+            service_proxy(service_entry), "tmdb_id=603&tmdb_type=movie"
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(len(downloader.calls), 2)
+        self.assertEqual(notifications, [])
+        self.assertEqual(xbmc.commands, ["Container.Refresh"])
+
+    def test_remove_verifies_that_the_item_is_absent(self):
+        service_entry, xbmc, notifications, _ = load_service_entry()
+        downloader = DownloadRecorder(
+            [
+                FakeResponse(self._metadata_payload()),
+                FakeResponse(self._watchlist_state_payload(self.MOVIE_KEY, True)),
+                FakeResponse(),
+                FakeResponse(self._watchlist_state_payload(self.MOVIE_KEY, False)),
+            ]
+        )
+        service_entry.watchlist.downloadutils.DownloadUtils = lambda: downloader
+
+        result = service_entry.Service.watchlist_remove_tmdb(
+            service_proxy(service_entry), "tmdb_id=603&tmdb_type=movie"
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(notifications, [])
+        self.assertEqual(xbmc.commands, ["Container.Refresh"])
+        self.assertEqual(
+            downloader.calls[2][0],
+            "https://discover.provider.plex.tv/actions/removeFromWatchlist",
+        )
+
+    def test_optimistic_request_commits_only_after_authoritative_confirmation(self):
+        service_entry, xbmc, notifications, properties = load_service_entry()
+        watchlist = service_entry.watchlist
+        identity = "tmdb.movie.603"
+        properties[watchlist.DETAIL_IDENTITY] = identity
+        downloader = DownloadRecorder(
+            [
+                FakeResponse(self._metadata_payload()),
+                FakeResponse(self._watchlist_state_payload(self.MOVIE_KEY, False)),
+                FakeResponse(),
+                FakeResponse(self._watchlist_state_payload(self.MOVIE_KEY, True)),
+            ]
+        )
+        watchlist.downloadutils.DownloadUtils = lambda: downloader
+
+        result = watchlist.set_tmdb(
+            {"tmdb_id": "603", "tmdb_type": "movie"}, "present"
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(notifications, [])
+        self.assertEqual(xbmc.commands, [])
+        self.assertEqual(properties[watchlist.DETAIL_STATE], "present")
+        self.assertNotIn(watchlist.DETAIL_PENDING, properties)
+        self.assertNotIn(watchlist.DETAIL_REQUEST_ID, properties)
+        self.assertEqual(
+            properties[watchlist._item_state_property(identity)], "present"
+        )
+
+    def test_direct_tmdb_projection_begins_before_metadata_resolution(self):
+        service_entry, _, notifications, properties = load_service_entry()
+        watchlist = service_entry.watchlist
+        identity = "tmdb.movie.603"
+        properties[watchlist.DETAIL_IDENTITY] = identity
+        observed_before_resolution = []
+
+        def discover(tmdb_id, tmdb_type):
+            observed_before_resolution.append(
+                (
+                    tmdb_id,
+                    tmdb_type,
+                    properties.get(watchlist.DETAIL_STATE),
+                    properties.get(watchlist.DETAIL_PENDING),
+                    properties.get(watchlist.DETAIL_REVISION),
+                )
+            )
+            return self.MOVIE_KEY
+
+        watchlist.discover_tmdb_ratingkey = discover
+        watchlist.change = lambda api_type, rating_key: (True, True)
+
+        self.assertTrue(
+            watchlist.set_tmdb({"tmdb_id": "603", "tmdb_type": "movie"}, "present")
+        )
+        self.assertEqual(len(observed_before_resolution), 1)
+        _, _, state_name, pending, revision = observed_before_resolution[0]
+        self.assertEqual(state_name, "present")
+        self.assertTrue(pending)
+        self.assertEqual(pending, revision)
+        self.assertNotIn(watchlist.DETAIL_PENDING, properties)
+        self.assertEqual(properties[watchlist.DETAIL_STATE], "present")
+        self.assertEqual(notifications, [])
+
+    def test_action_marks_the_detail_pending_before_its_revision(self):
+        service_entry, _, _, properties = load_service_entry()
+        watchlist = service_entry.watchlist
+        identity = "tmdb.movie.603"
+        properties[watchlist.DETAIL_IDENTITY] = identity
+        writes = []
+        original_window = watchlist.utils.window
+
+        def recording_window(key, value=None, clear=False):
+            if value is not None:
+                writes.append(key)
+            return original_window(key, value=value, clear=clear)
+
+        watchlist.utils.window = recording_window
+        try:
+            request_id, _ = watchlist._begin(identity, "present")
+        finally:
+            watchlist.utils.window = original_window
+
+        self.assertTrue(request_id)
+        self.assertLess(
+            writes.index(watchlist.DETAIL_PENDING),
+            writes.index(watchlist.DETAIL_REVISION),
+        )
+
+    def test_status_snapshots_mutation_revision_before_its_pending_check(self):
+        service_entry, _, _, properties = load_service_entry()
+        watchlist = service_entry.watchlist
+        identity = "tmdb.movie.603"
+        properties[watchlist.DETAIL_IDENTITY] = identity
+        reads = []
+        original_window = watchlist.utils.window
+
+        def recording_window(key, value=None, clear=False):
+            if value is None and not clear:
+                reads.append(key)
+            return original_window(key, value=value, clear=clear)
+
+        watchlist.utils.window = recording_window
+        try:
+            self.assertIsNotNone(watchlist._capture_status(identity))
+        finally:
+            watchlist.utils.window = original_window
+
+        self.assertLess(
+            reads.index(watchlist.DETAIL_REVISION),
+            reads.index(watchlist.DETAIL_PENDING),
+        )
+
+    def test_status_probe_cannot_overwrite_a_newer_mutation(self):
+        service_entry, _, _, properties = load_service_entry()
+        watchlist = service_entry.watchlist
+        identity = "tmdb.movie.603"
+        properties[watchlist.DETAIL_IDENTITY] = identity
+        properties[watchlist.DETAIL_STATE] = "unknown"
+        properties[watchlist.DETAIL_REVISION] = "before-action"
+
+        status_revision, mutation_revision = watchlist._capture_status(identity)
+        request_id, _ = watchlist._begin(identity, "present")
+
+        self.assertFalse(
+            watchlist._project_status(
+                identity, status_revision, mutation_revision, False
+            )
+        )
+        self.assertTrue(watchlist._project_mutation(identity, request_id, True))
+
+        self.assertFalse(
+            watchlist._project_status(
+                identity, status_revision, mutation_revision, False
+            )
+        )
+        self.assertEqual(properties[watchlist.DETAIL_STATE], "present")
+        self.assertEqual(
+            properties[watchlist._item_state_property(identity)], "present"
+        )
+
+    def test_reopened_detail_rejects_a_stale_status_from_the_prior_dialog(self):
+        service_entry, _, _, properties = load_service_entry()
+        watchlist = service_entry.watchlist
+        identity = "tmdb.movie.603"
+        properties[watchlist.DETAIL_IDENTITY] = identity
+        properties[watchlist.DETAIL_STATE] = "unknown"
+        properties[watchlist.DETAIL_REVISION] = "old-mutation"
+        old_status_revision, old_mutation_revision = watchlist._capture_status(
+            identity
+        )
+
+        # The previous dialog unloads, then the same title opens again.
+        properties.pop(watchlist.DETAIL_IDENTITY)
+        properties.pop(watchlist.DETAIL_REVISION)
+        properties.pop(watchlist.DETAIL_STATUS_REVISION)
+        properties[watchlist.DETAIL_IDENTITY] = identity
+
+        new_status_revision, _ = watchlist._capture_status(identity)
+        self.assertNotEqual(new_status_revision, old_status_revision)
+
+        self.assertFalse(
+            watchlist._project_status(
+                identity, old_status_revision, old_mutation_revision, False
+            )
+        )
+        self.assertEqual(properties[watchlist.DETAIL_STATE], "unknown")
+        self.assertNotIn(watchlist._item_state_property(identity), properties)
+
+    def test_monitor_status_requires_current_tmdb_helper_details(self):
+        service_entry, _, _, properties = load_service_entry()
+        watchlist = service_entry.watchlist
+        watchlist.WATCHLIST_MONITOR_ATTEMPTS = 1
+        properties[watchlist.DETAIL_CONTEXT_LABEL] = "Current Title"
+        properties[watchlist.DETAIL_CONTEXT_DBTYPE] = "movie"
+        properties[watchlist.TMDB_MONITOR_ID] = "603"
+        properties[watchlist.TMDB_MONITOR_TYPE] = "movie"
+        properties[watchlist.TMDB_MONITOR_LABEL] = "Previous Title"
+        properties[watchlist.TMDB_MONITOR_DBTYPE] = "movie"
+
+        self.assertFalse(watchlist.status_monitor())
+        self.assertNotIn(watchlist.DETAIL_IDENTITY, properties)
+
+        properties[watchlist.TMDB_MONITOR_LABEL] = "Current Title"
+        calls = []
+        watchlist.status_tmdb = lambda params: calls.append(params) or True
+        writes = []
+        original_window = watchlist.utils.window
+
+        def recording_window(key, value=None, clear=False):
+            if value is not None:
+                writes.append(key)
+            return original_window(key, value=value, clear=clear)
+
+        watchlist.utils.window = recording_window
+        try:
+            self.assertTrue(watchlist.status_monitor())
+        finally:
+            watchlist.utils.window = original_window
+
+        self.assertLess(
+            writes.index(watchlist.DETAIL_IDENTITY),
+            writes.index(watchlist.DETAIL_TMDB_ID),
+        )
+        self.assertLess(
+            writes.index(watchlist.DETAIL_TMDB_ID),
+            writes.index(watchlist.DETAIL_TMDB_TYPE),
+        )
+        self.assertEqual(properties[watchlist.DETAIL_TMDB_ID], "603")
+        self.assertEqual(properties[watchlist.DETAIL_TMDB_TYPE], "movie")
+        self.assertEqual(properties[watchlist.DETAIL_IDENTITY], "tmdb.movie.603")
+        self.assertEqual(
+            calls,
+            [
+                {
+                    "tmdb_id": "603",
+                    "tmdb_type": "movie",
+                    "watchlist_identity": "tmdb.movie.603",
+                }
+            ],
+        )
+
     def test_direct_discovery_rating_key_uses_the_same_checked_action(self):
-        service_entry, xbmc, notifications = load_service_entry()
-        downloader = DownloadRecorder([FakeResponse()])
-        service_entry.downloadutils.DownloadUtils = lambda: downloader
+        service_entry, xbmc, notifications, _ = load_service_entry()
+        downloader = DownloadRecorder(
+            [
+                FakeResponse(self._watchlist_state_payload(self.MOVIE_KEY, False)),
+                FakeResponse(),
+                FakeResponse(self._watchlist_state_payload(self.MOVIE_KEY, True)),
+            ]
+        )
+        service_entry.watchlist.downloadutils.DownloadUtils = lambda: downloader
 
         result = service_entry.Service.watchlist_add_key(
             service_proxy(service_entry),
@@ -195,15 +530,15 @@ class TmdbWatchlistTests(unittest.TestCase):
         )
 
         self.assertTrue(result)
-        self.assertEqual(notifications[0][0][2], "Added to Plex Watchlist.")
+        self.assertEqual(notifications, [])
         self.assertEqual(xbmc.commands, ["Container.Refresh"])
-        self.assertEqual(len(downloader.calls), 1)
+        self.assertEqual(len(downloader.calls), 3)
         self.assertEqual(
-            downloader.calls[0][2]["parameters"], {"ratingKey": self.MOVIE_KEY}
+            downloader.calls[1][2]["parameters"], {"ratingKey": self.MOVIE_KEY}
         )
 
     def test_the_odyssey_exact_tmdb_identity_uses_its_canonical_plex_key(self):
-        service_entry, xbmc, notifications = load_service_entry()
+        service_entry, xbmc, notifications, _ = load_service_entry()
         downloader = DownloadRecorder(
             [
                 FakeResponse(
@@ -217,10 +552,16 @@ class TmdbWatchlistTests(unittest.TestCase):
                         }
                     }
                 ),
+                FakeResponse(
+                    self._watchlist_state_payload(self.THE_ODYSSEY_KEY, False)
+                ),
                 FakeResponse(),
+                FakeResponse(
+                    self._watchlist_state_payload(self.THE_ODYSSEY_KEY, True)
+                ),
             ]
         )
-        service_entry.downloadutils.DownloadUtils = lambda: downloader
+        service_entry.watchlist.downloadutils.DownloadUtils = lambda: downloader
 
         result = service_entry.Service.watchlist_add_tmdb(
             service_proxy(service_entry),
@@ -228,21 +569,21 @@ class TmdbWatchlistTests(unittest.TestCase):
         )
 
         self.assertTrue(result)
-        self.assertEqual(notifications[0][0][2], "Added to Plex Watchlist.")
+        self.assertEqual(notifications, [])
         self.assertEqual(xbmc.commands, ["Container.Refresh"])
         self.assertEqual(
             downloader.calls[0][2]["parameters"],
             {"guid": "tmdb://%s" % self.THE_ODYSSEY_ID, "type": 1},
         )
         self.assertEqual(
-            downloader.calls[1][2]["parameters"],
+            downloader.calls[2][2]["parameters"],
             {"ratingKey": self.THE_ODYSSEY_KEY},
         )
 
     def test_invalid_tmdb_identity_fails_before_any_network_action(self):
-        service_entry, xbmc, notifications = load_service_entry()
+        service_entry, xbmc, notifications, _ = load_service_entry()
         downloader = DownloadRecorder([])
-        service_entry.downloadutils.DownloadUtils = lambda: downloader
+        service_entry.watchlist.downloadutils.DownloadUtils = lambda: downloader
 
         result = service_entry.Service.watchlist_add_tmdb(
             service_proxy(service_entry), "tmdb_id=not-a-number&tmdb_type=movie"

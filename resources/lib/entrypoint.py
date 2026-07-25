@@ -28,6 +28,8 @@ from .library_sync.nodes import NODE_TYPES
 
 LOG = getLogger("PLEX.entrypoint")
 
+WATCHLIST_PAGE_SIZE = 100
+
 
 class ListingException(Exception):
     """
@@ -504,6 +506,51 @@ def watchlater():
     show_listing(xml)
 
 
+def _download_watchlist():
+    """Download every page of the provider Watchlist without using PMS paging."""
+    url = "https://discover.provider.plex.tv/library/sections/watchlist/all"
+    headers = clientinfo.getXArgsDeviceInfo(
+        {"X-Plex-Token": utils.window("plex_token")}, include_token=False
+    )
+    result = None
+    start = 0
+    total_size = None
+
+    while total_size is None or start < total_size:
+        page = DU().downloadUrl(
+            url,
+            parameters={
+                "X-Plex-Container-Start": start,
+                "X-Plex-Container-Size": WATCHLIST_PAGE_SIZE,
+            },
+            authenticate=False,
+            headerOptions=headers,
+        )
+        try:
+            page.attrib
+        except AttributeError:
+            LOG.error("Could not download Watchlist page starting at %s", start)
+            return None
+
+        if result is None:
+            result = page
+        else:
+            result.extend(page)
+
+        try:
+            total_size = int(page.get("totalSize"))
+        except (TypeError, ValueError):
+            LOG.error("Plex Watchlist page did not report a valid totalSize")
+            return None
+
+        page_size = len(page)
+        if page_size == 0:
+            break
+        start += page_size
+
+    return result
+
+
 def watchlist(section_id=None):
     """
     Listing for plex.tv Watchlist section (if signed in to plex.tv)
@@ -516,16 +563,10 @@ def watchlist(section_id=None):
         LOG.error("No watchlist - restricted user")
         raise ListingException
     app.init(entrypoint=True)
-    xml = DU().downloadUrl(
-        "https://discover.provider.plex.tv/library/sections/watchlist/all",
-        authenticate=False,
-        headerOptions=clientinfo.getXArgsDeviceInfo(
-            {"X-Plex-Token": utils.window("plex_token")}, include_token=False
-        ),
-    )
+    xml = _download_watchlist()
     try:
-        xml[0].attrib
-    except (TypeError, IndexError, AttributeError):
+        xml.attrib
+    except AttributeError:
         LOG.error("Could not download watch list list from plex.tv")
         raise ListingException
     show_listing(xml, None, section_id, False, "watchlist")
