@@ -265,21 +265,27 @@ def show_listing(xml, plex_type=None, section_id=None, synched=True, key=None):
         # Need to chain keys for navigation
         widgets.KEY = key
     # Process all items to show
-    all_items = mass_api(xml, check_by_guid=key == "watchlist")
+    all_apis = mass_api(xml, check_by_guid=key == "watchlist")
 
     if key == "watchlist":
-        # filter out items that are not in the kodi db (items that will not be playable)
-        all_items = [item for item in all_items if item.kodi_id is not None]
-
         # filter out items in the wrong section id when it's specified
         if section_id is not None:
-            all_items = [
-                item
-                for item in all_items
-                if item.section_id == utils.cast(int, section_id)
+            all_apis = [
+                api for api in all_apis if api.section_id == utils.cast(int, section_id)
             ]
 
-    all_items = [widgets.generate_item(api) for api in all_items]
+    all_items = []
+    for api in all_apis:
+        item = widgets.generate_item(api)
+        if item is None:
+            continue
+        # For non-DB watchlist items, inject ratingKey so the context menu
+        # remove-from-watchlist action works for discover/non-library items
+        if key == "watchlist" and not api.kodi_id:
+            rk = api.xml.get("ratingKey")
+            if rk:
+                item.setdefault("extraproperties", {})["ratingKey"] = rk
+        all_items.append(item)
     all_items = [widgets.prepare_listitem(item, key) for item in all_items]
     # fill that listing...
     all_items = [widgets.create_listitem(item) for item in all_items]
