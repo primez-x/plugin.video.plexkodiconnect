@@ -106,7 +106,9 @@ def load_entrypoint():
     mass_api_calls = []
 
     def mass_api(xml, check_by_guid=False):
-        mass_api_calls.append(list(xml))
+        mass_api_calls.append((list(xml), check_by_guid))
+        if check_by_guid:
+            return []
         return [API(child) for child in xml]
 
     modules["resources.lib.plex_api"].API = API
@@ -202,7 +204,7 @@ class DiscoverListingTests(unittest.TestCase):
 
         entrypoint.discover_hub("new-for-you")
 
-        self.assertEqual(mass_api_calls, [[xml[0]]])
+        self.assertEqual(mass_api_calls, [([xml[0]], False)])
         self.assertEqual(len(directory_calls), 1)
         _, items, _ = directory_calls[0]
         path, item, is_folder = items[0]
@@ -213,6 +215,37 @@ class DiscoverListingTests(unittest.TestCase):
         self.assertEqual(item["extraproperties"]["ratingKey"], "abc123")
         self.assertEqual(item["extraproperties"]["PlexDiscoverDetail"], "true")
 
+    def test_hub_filters_trailer_clips_before_detail_or_watchlist_actions(self):
+        entrypoint, directory_calls, _, mass_api_calls = load_entrypoint()
+        xml = provider_metadata()
+        ET.SubElement(
+            xml,
+            "Video",
+            type="clip",
+            title="Provider Trailer",
+            ratingKey="clip123",
+            guid="plex://clip/clip123",
+        )
+        entrypoint._provider_xmls = lambda *args, **kwargs: [xml]
+
+        entrypoint.discover_hub("new-for-you")
+
+        self.assertEqual(mass_api_calls, [([xml[0]], False)])
+        _, items, _ = directory_calls[0]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0][1]["extraproperties"]["ratingKey"], "abc123")
+
+    def test_detail_rejects_a_trailer_clip_without_building_a_dead_play_item(self):
+        entrypoint, _, dialog_calls, mass_api_calls = load_entrypoint()
+        xml = provider_metadata("clip123")
+        xml[0].set("type", "clip")
+        xml[0].set("guid", "plex://clip/clip123")
+        entrypoint._provider_xmls = lambda *args, **kwargs: [xml]
+
+        self.assertFalse(entrypoint.discover_detail("clip123"))
+        self.assertEqual(mass_api_calls, [])
+        self.assertEqual(dialog_calls, [])
+
     def test_detail_uses_exact_provider_key_and_opens_native_info(self):
         entrypoint, _, dialog_calls, mass_api_calls = load_entrypoint()
         xml = provider_metadata()
@@ -220,7 +253,10 @@ class DiscoverListingTests(unittest.TestCase):
 
         self.assertTrue(entrypoint.discover_detail("abc123"))
 
-        self.assertEqual(mass_api_calls, [[xml[0]]])
+        self.assertEqual(
+            mass_api_calls,
+            [([xml[0]], True), ([xml[0]], False)],
+        )
         self.assertEqual(len(dialog_calls), 1)
         item = dialog_calls[0]
         self.assertEqual(item["file"], "")
@@ -229,6 +265,55 @@ class DiscoverListingTests(unittest.TestCase):
         self.assertEqual(
             item["extraproperties"]["plexguid"], "plex://movie/abc123"
         )
+
+    def test_detail_prefers_an_exact_guid_library_match_for_playback(self):
+        entrypoint, _, dialog_calls, _ = load_entrypoint()
+        xml = provider_metadata()
+        entrypoint._provider_xmls = lambda *args, **kwargs: [xml]
+
+        class LocalAPI(object):
+            plex_type = "movie"
+
+            def __init__(self):
+                self.xml = ET.Element(
+                    "Video",
+                    type="movie",
+                    title="Provider Movie",
+                    ratingKey="42",
+                    guid="plex://movie/abc123",
+                )
+
+        local_api = LocalAPI()
+        lookup_calls = []
+
+        def mass_api(metadata, check_by_guid=False):
+            lookup_calls.append(check_by_guid)
+            if check_by_guid:
+                return [local_api]
+            self.fail("a GUID-resolved local item must not fall back to provider-only")
+
+        entrypoint.mass_api = mass_api
+        entrypoint.widgets.generate_item = lambda api: {
+            "title": api.xml.get("title"),
+            "label": api.xml.get("title"),
+            "type": api.plex_type,
+            "movieid": 42,
+            "file": "plugin://plugin.video.plexkodiconnect.movies/?plex_id=42&mode=play",
+            "extraproperties": {"DBID": "42"},
+        }
+
+        self.assertTrue(entrypoint.discover_detail("abc123"))
+
+        self.assertEqual(lookup_calls, [True])
+        self.assertEqual(len(dialog_calls), 1)
+        item = dialog_calls[0]
+        self.assertEqual(
+            item["file"],
+            "plugin://plugin.video.plexkodiconnect.movies/?plex_id=42&mode=play",
+        )
+        self.assertNotEqual(item.get("IsPlayable"), "false")
+        self.assertEqual(item["extraproperties"]["DBID"], "42")
+        self.assertEqual(item["extraproperties"]["ratingKey"], "abc123")
 
 
 if __name__ == "__main__":

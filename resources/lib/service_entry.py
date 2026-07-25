@@ -372,6 +372,12 @@ class Service(object):
             LOG.error("watchlist_modify_key: no rating_key in params")
             _watchlist_notification("Plex Watchlist could not be updated.")
             return False
+        if not watchlist.supports_key_watchlist(params):
+            LOG.info(
+                "watchlist_modify_key: ignoring unsupported Plex type %s",
+                params.get("plex_type"),
+            )
+            return False
         LOG.info("watchlist_modify_key %s %s", api_type, rating_key)
         success, _ = _watchlist_change(api_type, rating_key)
         if not success:

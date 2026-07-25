@@ -229,6 +229,18 @@ def _item_mutation_request_property(identity):
     return "%s%s.MutationRequest" % (ITEM_STATE_PREFIX, identity)
 
 
+def _item_mutation_desired_property(identity):
+    return "%s%s.MutationDesired" % (ITEM_STATE_PREFIX, identity)
+
+
+def _item_mutation_previous_state_property(identity):
+    return "%s%s.MutationPreviousState" % (ITEM_STATE_PREFIX, identity)
+
+
+def _item_mutation_completed_property(identity):
+    return "%s%s.MutationCompleted" % (ITEM_STATE_PREFIX, identity)
+
+
 def _remember_state(identity, state_name):
     if identity is None or state_name not in ("present", "absent"):
         return
@@ -274,6 +286,11 @@ def _identity_for_key(params):
     return "plex.%s" % rating_key if rating_key else None
 
 
+def supports_key_watchlist(params):
+    """Plex accepts Watchlist mutations only for movie and show metadata."""
+    return plex_discover.normalize_tmdb_type(params.get("plex_type")) is not None
+
+
 def _identity_for_tmdb(params):
     return plex_discover.tmdb_watchlist_identity(
         params.get("tmdb_id"), params.get("tmdb_type") or params.get("plex_type")
@@ -291,10 +308,37 @@ def _known_state(identity):
     return "absent"
 
 
+def _batch_previous_state(identity):
+    previous_state = utils.window(_item_mutation_previous_state_property(identity))
+    if previous_state in ("present", "absent"):
+        return previous_state
+    previous_state = _cached_state(identity)
+    return previous_state if previous_state is not None else "absent"
+
+
+def _current_mutation_intent(identity):
+    request_id = utils.window(_item_mutation_request_property(identity))
+    desired = utils.window(_item_mutation_desired_property(identity))
+    if (
+        not request_id
+        or _api_type_for_desired(desired) is None
+        or utils.window(_item_mutation_completed_property(identity)) == request_id
+    ):
+        return None
+    return request_id, desired, _batch_previous_state(identity)
+
+
+def _intent_lock(identity):
+    return _lock("watchlist-intent:%s" % identity)
+
+
 def _begin(identity, desired):
     if utils.window(DETAIL_IDENTITY) != identity:
         return None, None
-    previous_state = _known_state(identity)
+    if _current_mutation_intent(identity) is not None:
+        previous_state = _batch_previous_state(identity)
+    else:
+        previous_state = _known_state(identity)
     request_id = uuid4().hex
     # Set this first so no status worker can interleave between revision/state
     # projection and leave this action stranded in a pending state.
@@ -307,7 +351,18 @@ def _begin(identity, desired):
     utils.window(DETAIL_PREVIOUS_STATE, value=previous_state)
     utils.window(DETAIL_REQUEST_ID, value=request_id)
     utils.window(DETAIL_REVISION, value=request_id)
+    # Publish the payload before its generation. A worker that wakes between
+    # window-property calls can then observe either the completed old request
+    # or a complete new intent, never a new request paired with old desired
+    # state.
+    utils.window(_item_mutation_desired_property(identity), value=desired)
+    utils.window(
+        _item_mutation_previous_state_property(identity), value=previous_state
+    )
     utils.window(_item_mutation_request_property(identity), value=request_id)
+    # A completion marker carries its generation, so a stale worker cannot
+    # clear a foreground intent that is written while it terminally projects.
+    utils.window(_item_mutation_completed_property(identity), clear=True)
     utils.window(DETAIL_ERROR, clear=True)
     utils.window(DETAIL_STATE, value=desired)
     return request_id, previous_state
@@ -357,12 +412,17 @@ def _worker_request_is_current(identity, request_id):
         identity
         and request_id
         and utils.window(_item_mutation_request_property(identity)) == request_id
+        and utils.window(_item_mutation_completed_property(identity)) != request_id
     )
 
 
 def _clear_worker_request(identity, request_id):
     if _worker_request_is_current(identity, request_id):
-        utils.window(_item_mutation_request_property(identity), clear=True)
+        # Do not clear individual intent properties here. Foreground plugin
+        # processes can write a newer request between property calls. A
+        # generation marker lets readers distinguish terminal A from active B
+        # without ever erasing B's request, desired state, or rollback base.
+        utils.window(_item_mutation_completed_property(identity), value=request_id)
         return True
     return False
 
@@ -378,13 +438,32 @@ def _detail_request_is_current(identity, request_id):
     )
 
 
+def _restore_detail_intent(identity):
+    """Restore a still-pending item mutation when its detail dialog reopens."""
+    intent = _current_mutation_intent(identity)
+    if intent is None or utils.window(DETAIL_IDENTITY) != identity:
+        return False
+    request_id, desired, previous_state = intent
+    # Write Pending first so a concurrent status probe can only reject itself.
+    utils.window(DETAIL_PENDING, value=request_id)
+    utils.window(DETAIL_PREVIOUS_STATE, value=previous_state)
+    utils.window(DETAIL_REQUEST_ID, value=request_id)
+    utils.window(DETAIL_REVISION, value=request_id)
+    utils.window(DETAIL_STATE, value=desired)
+    utils.window(DETAIL_ERROR, clear=True)
+    return True
+
+
 def _project_mutation(identity, request_id, observed_state):
     state_name = _state_name(observed_state)
     if identity is None or state_name is None:
         return False
+    # Publish the authoritative result before terminally marking this intent.
+    # A new foreground tap that races the terminal write then uses this as its
+    # rollback base instead of the old optimistic detail state.
+    _remember_state(identity, state_name)
     if not _clear_worker_request(identity, request_id):
         return False
-    _remember_state(identity, state_name)
     if not _detail_request_is_current(identity, request_id):
         return True
     utils.window(DETAIL_STATE, value=state_name)
@@ -398,13 +477,13 @@ def _project_mutation(identity, request_id, observed_state):
 
 def _project_failure(identity, request_id, observed_state, previous_state):
     confirmed_name = _state_name(observed_state)
+    fallback_state = previous_state if previous_state in ("present", "absent") else "absent"
+    # Preserve the best confirmed state before a racing next intent reads it.
+    _remember_state(identity, confirmed_name or fallback_state)
     if not _clear_worker_request(identity, request_id):
         return False
-    if confirmed_name is not None:
-        _remember_state(identity, confirmed_name)
     if not _detail_request_is_current(identity, request_id):
         return True
-    fallback_state = previous_state if previous_state in ("present", "absent") else "absent"
     utils.window(DETAIL_STATE, value=confirmed_name or fallback_state)
     _clear_optimistic_projection(identity)
     utils.window(DETAIL_ERROR, value="verification-failed")
@@ -424,9 +503,6 @@ def _begin_detail_request(params, desired, identity):
     if _api_type_for_desired(desired) is None or identity is None:
         if identity is not None:
             _clear_optimistic_projection(identity)
-        return None
-    if _mutation_pending(identity):
-        LOG.debug("Ignoring duplicate Watchlist mutation for %s", identity)
         return None
     request_id, previous_state = _begin(identity, desired)
     if request_id is None:
@@ -452,7 +528,17 @@ def begin_key(params, desired):
         _clear_current_optimistic_projection()
         notify_error()
         return None
-    return _begin_detail_request({"rating_key": rating_key}, desired, identity)
+    if not supports_key_watchlist(params):
+        _clear_current_optimistic_projection()
+        return None
+    return _begin_detail_request(
+        {
+            "rating_key": rating_key,
+            "plex_type": params.get("plex_type"),
+        },
+        desired,
+        identity,
+    )
 
 
 def begin_tmdb(params, desired):
@@ -470,61 +556,94 @@ def begin_tmdb(params, desired):
     )
 
 
-def _complete_detail_request(
-    api_type, identity, request_id, previous_state, rating_key
-):
-    if not _worker_request_is_current(identity, request_id):
-        LOG.debug("Ignoring stale Watchlist worker request for %s", identity)
-        return False
-    success, observed_state = change(api_type, rating_key)
-    if success:
-        return _project_mutation(identity, request_id, observed_state)
-    if _project_failure(identity, request_id, observed_state, previous_state):
-        notify_error()
-    return False
+def _detail_worker_kick_is_valid(params, identity):
+    """Validate a worker wake-up without requiring its now-stale generation."""
+    return bool(
+        identity
+        and params.get("watchlist_identity") == identity
+        and params.get("request_id")
+        and _api_type_for_desired(params.get("desired")) is not None
+    )
 
 
-def _detail_request_parts(params, identity):
-    request_id = params.get("request_id")
-    previous_state = params.get("previous_state")
-    desired = params.get("desired")
-    api_type = _api_type_for_desired(desired)
-    if api_type is None or not _worker_request_is_current(identity, request_id):
-        return None
-    return api_type, request_id, previous_state
+def _reconcile_detail_intent(identity, resolve_rating_key, unresolved_message=None):
+    """Drain the latest requested state for one detail item.
+
+    Foreground plugin invocations only publish an intent and enqueue a wake-up.
+    Several wake-ups may arrive, but this serialized reconciler always performs
+    only the newest intent it can observe. A newer tap that lands during I/O
+    becomes the next iteration instead of being rejected or painted stale.
+    """
+    with _intent_lock(identity):
+        while True:
+            intent = _current_mutation_intent(identity)
+            if intent is None:
+                # Another queued wake-up already completed the latest intent.
+                return True
+            request_id, desired, previous_state = intent
+            rating_key = resolve_rating_key()
+
+            # Exact TMDb resolution can take long enough for a newer foreground
+            # intent to arrive. Do not issue an obsolete action in that case.
+            if not _worker_request_is_current(identity, request_id):
+                LOG.debug("Watchlist intent advanced while resolving %s", identity)
+                continue
+            if rating_key is None:
+                if _project_failure(identity, request_id, None, previous_state):
+                    if unresolved_message is None:
+                        notify_error()
+                    else:
+                        notify_error(unresolved_message)
+                    return False
+                # A newer intent arrived while the failure was being projected.
+                continue
+
+            success, observed_state = change(_api_type_for_desired(desired), rating_key)
+
+            # Only the still-current generation may paint UI, clear the durable
+            # intent, or raise an error. A stale failure is intentionally silent.
+            if not _worker_request_is_current(identity, request_id):
+                LOG.debug("Watchlist intent advanced during mutation for %s", identity)
+                continue
+            if success and _state_name(observed_state) is not None:
+                if _project_mutation(identity, request_id, observed_state):
+                    return True
+                # A foreground tap won the race with terminal projection.
+                continue
+            if success:
+                LOG.warning(
+                    "Plex Watchlist %s reported success without a valid state for %s",
+                    desired,
+                    identity,
+                )
+            if _project_failure(identity, request_id, observed_state, previous_state):
+                notify_error()
+                return False
+            # A foreground tap won the race with failure projection.
 
 
 def complete_key(params):
     """Verify and finish a previously projected rating-key detail mutation."""
     identity = _identity_for_key(params)
-    if identity is None or params.get("watchlist_identity") != identity:
+    if not supports_key_watchlist(params) or not _detail_worker_kick_is_valid(
+        params, identity
+    ):
         return False
-    request = _detail_request_parts(params, identity)
     rating_key = plex_discover.normalize_rating_key(params.get("rating_key"))
-    if request is None or rating_key is None:
+    if rating_key is None:
         return False
-    api_type, request_id, previous_state = request
-    return _complete_detail_request(
-        api_type, identity, request_id, previous_state, rating_key
-    )
+    return _reconcile_detail_intent(identity, lambda: rating_key)
 
 
 def complete_tmdb(params):
     """Resolve, verify, and finish a previously projected TMDb detail mutation."""
     identity = _identity_for_tmdb(params)
-    if identity is None or params.get("watchlist_identity") != identity:
+    if not _detail_worker_kick_is_valid(params, identity):
         return False
-    request = _detail_request_parts(params, identity)
-    if request is None:
-        return False
-    api_type, request_id, previous_state = request
-    rating_key = _rating_key_for_tmdb(params, identity)
-    if rating_key is None:
-        if _project_failure(identity, request_id, None, previous_state):
-            notify_error("Plex could not uniquely match this TMDb item for Watchlist.")
-        return False
-    return _complete_detail_request(
-        api_type, identity, request_id, previous_state, rating_key
+    return _reconcile_detail_intent(
+        identity,
+        lambda: _rating_key_for_tmdb(params, identity),
+        "Plex could not uniquely match this TMDb item for Watchlist.",
     )
 
 
@@ -541,13 +660,15 @@ def set_key(params, desired):
     api_type = _api_type_for_desired(desired)
     rating_key = plex_discover.normalize_rating_key(params.get("rating_key"))
     identity = _identity_for_key(params)
-    if api_type is None:
+    if api_type is None or not supports_key_watchlist(params):
         return False
     if rating_key is None or identity is None:
         notify_error()
         return False
     if utils.window(DETAIL_IDENTITY) != identity:
         return _legacy_change(api_type, rating_key)
+    if _mutation_pending(identity):
+        return False
     request = begin_key(params, desired)
     return complete_key(request) if request is not None else False
 
@@ -567,6 +688,8 @@ def set_tmdb(params, desired):
             notify_error("Plex could not uniquely match this TMDb item for Watchlist.")
             return False
         return _legacy_change(api_type, rating_key)
+    if _mutation_pending(identity):
+        return False
     request = begin_tmdb(params, desired)
     return complete_tmdb(request) if request is not None else False
 
@@ -575,11 +698,18 @@ def _capture_status(identity):
     # Capture mutation state before checking Pending. If an action begins
     # between these reads, its revision differs and this stale probe rejects.
     mutation_revision = utils.window(DETAIL_REVISION)
+    if utils.window(DETAIL_IDENTITY) != identity:
+        return None
+    if _current_mutation_intent(identity) is not None:
+        # The item-level intent survives a dialog close. Rehydrate it before a
+        # new detail's status probe can paint an older server observation.
+        _restore_detail_intent(identity)
+        return None
     if (
-        utils.window(DETAIL_IDENTITY) != identity
-        or utils.window(DETAIL_PENDING)
+        utils.window(DETAIL_PENDING)
         or _optimistic_projection_active(identity)
         or utils.window(DETAIL_REVISION) != mutation_revision
+        or _current_mutation_intent(identity) is not None
     ):
         return None
     # Status reads get an independent token and snapshot the current mutation
@@ -591,6 +721,9 @@ def _capture_status(identity):
 
 def _project_status(identity, status_revision, mutation_revision, observed_state):
     state_name = _state_name(observed_state)
+    if _current_mutation_intent(identity) is not None:
+        _restore_detail_intent(identity)
+        return False
     if (
         state_name is None
         or utils.window(DETAIL_IDENTITY) != identity
@@ -642,7 +775,7 @@ def status_key(params):
     """Silently project an authoritative state for the active Discover detail."""
     identity = params.get("watchlist_identity") or _identity_for_key(params)
     rating_key = plex_discover.normalize_rating_key(params.get("rating_key"))
-    if identity is None or rating_key is None:
+    if identity is None or rating_key is None or not supports_key_watchlist(params):
         return False
     revision = _capture_status(identity)
     if revision is None:

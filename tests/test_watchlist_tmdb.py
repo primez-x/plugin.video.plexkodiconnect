@@ -401,7 +401,7 @@ class TmdbWatchlistTests(unittest.TestCase):
         properties[watchlist.DETAIL_OPTIMISTIC_STATE] = "present"
         properties[watchlist.DETAIL_OPTIMISTIC_IDENTITY] = identity
         request = watchlist.begin_key(
-            {"rating_key": self.THE_ODYSSEY_KEY}, "present"
+            {"rating_key": self.THE_ODYSSEY_KEY, "plex_type": "movie"}, "present"
         )
         for property_name in (
             watchlist.DETAIL_IDENTITY,
@@ -424,8 +424,10 @@ class TmdbWatchlistTests(unittest.TestCase):
         self.assertEqual(
             properties[watchlist._item_state_property(identity)], "present"
         )
-        self.assertNotIn(
-            watchlist._item_mutation_request_property(identity), properties
+        self.assertIsNone(watchlist._current_mutation_intent(identity))
+        self.assertEqual(
+            properties[watchlist._item_mutation_completed_property(identity)],
+            request["request_id"],
         )
         self.assertNotIn(watchlist.DETAIL_STATE, properties)
         self.assertEqual(notifications, [])
@@ -436,7 +438,7 @@ class TmdbWatchlistTests(unittest.TestCase):
         identity = "plex.%s" % self.THE_ODYSSEY_KEY
         properties[watchlist.DETAIL_IDENTITY] = identity
         first_request = watchlist.begin_key(
-            {"rating_key": self.THE_ODYSSEY_KEY}, "present"
+            {"rating_key": self.THE_ODYSSEY_KEY, "plex_type": "movie"}, "present"
         )
         for property_name in (
             watchlist.DETAIL_IDENTITY,
@@ -449,12 +451,12 @@ class TmdbWatchlistTests(unittest.TestCase):
             properties.pop(property_name, None)
         properties[watchlist.DETAIL_IDENTITY] = identity
         second_request = watchlist.begin_key(
-            {"rating_key": self.THE_ODYSSEY_KEY}, "absent"
+            {"rating_key": self.THE_ODYSSEY_KEY, "plex_type": "movie"}, "absent"
         )
         changed = []
         watchlist.change = lambda *args: changed.append(args) or (True, False)
 
-        self.assertFalse(watchlist.complete_key(first_request))
+        self.assertTrue(watchlist.complete_key(first_request))
         self.assertTrue(watchlist.complete_key(second_request))
         self.assertEqual(
             changed, [("removeFromWatchlist", self.THE_ODYSSEY_KEY)]
@@ -462,6 +464,72 @@ class TmdbWatchlistTests(unittest.TestCase):
         self.assertEqual(
             properties[watchlist._item_state_property(identity)], "absent"
         )
+        self.assertEqual(notifications, [])
+
+    def test_worker_reconciles_a_newer_intent_arriving_during_plex_change(self):
+        service_entry, _, notifications, properties = load_service_entry()
+        watchlist = service_entry.watchlist
+        identity = "plex.%s" % self.THE_ODYSSEY_KEY
+        properties[watchlist.DETAIL_IDENTITY] = identity
+        first_request = watchlist.begin_key(
+            {"rating_key": self.THE_ODYSSEY_KEY, "plex_type": "movie"}, "present"
+        )
+        changed = []
+
+        def change(api_type, rating_key):
+            changed.append((api_type, rating_key))
+            if api_type == "addToWatchlist":
+                watchlist.begin_key(
+                    {"rating_key": self.THE_ODYSSEY_KEY, "plex_type": "movie"}, "absent"
+                )
+                return True, True
+            return True, False
+
+        watchlist.change = change
+
+        self.assertTrue(watchlist.complete_key(first_request))
+        self.assertEqual(
+            changed,
+            [
+                ("addToWatchlist", self.THE_ODYSSEY_KEY),
+                ("removeFromWatchlist", self.THE_ODYSSEY_KEY),
+            ],
+        )
+        self.assertEqual(properties[watchlist.DETAIL_STATE], "absent")
+        self.assertNotIn(watchlist.DETAIL_PENDING, properties)
+        self.assertIsNone(watchlist._current_mutation_intent(identity))
+        self.assertEqual(notifications, [])
+
+    def test_stale_worker_failure_is_silent_when_a_newer_intent_succeeds(self):
+        service_entry, _, notifications, properties = load_service_entry()
+        watchlist = service_entry.watchlist
+        identity = "plex.%s" % self.THE_ODYSSEY_KEY
+        properties[watchlist.DETAIL_IDENTITY] = identity
+        first_request = watchlist.begin_key(
+            {"rating_key": self.THE_ODYSSEY_KEY, "plex_type": "movie"}, "present"
+        )
+        changed = []
+
+        def change(api_type, rating_key):
+            changed.append((api_type, rating_key))
+            if api_type == "addToWatchlist":
+                watchlist.begin_key(
+                    {"rating_key": self.THE_ODYSSEY_KEY, "plex_type": "movie"}, "absent"
+                )
+                return False, None
+            return True, False
+
+        watchlist.change = change
+
+        self.assertTrue(watchlist.complete_key(first_request))
+        self.assertEqual(
+            changed,
+            [
+                ("addToWatchlist", self.THE_ODYSSEY_KEY),
+                ("removeFromWatchlist", self.THE_ODYSSEY_KEY),
+            ],
+        )
+        self.assertEqual(properties[watchlist.DETAIL_STATE], "absent")
         self.assertEqual(notifications, [])
 
     def test_detail_worker_failure_reverts_and_clears_skin_projection(self):
@@ -472,7 +540,7 @@ class TmdbWatchlistTests(unittest.TestCase):
         properties[watchlist.DETAIL_STATE] = "absent"
         properties[watchlist.DETAIL_OPTIMISTIC_STATE] = "present"
         request = watchlist.begin_key(
-            {"rating_key": self.THE_ODYSSEY_KEY}, "present"
+            {"rating_key": self.THE_ODYSSEY_KEY, "plex_type": "movie"}, "present"
         )
         watchlist.change = lambda api_type, rating_key: (False, None)
 
@@ -493,7 +561,10 @@ class TmdbWatchlistTests(unittest.TestCase):
         watchlist.change = lambda *args: changed.append(args) or (True, True)
 
         self.assertFalse(
-            watchlist.set_key({"rating_key": self.THE_ODYSSEY_KEY}, "present")
+            watchlist.set_key(
+                {"rating_key": self.THE_ODYSSEY_KEY, "plex_type": "movie"},
+                "present",
+            )
         )
         self.assertEqual(changed, [])
 
@@ -513,13 +584,16 @@ class TmdbWatchlistTests(unittest.TestCase):
         properties[watchlist.DETAIL_OPTIMISTIC_IDENTITY] = identity
 
         self.assertIsNone(
-            watchlist.begin_key({"rating_key": self.THE_ODYSSEY_KEY}, "present")
+            watchlist.begin_key(
+                {"rating_key": self.THE_ODYSSEY_KEY, "plex_type": "movie"},
+                "present",
+            )
         )
         self.assertNotIn(watchlist.DETAIL_OPTIMISTIC_STATE, properties)
         self.assertNotIn(watchlist.DETAIL_OPTIMISTIC_IDENTITY, properties)
         self.assertEqual(notifications, [])
 
-    def test_duplicate_begin_keeps_the_active_skin_projection(self):
+    def test_rapid_begin_replaces_the_pending_detail_intent(self):
         service_entry, _, notifications, properties = load_service_entry()
         watchlist = service_entry.watchlist
         identity = "plex.%s" % self.THE_ODYSSEY_KEY
@@ -528,9 +602,12 @@ class TmdbWatchlistTests(unittest.TestCase):
         properties[watchlist.DETAIL_OPTIMISTIC_STATE] = "present"
         properties[watchlist.DETAIL_OPTIMISTIC_IDENTITY] = identity
 
-        self.assertIsNone(
-            watchlist.begin_key({"rating_key": self.THE_ODYSSEY_KEY}, "present")
+        request = watchlist.begin_key(
+            {"rating_key": self.THE_ODYSSEY_KEY, "plex_type": "movie"}, "present"
         )
+        self.assertIsNotNone(request)
+        self.assertEqual(properties[watchlist.DETAIL_PENDING], request["request_id"])
+        self.assertEqual(properties[watchlist.DETAIL_STATE], "present")
         self.assertEqual(properties[watchlist.DETAIL_OPTIMISTIC_STATE], "present")
         self.assertEqual(properties[watchlist.DETAIL_OPTIMISTIC_IDENTITY], identity)
         self.assertEqual(notifications, [])
@@ -542,7 +619,10 @@ class TmdbWatchlistTests(unittest.TestCase):
         watchlist.change = lambda *args: changed.append(args) or (True, True)
 
         self.assertTrue(
-            watchlist.set_key({"rating_key": self.THE_ODYSSEY_KEY}, "present")
+            watchlist.set_key(
+                {"rating_key": self.THE_ODYSSEY_KEY, "plex_type": "movie"},
+                "present",
+            )
         )
         self.assertEqual(
             changed, [("addToWatchlist", self.THE_ODYSSEY_KEY)]
@@ -585,6 +665,14 @@ class TmdbWatchlistTests(unittest.TestCase):
         self.assertLess(
             writes.index(watchlist.DETAIL_PENDING),
             writes.index(watchlist.DETAIL_REVISION),
+        )
+        self.assertLess(
+            writes.index(watchlist._item_mutation_desired_property(identity)),
+            writes.index(watchlist._item_mutation_request_property(identity)),
+        )
+        self.assertLess(
+            writes.index(watchlist._item_mutation_previous_state_property(identity)),
+            writes.index(watchlist._item_mutation_request_property(identity)),
         )
 
     def test_status_snapshots_mutation_revision_before_its_pending_check(self):
@@ -700,7 +788,9 @@ class TmdbWatchlistTests(unittest.TestCase):
         watchlist.state = lambda rating_key: False
         try:
             self.assertTrue(
-                watchlist.status_key({"rating_key": self.MOVIE_KEY})
+                watchlist.status_key(
+                    {"rating_key": self.MOVIE_KEY, "plex_type": "movie"}
+                )
             )
         finally:
             watchlist._project_status = original_project
@@ -753,6 +843,34 @@ class TmdbWatchlistTests(unittest.TestCase):
         )
         self.assertEqual(properties[watchlist.DETAIL_STATE], "unknown")
         self.assertNotIn(watchlist._item_state_property(identity), properties)
+
+    def test_reopened_detail_restores_a_pending_item_intent_before_status(self):
+        service_entry, _, _, properties = load_service_entry()
+        watchlist = service_entry.watchlist
+        identity = "plex.%s" % self.THE_ODYSSEY_KEY
+        properties[watchlist.DETAIL_IDENTITY] = identity
+        request = watchlist.begin_key(
+            {"rating_key": self.THE_ODYSSEY_KEY, "plex_type": "movie"}, "present"
+        )
+
+        for property_name in (
+            watchlist.DETAIL_IDENTITY,
+            watchlist.DETAIL_STATE,
+            watchlist.DETAIL_PREVIOUS_STATE,
+            watchlist.DETAIL_PENDING,
+            watchlist.DETAIL_REQUEST_ID,
+            watchlist.DETAIL_REVISION,
+            watchlist.DETAIL_STATUS_REVISION,
+        ):
+            properties.pop(property_name, None)
+        properties[watchlist.DETAIL_IDENTITY] = identity
+        properties[watchlist.DETAIL_STATE] = "unknown"
+
+        self.assertIsNone(watchlist._capture_status(identity))
+        self.assertEqual(properties[watchlist.DETAIL_STATE], "present")
+        self.assertEqual(properties[watchlist.DETAIL_PENDING], request["request_id"])
+        self.assertEqual(properties[watchlist.DETAIL_REQUEST_ID], request["request_id"])
+        self.assertEqual(properties[watchlist.DETAIL_REVISION], request["request_id"])
 
     def test_monitor_status_requires_current_tmdb_helper_details(self):
         service_entry, _, _, properties = load_service_entry()
@@ -830,6 +948,21 @@ class TmdbWatchlistTests(unittest.TestCase):
         self.assertEqual(
             downloader.calls[1][2]["parameters"], {"ratingKey": self.MOVIE_KEY}
         )
+
+    def test_clip_rating_keys_are_rejected_before_any_watchlist_mutation(self):
+        service_entry, xbmc, notifications, _ = load_service_entry()
+        changed = []
+        service_entry.watchlist.change = lambda *args: changed.append(args) or (True, True)
+
+        result = service_entry.Service.watchlist_add_key(
+            service_proxy(service_entry),
+            "rating_key=%s&plex_type=video" % self.MOVIE_KEY,
+        )
+
+        self.assertFalse(result)
+        self.assertEqual(changed, [])
+        self.assertEqual(notifications, [])
+        self.assertEqual(xbmc.commands, [])
 
     def test_the_odyssey_exact_tmdb_identity_uses_its_canonical_plex_key(self):
         service_entry, xbmc, notifications, _ = load_service_entry()

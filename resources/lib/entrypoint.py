@@ -32,6 +32,7 @@ LOG = getLogger("PLEX.entrypoint")
 
 WATCHLIST_PAGE_SIZE = 100
 DISCOVER_REDIRECT_STATUS_CODES = (301, 302, 303, 307, 308)
+DISCOVER_DETAIL_TYPES = frozenset(("movie", "show"))
 
 
 class ListingException(Exception):
@@ -675,6 +676,14 @@ def discover_hubs():
             key = hub.get("key")
             if not title or not key or key in seen_keys:
                 continue
+            # With includeMetadata Plex supplies the preview cards beneath a
+            # hub. Avoid a dead-end category when every card is a trailer/clip
+            # rather than an item Plex can add to a Watchlist or play locally.
+            child_types = [child.get("type") for child in hub if child.get("type")]
+            if child_types and not any(
+                item_type in DISCOVER_DETAIL_TYPES for item_type in child_types
+            ):
+                continue
             seen_keys.add(key)
             # The hub 'key' is the full API path, e.g.
             # /hubs/sections/home/top_watchlisted
@@ -717,7 +726,10 @@ def discover_hub(hub_id):
     for xml in xmls:
         for child in xml:
             rating_key = plex_discover.normalize_rating_key(child.get("ratingKey"))
-            if child.get("type") == "placeholder" or rating_key is None:
+            if (
+                child.get("type") not in DISCOVER_DETAIL_TYPES
+                or rating_key is None
+            ):
                 continue
             if rating_key in seen_rating_keys:
                 continue
@@ -796,7 +808,17 @@ def discover_detail(rating_key):
     if not metadata:
         LOG.error("Could not load Plex Discover metadata for %s", rating_key)
         return False
-    api = mass_api([metadata[0]])[0]
+    if metadata[0].get("type") not in DISCOVER_DETAIL_TYPES:
+        LOG.info("Ignoring unsupported Plex Discover type for %s", rating_key)
+        return False
+    # Provider rating keys are global Plex Discover identities, not local PMS
+    # rating keys.  Resolve the exact provider GUID against the synced PKC
+    # database before falling back to the provider-only detail item.  This is
+    # the same native GUID path used by the Watchlist listing and deliberately
+    # avoids a title/year match.
+    library_apis = mass_api([metadata[0]], check_by_guid=True)
+    library_match = bool(library_apis)
+    api = library_apis[0] if library_match else mass_api([metadata[0]])[0]
     widgets.PLEX_TYPE = api.plex_type
     widgets.SYNCHED = False
     widgets.SECTION_ID = None
@@ -811,11 +833,12 @@ def discover_detail(rating_key):
     if guid:
         props["plexguid"] = guid
     props["PlexDiscoverDetail"] = "true"
-    # The provider item has no local PMS playback path.  Present it as
-    # non-playable so Arctic Fuse's first action remains Watchlist.
-    item["file"] = ""
-    item["isFolder"] = False
-    item["IsPlayable"] = "false"
+    if not library_match:
+        # The provider item has no local PMS playback path. Present it as
+        # non-playable so Arctic Fuse's first action remains Watchlist.
+        item["file"] = ""
+        item["isFolder"] = False
+        item["IsPlayable"] = "false"
     listitem = widgets.create_listitem(
         widgets.prepare_listitem(item), as_tuple=False
     )
