@@ -19,7 +19,7 @@ class FakeWindow(object):
         self.properties[key] = value
 
 
-def run_context(filename, labels):
+def run_context(filename, labels, window_properties=None):
     for module_name in ("xbmc", "xbmcgui"):
         sys.modules.pop(module_name, None)
 
@@ -29,6 +29,7 @@ def run_context(filename, labels):
     sys.modules["xbmc"] = xbmc
 
     window = FakeWindow()
+    window.properties.update(window_properties or {})
     xbmcgui = types.ModuleType("xbmcgui")
     xbmcgui.Window = lambda window_id: window
     sys.modules["xbmcgui"] = xbmcgui
@@ -66,6 +67,25 @@ class WatchlistContextTmdbTests(unittest.TestCase):
         self.assertEqual(
             window.properties["plexkodiconnect.command"],
             "WATCHLIST_REMOVE_TMDB?tmdb_id=132159&tmdb_type=tvshow",
+        )
+
+    def test_add_context_falls_back_to_tmdb_helper_monitor_identity(self):
+        window = run_context(
+            "context_watchlist_add_search.py",
+            {
+                "ListItem.UniqueID(tmdb)": "",
+                "ListItem.Property(tmdb_id)": "",
+                "ListItem.DBTYPE": "",
+            },
+            {
+                "TMDbHelper.ListItem.Monitor.TMDb_ID": "12345",
+                "TMDbHelper.ListItem.Monitor.TMDb_Type": "tv",
+            },
+        )
+
+        self.assertEqual(
+            window.properties["plexkodiconnect.command"],
+            "WATCHLIST_ADD_TMDB?tmdb_id=12345&tmdb_type=tv",
         )
 
 

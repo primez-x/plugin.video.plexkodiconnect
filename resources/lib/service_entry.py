@@ -98,6 +98,21 @@ def _watchlist_notification(message):
     )
 
 
+def _watchlist_success_notification(api_type):
+    message = {
+        "addToWatchlist": "Added to Plex Watchlist.",
+        "removeFromWatchlist": "Removed from Plex Watchlist.",
+    }.get(api_type)
+    if message:
+        utils.dialog(
+            "notification",
+            utils.lang(29999),
+            message,
+            time=3500,
+            sound=False,
+        )
+
+
 SERVICE_LOOP_SLEEP_MS = 200
 SKIP_MARKER_COUNTDOWN_SLEEP_MS = 33
 
@@ -416,6 +431,8 @@ class Service(object):
         if not _watchlist_action(api_type, rating_key):
             _watchlist_notification("Plex Watchlist could not be updated.")
             return False
+        LOG.info("watchlist_modify_key: %s succeeded", api_type)
+        _watchlist_success_notification(api_type)
         xbmc.executebuiltin("Container.Refresh")
         return True
 
@@ -430,6 +447,12 @@ class Service(object):
         params = dict(utils.parse_qsl(raw_params))
         tmdb_id = params.get("tmdb_id")
         tmdb_type = params.get("tmdb_type") or params.get("plex_type")
+        LOG.info(
+            "watchlist_modify_tmdb: %s tmdb_id=%s tmdb_type=%s",
+            api_type,
+            tmdb_id,
+            tmdb_type,
+        )
         rating_key = _discover_tmdb_ratingkey(tmdb_id, tmdb_type)
         if rating_key is None:
             LOG.warning("watchlist_modify_tmdb: no unique exact Plex match")
@@ -440,6 +463,8 @@ class Service(object):
         if not _watchlist_action(api_type, rating_key):
             _watchlist_notification("Plex Watchlist could not be updated.")
             return False
+        LOG.info("watchlist_modify_tmdb: %s succeeded", api_type)
+        _watchlist_success_notification(api_type)
         xbmc.executebuiltin("Container.Refresh")
         return True
 

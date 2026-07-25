@@ -113,6 +113,8 @@ def service_proxy(service_entry):
 
 class TmdbWatchlistTests(unittest.TestCase):
     MOVIE_KEY = "5d7768244de0ee001fcc7fed"
+    THE_ODYSSEY_ID = "1368337"
+    THE_ODYSSEY_KEY = "670cb74204e43056959bd4b3"
 
     def _metadata_payload(self):
         return {
@@ -137,7 +139,7 @@ class TmdbWatchlistTests(unittest.TestCase):
         )
 
         self.assertTrue(result)
-        self.assertEqual(notifications, [])
+        self.assertEqual(notifications[0][0][2], "Added to Plex Watchlist.")
         self.assertEqual(xbmc.commands, ["Container.Refresh"])
         self.assertEqual(len(downloader.calls), 2)
 
@@ -193,11 +195,48 @@ class TmdbWatchlistTests(unittest.TestCase):
         )
 
         self.assertTrue(result)
-        self.assertEqual(notifications, [])
+        self.assertEqual(notifications[0][0][2], "Added to Plex Watchlist.")
         self.assertEqual(xbmc.commands, ["Container.Refresh"])
         self.assertEqual(len(downloader.calls), 1)
         self.assertEqual(
             downloader.calls[0][2]["parameters"], {"ratingKey": self.MOVIE_KEY}
+        )
+
+    def test_the_odyssey_exact_tmdb_identity_uses_its_canonical_plex_key(self):
+        service_entry, xbmc, notifications = load_service_entry()
+        downloader = DownloadRecorder(
+            [
+                FakeResponse(
+                    {
+                        "MediaContainer": {
+                            "Metadata": {
+                                "type": "movie",
+                                "guid": "plex://movie/%s" % self.THE_ODYSSEY_KEY,
+                                "ratingKey": self.THE_ODYSSEY_KEY,
+                            }
+                        }
+                    }
+                ),
+                FakeResponse(),
+            ]
+        )
+        service_entry.downloadutils.DownloadUtils = lambda: downloader
+
+        result = service_entry.Service.watchlist_add_tmdb(
+            service_proxy(service_entry),
+            "tmdb_id=%s&tmdb_type=movie" % self.THE_ODYSSEY_ID,
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(notifications[0][0][2], "Added to Plex Watchlist.")
+        self.assertEqual(xbmc.commands, ["Container.Refresh"])
+        self.assertEqual(
+            downloader.calls[0][2]["parameters"],
+            {"guid": "tmdb://%s" % self.THE_ODYSSEY_ID, "type": 1},
+        )
+        self.assertEqual(
+            downloader.calls[1][2]["parameters"],
+            {"ratingKey": self.THE_ODYSSEY_KEY},
         )
 
     def test_invalid_tmdb_identity_fails_before_any_network_action(self):
