@@ -18,6 +18,7 @@ from . import path_ops
 from .downloadutils import DownloadUtils as DU
 from .plex_api import API, mass_api
 from . import plex_functions as PF
+from . import plex_discover
 from . import variables as v
 # Be careful - your using app in another Python instance!
 from . import app, widgets
@@ -151,6 +152,9 @@ def show_main_menu(content_type=None):
         directory_item(utils.lang(136), path)
     # Plex Search "Search"
     directory_item(utils.lang(137), "plugin://%s?mode=search" % v.ADDON_ID)
+    # Plex Discover provides external metadata and Watchlist actions.
+    directory_item('Plex Discovery',
+                   "plugin://%s?mode=discover_home" % v.ADDON_ID)
     # Plex Watch later and Watchlist
     if content_type not in ('image', 'audio'):
         directory_item(utils.lang(39211),
@@ -501,6 +505,247 @@ def watchlist(section_id=None):
         LOG.error('Could not download watch list list from plex.tv')
         raise ListingException
     show_listing(xml, None, section_id, False, "watchlist")
+
+
+def _discover_token():
+    """Validate Plex.tv Discover access and initialize PKC's request state."""
+    _wait_for_auth()
+    token = utils.window('plex_token')
+    if token == '':
+        LOG.error('Plex Discover requires a signed-in Plex.tv account')
+        raise ListingException
+    if utils.window('plex_restricteduser') == 'true':
+        LOG.error('Plex Discover is unavailable for a restricted Plex user')
+        raise ListingException
+    app.init(entrypoint=True)
+    return token
+
+
+def _discover_response(url, token, parameters=None, action_type='GET'):
+    """Send a Discover provider request without exposing the Plex token in URLs."""
+    response = DU().downloadUrl(
+        url,
+        action_type=action_type,
+        parameters=parameters,
+        authenticate=False,
+        headerOptions={
+            'X-Plex-Token': token,
+            'Accept': 'application/json'
+        },
+        return_response=True)
+    if response is None:
+        LOG.error('Plex Discover request failed for %s', url)
+    return response
+
+
+def _discover_json(url, token, parameters=None):
+    """Return a successful JSON Discover response, otherwise ``None``."""
+    response = _discover_response(url, token, parameters=parameters)
+    if response is None or not getattr(response, 'ok', False):
+        if response is not None:
+            LOG.error('Plex Discover request returned HTTP %s for %s',
+                      getattr(response, 'status_code', 'unknown'), url)
+        return None
+    try:
+        payload = response.json()
+    except (TypeError, ValueError):
+        LOG.error('Plex Discover returned invalid JSON for %s', url)
+        return None
+    if not isinstance(payload, dict):
+        LOG.error('Plex Discover returned an unexpected JSON shape for %s', url)
+        return None
+    return payload
+
+
+def _discover_notification(message, error=False):
+    utils.dialog('notification',
+                 utils.lang(29999),
+                 message,
+                 icon='{error}' if error else '{info}',
+                 time=4500,
+                 sound=False)
+
+
+def _discover_art_url(value, token):
+    """Make a provider artwork path usable by Kodi's image loader."""
+    if not isinstance(value, str) or not value:
+        return None
+    if value.startswith('//'):
+        return 'https:%s' % value
+    if value.startswith(('http://', 'https://')):
+        return value
+    if value.startswith('/'):
+        return utils.extend_url('https://metadata.provider.plex.tv%s' % value,
+                                {'X-Plex-Token': token})
+    return None
+
+
+def _discover_item_art(metadata, token):
+    thumb = _discover_art_url(metadata.get('thumb'), token)
+    fanart = _discover_art_url(metadata.get('art'), token)
+    artwork = {}
+    if thumb:
+        artwork.update({'thumb': thumb, 'poster': thumb})
+    if fanart:
+        artwork.update({'fanart': fanart, 'landscape': fanart})
+    return artwork
+
+
+def _discover_video_info(metadata):
+    media_type = plex_discover.plex_media_type(metadata.get('type'))
+    title = metadata.get('title') or metadata.get('originalTitle') or 'Untitled'
+    info = {
+        'title': title,
+        'plot': metadata.get('summary') or '',
+        'tagline': metadata.get('tagline') or '',
+        'rating': metadata.get('rating'),
+        'year': metadata.get('year'),
+        'premiered': metadata.get('originallyAvailableAt'),
+        'mediatype': 'movie' if media_type == 'movie' else 'tvshow'
+    }
+    return {key: value for key, value in info.items() if value is not None}
+
+
+def _add_discover_metadata_item(metadata, token, hub_title=None):
+    """Render one external Discover record with a canonical Watchlist action."""
+    guid = plex_discover.canonical_plex_guid(
+        metadata, plex_discover.plex_media_type(metadata.get('type')))
+    if guid is None:
+        return False
+    action = utils.extend_url(
+        'plugin://%s' % v.ADDON_ID,
+        {'mode': 'discover_watchlist_add', 'guid': guid})
+    info = _discover_video_info(metadata)
+    listitem = ListItem(info['title'], path=action)
+    listitem.setInfo('video', info)
+    artwork = _discover_item_art(metadata, token)
+    if artwork:
+        listitem.setArt(artwork)
+    listitem.setProperty('IsPlayable', 'false')
+    listitem.setProperty('Plex.Discover', 'true')
+    listitem.setProperty('Plex.Discover.Guid', guid)
+    if hub_title:
+        listitem.setProperty('Plex.Discover.Hub', hub_title)
+        listitem.setLabel2(hub_title)
+    listitem.addContextMenuItems([(utils.lang(30402), 'RunPlugin(%s)' % action)])
+    xbmcplugin.addDirectoryItem(handle=int(sys.argv[1]),
+                                url=action,
+                                listitem=listitem,
+                                isFolder=False)
+    return True
+
+
+def _show_discover_metadata(metadata, token, hub_title=None):
+    xbmcplugin.setContent(int(sys.argv[1]), v.CONTENT_TYPE_VIDEO)
+    for record in metadata:
+        _add_discover_metadata_item(record, token, hub_title)
+    xbmcplugin.addSortMethod(int(sys.argv[1]), xbmcplugin.SORT_METHOD_UNSORTED)
+
+
+def discover_home():
+    """Show Plex's external Discover home hubs with native provider metadata."""
+    token = _discover_token()
+    payload = _discover_json(plex_discover.DISCOVER_HOME_URL, token)
+    if payload is None:
+        raise ListingException
+
+    xbmcplugin.setContent(int(sys.argv[1]), v.CONTENT_TYPE_VIDEO)
+    directory_item('Search Plex Discovery',
+                   'plugin://%s?mode=discover_search' % v.ADDON_ID)
+    count = 0
+    for hub in plex_discover.discover_home_hubs(payload):
+        for metadata in hub['metadata']:
+            count += _add_discover_metadata_item(metadata, token, hub['title'])
+    if count == 0:
+        LOG.info('Plex Discover home returned no supported external metadata')
+    xbmcplugin.addSortMethod(int(sys.argv[1]), xbmcplugin.SORT_METHOD_UNSORTED)
+
+
+def discover_search(query=None):
+    """Search Plex Discover directly, separate from PKC's PMS hub search."""
+    token = _discover_token()
+    if query is None:
+        query = utils.dialog('input', 'Search Plex Discovery')
+    query = (query or '').strip()
+    if not query:
+        return
+    payload = _discover_json(
+        plex_discover.DISCOVER_SEARCH_URL,
+        token,
+        parameters={
+            'query': query,
+            'limit': 100,
+            'searchTypes': 'movies,tv',
+            'searchProviders': 'discover',
+            'includeMetadata': 1
+        })
+    if payload is None:
+        raise ListingException
+    _show_discover_metadata(plex_discover.discover_search_metadata(payload), token)
+
+
+def _add_discover_guid_to_watchlist(guid, token):
+    """Mutate Watchlist using only a validated canonical provider GUID."""
+    rating_key = plex_discover.rating_key_from_guid(guid)
+    if rating_key is None:
+        LOG.error('Refusing Watchlist mutation for malformed Plex Discover GUID')
+        _discover_notification('Plex could not validate this item for Watchlist.',
+                               error=True)
+        return False
+    response = _discover_response(
+        plex_discover.WATCHLIST_ACTION_URL,
+        token,
+        parameters={'ratingKey': rating_key},
+        action_type='PUT')
+    if response is None or not getattr(response, 'ok', False):
+        if response is not None:
+            LOG.error('Plex Watchlist add returned HTTP %s',
+                      getattr(response, 'status_code', 'unknown'))
+        _discover_notification('Plex Watchlist could not be updated.', error=True)
+        return False
+    _discover_notification('Added to Plex Watchlist.')
+    return True
+
+
+def add_discover_guid_to_watchlist(guid):
+    """Add an external Discover card to Watchlist using its Plex GUID."""
+    try:
+        token = _discover_token()
+    except ListingException:
+        _discover_notification('Plex Watchlist requires a signed-in Plex account.',
+                               error=True)
+        return False
+    return _add_discover_guid_to_watchlist(guid, token)
+
+
+def add_tmdb_to_watchlist(tmdb_id, tmdb_type):
+    """Resolve an exact TMDb ID to one Plex GUID, then add it to Watchlist."""
+    parameters = plex_discover.tmdb_match_parameters(tmdb_id, tmdb_type)
+    if parameters is None:
+        LOG.error('Refusing Watchlist add without a valid TMDb ID and media type')
+        _discover_notification('Plex could not identify this item for Watchlist.',
+                               error=True)
+        return False
+    try:
+        token = _discover_token()
+    except ListingException:
+        _discover_notification('Plex Watchlist requires a signed-in Plex account.',
+                               error=True)
+        return False
+    payload = _discover_json(plex_discover.METADATA_MATCH_URL,
+                             token,
+                             parameters=parameters)
+    if payload is None:
+        _discover_notification('Plex could not look up this item for Watchlist.',
+                               error=True)
+        return False
+    match = plex_discover.resolve_tmdb_match(payload, tmdb_type)
+    if match is None:
+        LOG.warning('Plex returned no unique exact TMDb match for Watchlist add')
+        _discover_notification('Plex could not uniquely match this item for Watchlist.',
+                               error=True)
+        return False
+    return _add_discover_guid_to_watchlist(match['guid'], token)
 
 
 def browse_plex(key=None, plex_type=None, section_id=None, synched=True,

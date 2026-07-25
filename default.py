@@ -76,6 +76,13 @@ def triage(mode, params, path, arguments, itemid):
         LOG.info('User requested fanarttv refresh')
         transfer.plex_command('fanart-scan')
         return
+    elif mode == 'discover_tmdb_watchlist':
+        entrypoint.add_tmdb_to_watchlist(params.get('tmdb_id'),
+                                         params.get('tmdb_type'))
+        return
+    elif mode == 'discover_watchlist_add':
+        entrypoint.add_discover_guid_to_watchlist(params.get('guid'))
+        return
     # Listings: we list ListItems and need to tell Kodi when we're done
     try:
         if mode == 'browseplex':
@@ -100,6 +107,10 @@ def triage(mode, params, path, arguments, itemid):
                                          'includeExternalMedia': 1},
                                    prompt=utils.lang(137),
                                    query=params.get('query'))
+        elif mode == 'discover_home':
+            entrypoint.discover_home()
+        elif mode == 'discover_search':
+            entrypoint.discover_search(query=params.get('query'))
         elif mode == 'route_to_extras':
             # Hack so we can store this path in the Kodi DB
             handle = ('plugin://%s?mode=extras&plex_id=%s'
