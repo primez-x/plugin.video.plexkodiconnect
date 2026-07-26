@@ -42,6 +42,10 @@ CACHE_REFRESH_REQUESTED = CACHE_PREFIX + "Refresh.Requested"
 CACHE_PREFETCH_REQUEST = CACHE_PREFIX + "Prefetch.Request"
 CACHE_WRAPPER_TAG = "PKCDiscoverCache"
 
+DISCOVER_SIGNAL_SENDER = "plugin.video.plexkodiconnect.SIGNAL"
+DISCOVER_REFRESH_MESSAGE = "discover_cache_refresh"
+DISCOVER_MAINTENANCE_MESSAGE = "discover_cache_maintenance"
+
 CACHE_ENTRY_LIMIT = 24
 CACHE_MAX_SOURCE_RECORDS = 128
 CACHE_MAX_RAW_BYTES = 512 * 1024
@@ -154,6 +158,30 @@ def _window_clear(key):
         utils.window(key, clear=True)
         return True
     except Exception:
+        return False
+
+
+def _notify_service(message):
+    """Wake the long-lived PKC service after durable work is queued."""
+    try:
+        import xbmc
+
+        xbmc.executeJSONRPC(
+            json.dumps({
+                "jsonrpc": "2.0",
+                "id": "pkc-discover-wake",
+                "method": "JSONRPC.NotifyAll",
+                "params": {
+                    "sender": DISCOVER_SIGNAL_SENDER,
+                    "message": message,
+                    "data": [],
+                },
+            })
+        )
+        return True
+    except Exception:
+        # The durable window signal remains the recovery path when Kodi is
+        # shutting down or the caller is running in a unit-test environment.
         return False
 
 
@@ -752,8 +780,19 @@ def _normalize_refresh_priority(priority):
     )
 
 
-def _request_refresh():
-    _window_set(CACHE_REFRESH_REQUESTED, str(time()))
+def _request_refresh(due_at=None):
+    now = time()
+    try:
+        requested_at = max(now, float(due_at)) if due_at is not None else now
+    except (TypeError, ValueError):
+        requested_at = now
+    # A future retry deadline must not be overwritten by a newer request that
+    # would otherwise make the retry invisible to the fallback scheduler.
+    requested_at = max(requested_at, _window_timestamp(CACHE_REFRESH_REQUESTED))
+    stored = _window_set(CACHE_REFRESH_REQUESTED, str(requested_at))
+    if stored:
+        _notify_service(DISCOVER_REFRESH_MESSAGE)
+    return stored
 
 
 def refresh_requested_at():
@@ -1113,6 +1152,7 @@ def finish_refresh(request, success):
                 if not _write_json(queue, retry):
                     return False
                 _safe_remove(claim)
+                _request_refresh(retry["not_before"])
                 return True
         except Exception as err:
             LOG.debug("Could not finish Plex Discover refresh: %s", err)
@@ -1137,7 +1177,10 @@ def _window_timestamp(key):
 
 def _request_maintenance():
     """Ask the service worker to enforce retention outside a listing process."""
-    _window_set(CACHE_MAINTENANCE_REQUESTED, str(time()))
+    stored = _window_set(CACHE_MAINTENANCE_REQUESTED, str(time()))
+    if stored:
+        _notify_service(DISCOVER_MAINTENANCE_MESSAGE)
+    return stored
 
 
 def maintenance_due():

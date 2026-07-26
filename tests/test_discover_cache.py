@@ -1,4 +1,5 @@
 import importlib
+import json
 import os
 import sys
 import tempfile
@@ -67,6 +68,32 @@ def provider_xml(*items):
 class DiscoverCacheTests(unittest.TestCase):
     URL = "https://discover.provider.plex.tv/hubs/sections/home/new-for-you?includeMetadata=1&limit=20"
     DETAIL_URL = "https://metadata.provider.plex.tv/library/metadata/item"
+
+    def test_durable_work_emits_typed_service_wake_notifications(self):
+        notifications = []
+        fake_xbmc = types.ModuleType("xbmc")
+        fake_xbmc.executeJSONRPC = notifications.append
+        previous_xbmc = sys.modules.get("xbmc")
+        sys.modules["xbmc"] = fake_xbmc
+        try:
+            with tempfile.TemporaryDirectory() as profile:
+                cache, _ = load_cache(profile)
+                cache.time = lambda: 100.0
+                self.assertTrue(self._put_xml(cache))
+                self.assertTrue(cache.request_hub_prefetch([self.URL]))
+        finally:
+            if previous_xbmc is None:
+                sys.modules.pop("xbmc", None)
+            else:
+                sys.modules["xbmc"] = previous_xbmc
+
+        messages = [json.loads(payload)["params"]["message"]
+                    for payload in notifications]
+        self.assertIn(cache.DISCOVER_MAINTENANCE_MESSAGE, messages)
+        self.assertIn(cache.DISCOVER_REFRESH_MESSAGE, messages)
+
+    def _put_xml(self, cache):
+        return cache.put_xml(self.URL, [provider_xml()], "hub")
 
     def test_persistent_record_survives_a_new_plugin_process_and_is_account_scoped(self):
         with tempfile.TemporaryDirectory() as profile:

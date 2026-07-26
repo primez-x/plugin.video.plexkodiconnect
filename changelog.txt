@@ -1,3 +1,7 @@
+version 3.12.44 (beta only):
+- Schedule skip-marker evaluation at the next relevant playback deadline while preserving smooth countdown updates.
+- Wake Discover refresh and maintenance workers from durable work signals instead of polling Kodi properties and cache directories.
+
 version 3.12.18 (beta only):
 - Recover Kodi's fullscreen playback window after stopped videos leave no active player but the OSD remains active.
 

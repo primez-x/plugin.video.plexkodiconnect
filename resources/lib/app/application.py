@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 from logging import getLogger
 import queue
-from threading import Lock, RLock
+from threading import Event, Lock, RLock
 
 import xbmc
 
@@ -51,6 +51,10 @@ class App(object):
             self.caching_thread = None
             # Dialog to skip markers such as intros and credits
             self.skip_markers_dialog = None
+            # Cross-process Discover cache wake signals are delivered through
+            # Kodi notifications and consumed by the PKC service loop.
+            self.discover_refresh_event = Event()
+            self.discover_maintenance_event = Event()
 
     @property
     def is_playing(self):

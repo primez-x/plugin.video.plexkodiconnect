@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 import logging
 import sys
-from time import monotonic
+from time import monotonic, time
 
 import xbmc
 import xbmcvfs
@@ -44,8 +44,7 @@ def _watchlist_notification(message):
 
 SERVICE_LOOP_SLEEP_MS = 200
 SKIP_MARKER_COUNTDOWN_SLEEP_MS = 33
-DISCOVER_REFRESH_POLL_SECONDS = 5.0
-DISCOVER_MAINTENANCE_POLL_SECONDS = 30.0
+DISCOVER_WAKE_FALLBACK_SECONDS = 60.0
 
 WINDOW_PROPERTIES = (
     "pms_token",
@@ -149,10 +148,10 @@ class Service(object):
         self.connection_check_running = False
         self.auth_running = False
         self.discover_refresh_threader = None
-        self.next_discover_refresh_poll = 0.0
-        self.last_discover_refresh_wake = 0.0
+        self.next_discover_refresh_fallback = 0.0
+        self.last_discover_refresh_wake = -1.0
         self.discover_maintenance_threader = None
-        self.next_discover_maintenance_poll = 0.0
+        self.next_discover_maintenance_fallback = 0.0
         self._init_done = True
 
     def should_cancel(self):
@@ -683,9 +682,14 @@ class Service(object):
             discover_cache.finish_refresh(request, False)
             return False
         finally:
-            # A completed request should release the next queued warmup
-            # immediately rather than waiting for the periodic recovery poll.
-            self.next_discover_refresh_poll = 0.0
+            # Drain a request that arrived while this worker was busy. The
+            # wake is cheap when no newer durable request exists because the
+            # scheduler compares the persisted signal before claiming work.
+            self.next_discover_refresh_fallback = 0.0
+            event = getattr(getattr(app, 'APP', None),
+                            'discover_refresh_event', None)
+            if event is not None:
+                event.set()
 
     def _queue_discover_prefetch(self):
         """Persist catalog warmup requests from the non-UI service process."""
@@ -696,24 +700,42 @@ class Service(object):
                 priority=discover_cache.REFRESH_PRIORITY_PREFETCH,
             )
 
+    @staticmethod
+    def _consume_discover_event(event_name):
+        event = getattr(getattr(app, 'APP', None), event_name, None)
+        if event is None or not event.is_set():
+            return False
+        event.clear()
+        return True
+
     def _schedule_discover_refresh(self):
-        """Claim at most one durable refresh request on a dedicated worker."""
+        """Claim durable refresh work only after a wake or slow fallback."""
         if self.discover_refresh_threader is None:
             return
         if not getattr(getattr(app, "ACCOUNT", None), "authenticated", False):
             return
-        self._queue_discover_prefetch()
         now = monotonic()
-        refresh_wake = discover_cache.refresh_requested_at()
-        if (
-            now < self.next_discover_refresh_poll
-            and refresh_wake <= self.last_discover_refresh_wake
-        ):
+        notified = self._consume_discover_event('discover_refresh_event')
+        fallback_due = now >= self.next_discover_refresh_fallback
+        if not notified and not fallback_due:
             return
-        self.last_discover_refresh_wake = max(
-            self.last_discover_refresh_wake, refresh_wake
-        )
-        self.next_discover_refresh_poll = now + DISCOVER_REFRESH_POLL_SECONDS
+        if fallback_due:
+            self.next_discover_refresh_fallback = now + DISCOVER_WAKE_FALLBACK_SECONDS
+        refresh_wake = discover_cache.refresh_requested_at()
+        if refresh_wake > time():
+            self.next_discover_refresh_fallback = min(
+                self.next_discover_refresh_fallback,
+                now + max(0.0, refresh_wake - time()))
+            return
+        # A notification is coalesced by its durable timestamp. A due slow
+        # recovery check is intentionally allowed to scan once, even when the
+        # timestamp did not advance, so a lost window write/notification cannot
+        # strand an otherwise durable queue entry.
+        if not fallback_due and refresh_wake <= self.last_discover_refresh_wake:
+            return
+        if refresh_wake > self.last_discover_refresh_wake:
+            self.last_discover_refresh_wake = refresh_wake
+        self._queue_discover_prefetch()
         if self.discover_refresh_threader.working():
             return
         request = discover_cache.claim_refresh()
@@ -728,13 +750,17 @@ class Service(object):
         return discover_cache.sweep()
 
     def _schedule_discover_maintenance(self):
-        """Run bounded cache cleanup only in the low-priority service worker."""
+        """Run bounded cache cleanup only after a wake or slow fallback."""
         if self.discover_maintenance_threader is None:
             return
         now = monotonic()
-        if now < self.next_discover_maintenance_poll:
+        notified = self._consume_discover_event('discover_maintenance_event')
+        fallback_due = now >= self.next_discover_maintenance_fallback
+        if not notified and not fallback_due:
             return
-        self.next_discover_maintenance_poll = now + DISCOVER_MAINTENANCE_POLL_SECONDS
+        if fallback_due:
+            self.next_discover_maintenance_fallback = (
+                now + DISCOVER_WAKE_FALLBACK_SECONDS)
         if (
             self.discover_maintenance_threader.working()
             or not discover_cache.maintenance_due()
@@ -760,6 +786,10 @@ class Service(object):
             name="discover-maintenance", worker_count=1
         )
         discover_cache.recover_refresh_claims()
+        for event_name in ('discover_refresh_event', 'discover_maintenance_event'):
+            event = getattr(getattr(app, 'APP', None), event_name, None)
+            if event is not None:
+                event.set()
 
         # Server auto-detect
         self.setup = initialsetup.InitialSetup()
@@ -970,12 +1000,16 @@ class Service(object):
                     self.companion_polling.start()
                 self.alexa_ws.start()
 
-            self._schedule_discover_maintenance()
-            self._schedule_discover_refresh()
-
             skip_marker_countdown_visible = False
             if app.APP.is_playing:
                 skip_marker_countdown_visible = skip_plex_markers.check()
+
+            # Discover work is intentionally lower priority than playback.
+            # In particular, do not inspect its Kodi properties or durable
+            # queues during the 33 ms countdown path.
+            if not skip_marker_countdown_visible:
+                self._schedule_discover_maintenance()
+                self._schedule_discover_refresh()
 
             xbmc.sleep(service_loop_sleep_ms(skip_marker_countdown_visible))
 

@@ -3,6 +3,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 
 
@@ -36,10 +37,14 @@ def load_kodimonitor():
         'resources.lib.app',
         'resources.lib.variables',
         'resources.lib.exceptions',
+        'resources.lib.skip_plex_markers',
         'resources.lib.skip_marker_state',
         'resources.lib.upnext',
     ):
         sys.modules.pop(module_name, None)
+    lib_package = sys.modules.get('resources.lib')
+    if lib_package is not None:
+        lib_package.__dict__.pop('skip_plex_markers', None)
 
     xbmc = types.ModuleType('xbmc')
     xbmc.commands = []
@@ -123,6 +128,8 @@ def load_kodimonitor():
     app.APP = SimpleNamespace(
         skip_markers_dialog=None,
         lock_playqueues=DummyLock(),
+        discover_refresh_event=Event(),
+        discover_maintenance_event=Event(),
         monitor=SimpleNamespace(
             abortRequested=lambda: False,
             waitForAbort=lambda timeout: False,
@@ -138,6 +145,11 @@ def load_kodimonitor():
 
     skip_marker_state = types.ModuleType('resources.lib.skip_marker_state')
     skip_marker_state.clear_properties = lambda: {}
+
+    skip_plex_markers = types.ModuleType('resources.lib.skip_plex_markers')
+    skip_plex_markers.reset_calls = []
+    skip_plex_markers.reset_runtime = lambda clear_properties=False: \
+        skip_plex_markers.reset_calls.append(clear_properties)
 
     upnext = types.ModuleType('resources.lib.upnext')
 
@@ -156,6 +168,7 @@ def load_kodimonitor():
         'resources.lib.variables': variables,
         'resources.lib.exceptions': exceptions,
         'resources.lib.skip_marker_state': skip_marker_state,
+        'resources.lib.skip_plex_markers': skip_plex_markers,
         'resources.lib.upnext': upnext,
     }.items():
         sys.modules[module_name] = module
@@ -191,6 +204,37 @@ class KodiMonitorTests(unittest.TestCase):
         state = kodimonitor.app.PLAYSTATE.player_states[2]
         self.assertTrue(state['upnext_signal_sent'])
         self.assertFalse(state['upnext_replaces_credit_skip'])
+
+    def test_discover_notifications_wake_the_matching_service_event(self):
+        kodimonitor, _, _, _ = load_kodimonitor()
+        monitor = kodimonitor.KodiMonitor()
+
+        monitor.onNotification(
+            'plugin.video.plexkodiconnect.SIGNAL',
+            'discover_cache_refresh',
+            '')
+        self.assertTrue(kodimonitor.app.APP.discover_refresh_event.is_set())
+        self.assertFalse(kodimonitor.app.APP.discover_maintenance_event.is_set())
+
+        kodimonitor.app.APP.discover_refresh_event.clear()
+        monitor.onNotification(
+            'plugin.video.plexkodiconnect.SIGNAL',
+            'discover_cache_maintenance',
+            '')
+        self.assertTrue(kodimonitor.app.APP.discover_maintenance_event.is_set())
+
+    def test_playback_and_settings_transitions_invalidate_marker_schedule(self):
+        kodimonitor, _, _, _ = load_kodimonitor()
+        monitor = kodimonitor.KodiMonitor()
+
+        monitor.onSettingsChanged()
+        monitor.onNotification('sender', 'Player.OnSeek', '')
+        monitor.onNotification('sender', 'Player.OnPause', '')
+        monitor.onNotification('sender', 'Player.OnResume', '')
+
+        self.assertEqual(
+            kodimonitor.skip_plex_markers.reset_calls,
+            [False, False, False, False])
 
     def test_playback_cleanup_schedules_stranded_window_recovery(self):
         kodimonitor, _, _, backgroundthread = load_kodimonitor()

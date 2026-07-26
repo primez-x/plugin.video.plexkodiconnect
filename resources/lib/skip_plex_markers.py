@@ -15,47 +15,158 @@ LOG = getLogger('PLEX.skipmarkers')
 # countdown. During this window the dialog shows a live countdown; if the
 # user does nothing the skip fires when it reaches zero. Clicking cancels.
 AUTO_SKIP_COUNTDOWN_SECONDS = 10.0
+COUNTDOWN_CHECK_INTERVAL_SECONDS = 0.033
+UNKNOWN_PLAYBACK_SPEED_RECHECK_SECONDS = 5.0
 
 # Supported types of markers that can be skipped; values here will be
 # displayed to the user when skipping is available
 MARKERS = {
-    'intro': (utils.lang(30525), 'enableSkipIntro', 'enableAutoSkipIntro'), # Skip intro
+    'intro': (utils.lang(30525), 'enableSkipIntro', 'enableAutoSkipIntro'),  # Skip intro
     'credits': (utils.lang(30526), 'enableSkipCredits', 'enableAutoSkipCredits'),  # Skip credits
     'commercial': (utils.lang(30530), 'enableSkipCommercials', 'enableAutoSkipCommercials'),  # Skip commercial
 }
 
+_MISSING = object()
+_RUNTIME = {
+    'next_check_at': 0.0,
+    'last_result': False,
+    'countdown_visible': False,
+    'settings': None,
+    'marker_signature': None,
+    'prepared_markers': None,
+    'credit_popup_suppressed': None,
+    'published_properties': {},
+}
+
+
+def _safe_setting(key, default=''):
+    try:
+        return utils.settings(key)
+    except Exception:
+        return default
+
+
+def _safe_float(value, default):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value, default):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _load_runtime_settings():
+    settings = _RUNTIME['settings']
+    if settings is not None:
+        return settings
+
+    settings = {
+        'start_offset': _safe_float(
+            _safe_setting('skipIntroStartOffset'), 5.0),
+        'end_offset': _safe_float(
+            _safe_setting('skipIntroEndOffset'), 8.0),
+        'auto_hide_seconds': 0,
+        'markers': {},
+    }
+    if _safe_setting('enableAutoHideSkip') == 'true':
+        settings['auto_hide_seconds'] = max(
+            0, _safe_int(_safe_setting('enableAutoHideSkipTime'), 0))
+    for typus, definition in MARKERS.items():
+        settings['markers'][typus] = {
+            'enabled': _safe_setting(definition[1]) == 'true',
+            'auto_skip': _safe_setting(definition[2]) == 'true',
+        }
+    _RUNTIME['settings'] = settings
+    return settings
+
+
+def _markers_signature(markers):
+    try:
+        return tuple(tuple(marker) for marker in markers)
+    except (TypeError, ValueError):
+        return None
+
+
+def _countdown_start(marker_start):
+    """Wall-clock playback position at which the auto-skip countdown begins."""
+    return max(0.0, marker_start - AUTO_SKIP_COUNTDOWN_SECONDS)
+
+
+def _prepared_markers(markers):
+    signature = _markers_signature(markers)
+    if signature == _RUNTIME['marker_signature']:
+        return _RUNTIME['prepared_markers'] or ()
+
+    settings = _load_runtime_settings()
+    prepared = []
+    for start, end, typus, _ in markers:
+        definition = MARKERS.get(typus)
+        marker_settings = settings['markers'].get(typus)
+        if definition is None or not marker_settings or not marker_settings['enabled']:
+            continue
+        adjusted_start = start + settings['start_offset']
+        adjusted_end = end + settings['end_offset']
+        prepared.append({
+            'type': typus,
+            'definition': definition,
+            'start': adjusted_start,
+            'end': adjusted_end,
+            'trigger_start': (
+                _countdown_start(adjusted_start)
+                if marker_settings['auto_skip'] else adjusted_start),
+            'auto_skip': marker_settings['auto_skip'],
+        })
+    _RUNTIME['marker_signature'] = signature
+    _RUNTIME['prepared_markers'] = prepared
+    _RUNTIME['credit_popup_suppressed'] = None
+    return prepared
+
+
+def _set_marker_properties(properties, force=False):
+    published = _RUNTIME['published_properties']
+    for key, value in properties.items():
+        if not force and published.get(key, _MISSING) == value:
+            continue
+        utils.setGlobalProperty('skip_marker.%s' % key, value)
+        published[key] = value
+
+
+def _clear_marker_properties(force=False):
+    _set_marker_properties(skip_marker_state.clear_properties(), force=force)
+
+
+def reset_runtime(clear_properties=False):
+    """Invalidate marker scheduling after a playback or settings transition."""
+    if clear_properties:
+        clear_properties_map = skip_marker_state.clear_properties()
+        _set_marker_properties(clear_properties_map, force=True)
+        _RUNTIME['published_properties'] = dict(clear_properties_map)
+    _RUNTIME['next_check_at'] = 0.0
+    _RUNTIME['last_result'] = False
+    _RUNTIME['countdown_visible'] = False
+    _RUNTIME['settings'] = None
+    _RUNTIME['marker_signature'] = None
+    _RUNTIME['prepared_markers'] = None
+    _RUNTIME['credit_popup_suppressed'] = None
+
 
 def _marker_start_offset():
-    """User-tunable trigger offset (setting skipIntroStartOffset).
-    Positive = skip fires later, negative = fires earlier."""
-    try:
-        return float(utils.settings('skipIntroStartOffset'))
-    except (TypeError, ValueError):
-        return 5.0
+    """User-tunable trigger offset (setting skipIntroStartOffset)."""
+    return _load_runtime_settings()['start_offset']
 
 
 def _marker_end_offset():
-    """User-tunable landing offset (setting skipIntroEndOffset).
-    Positive = skip lands later, negative = lands earlier."""
-    try:
-        return float(utils.settings('skipIntroEndOffset'))
-    except (TypeError, ValueError):
-        return 8.0
-
-
-def _set_marker_properties(properties):
-    for key, value in properties.items():
-        utils.setGlobalProperty('skip_marker.%s' % key, value)
-
-
-def _clear_marker_properties():
-    _set_marker_properties(skip_marker_state.clear_properties())
+    """User-tunable landing offset (setting skipIntroEndOffset)."""
+    return _load_runtime_settings()['end_offset']
 
 
 def _auto_hide_seconds():
-    if utils.settings("enableAutoHideSkip") != "true":
-        return 0
-    return int(utils.settings("enableAutoHideSkipTime"))
+    return _load_runtime_settings()['auto_hide_seconds']
 
 
 def _publish_marker_state(marker_type, marker_message, marker_end, creation_time, progress,
@@ -102,43 +213,38 @@ def _should_skip_credits_popup():
         player_state = app.PLAYSTATE.player_states.get(playerid, {})
         return player_state.get('upnext_replaces_credit_skip', False)
 
-def _countdown_start(marker_start):
-    """Wall-clock playback position at which the auto-skip countdown begins."""
-    return max(0.0, marker_start - AUTO_SKIP_COUNTDOWN_SECONDS)
 
-def skip_markers(markers, markers_hidden):
-    try:
-        progress = app.APP.player.getTime()
-    except RuntimeError:
-        # XBMC is not playing any media file yet
-        return False
+def skip_markers(markers, markers_hidden, progress=None):
+    if progress is None:
+        try:
+            progress = app.APP.player.getTime()
+        except RuntimeError:
+            # XBMC is not playing any media file yet
+            return False
+
     within_marker = None
     marker_definition = None
     marker_start = None
     marker_end = None
     is_auto_skip = False
-    for start, end, typus, _ in markers:
-        # Apply user-tunable offsets to both start and end up front so every
-        # downstream use (countdown, detection window, seek target, dialog)
-        # sees the adjusted values without needing + OFFSET at each site.
-        start += _marker_start_offset()
-        end += _marker_end_offset()
-        marker_definition = MARKERS[typus]
-        # Skip the PKC credits popup if Up Next is enabled (Up Next handles it)
-        if typus == 'credits' and _should_skip_credits_popup():
+    prepared_markers = _prepared_markers(markers)
+    if (
+        _RUNTIME['credit_popup_suppressed'] is None
+        and any(marker['type'] == 'credits' for marker in prepared_markers)
+    ):
+        _RUNTIME['credit_popup_suppressed'] = _should_skip_credits_popup()
+
+    for marker in prepared_markers:
+        typus = marker['type']
+        if typus == 'credits' and _RUNTIME['credit_popup_suppressed']:
             continue
-        skip_enabled = utils.settings(marker_definition[1]) == "true"
-        if not skip_enabled:
-            continue
-        auto_skip = utils.settings(marker_definition[2]) == "true"
-        # For auto-skip markers, widen the detection window to include the
-        # countdown phase (before the marker start).
-        if auto_skip:
-            trigger_start = _countdown_start(start)
-        else:
-            trigger_start = start
-        # The "-1" is important since timestamps/seeks are not exact and we
-        # could end up in an endless loop within start & end
+        start = marker['start']
+        end = marker['end']
+        marker_definition = marker['definition']
+        auto_skip = marker['auto_skip']
+        trigger_start = marker['trigger_start']
+        # The "-1" is important since timestamps/seeks are not exact and
+        # we could end up in an endless loop within start & end
         # see https://github.com/croneter/PlexKodiConnect/issues/2002
         if trigger_start <= progress < end - 1:
             within_marker = typus
@@ -155,9 +261,7 @@ def skip_markers(markers, markers_hidden):
         if app.APP.skip_markers_dialog is not None:
             app.APP.skip_markers_dialog.close()
             app.APP.skip_markers_dialog = None
-            _clear_marker_properties()
-        else:
-            _clear_marker_properties()
+        _clear_marker_properties()
         return False
 
     # ---- We are within a marker window ----
@@ -179,10 +283,10 @@ def skip_markers(markers, markers_hidden):
         auto_skip_label = utils.lang(39729)  # "Skipping in..."
 
         if progress >= marker_start:
-            # Countdown has expired — fire the skip now.
+            # Countdown has expired - fire the skip now.
             # marker_end is already offset. Mark as hidden to prevent
-            # re-trigger loop: AML seeks are imprecise and may land inside
-            # the marker window.
+            # re-trigger loop: seeks are imprecise and may land inside the
+            # marker window.
             LOG.info('Auto-skipping %s marker, seeking to %s',
                      within_marker, marker_end)
             markers_hidden[within_marker] = True
@@ -193,7 +297,7 @@ def skip_markers(markers, markers_hidden):
             _clear_marker_properties()
             return True
 
-        # Countdown phase — show/manage the dialog
+        # Countdown phase - show/manage the dialog
         if app.APP.skip_markers_dialog is None:
             app.APP.skip_markers_dialog = SkipMarkerDialog(
                 'script-plex-skip_marker.xml',
@@ -242,13 +346,14 @@ def skip_markers(markers, markers_hidden):
             creation_walltime=current_walltime)
         app.APP.skip_markers_dialog.show()
 
-    # Publish state without countdown (auto_hide_seconds=0 → empty countdown
-    # properties → skin hides badge and progress fill).
+    # Publish state without countdown (auto_hide_seconds=0 -> empty countdown
+    # properties -> skin hides badge and progress fill).
     _publish_marker_state(within_marker, marker_definition[0], marker_end,
                           marker_start, progress,
                           auto_hide_seconds=0,
                           toast_visible=True, auto_skip=False)
-    return True
+    # The dialog is persistent, but no fast countdown repaint is needed.
+    return False
 
 
 def skip_active_marker():
@@ -261,15 +366,86 @@ def skip_active_marker():
     if app.APP.skip_markers_dialog is not None:
         app.APP.skip_markers_dialog.close()
         app.APP.skip_markers_dialog = None
+    _clear_marker_properties()
+    reset_runtime()
     return True
 
-def check():
+
+def _playback_speed():
     with app.APP.lock_playqueues:
         if len(app.PLAYSTATE.active_players) != 1:
+            return 0.0
+        playerid = list(app.PLAYSTATE.active_players)[0]
+        state = app.PLAYSTATE.player_states.get(playerid, {})
+        try:
+            return float(state.get('speed', 1.0))
+        except (TypeError, ValueError):
+            return 1.0
+
+
+def _schedule_next_check(progress, prepared_markers, active_marker):
+    now = time.monotonic()
+    if _RUNTIME['countdown_visible']:
+        _RUNTIME['next_check_at'] = now + COUNTDOWN_CHECK_INTERVAL_SECONDS
+        return
+    if active_marker is not None:
+        next_progress = max(progress, active_marker['end'] - 1.0)
+    else:
+        future_starts = [
+            marker['trigger_start']
+            for marker in prepared_markers
+            if marker['trigger_start'] > progress
+        ]
+        if not future_starts:
+            _RUNTIME['next_check_at'] = float('inf')
+            return
+        next_progress = min(future_starts)
+
+    delta = max(0.0, next_progress - progress)
+    speed = _playback_speed()
+    if speed <= 0.0:
+        _RUNTIME['next_check_at'] = now + UNKNOWN_PLAYBACK_SPEED_RECHECK_SECONDS
+    else:
+        _RUNTIME['next_check_at'] = now + max(
+            COUNTDOWN_CHECK_INTERVAL_SECONDS, delta / speed)
+
+
+def check():
+    now = time.monotonic()
+    if now < _RUNTIME['next_check_at']:
+        return _RUNTIME['last_result']
+
+    with app.APP.lock_playqueues:
+        if len(app.PLAYSTATE.active_players) != 1:
+            _RUNTIME['last_result'] = False
+            _RUNTIME['countdown_visible'] = False
+            _RUNTIME['next_check_at'] = float('inf')
             return False
         playerid = list(app.PLAYSTATE.active_players)[0]
         markers = app.PLAYSTATE.player_states[playerid]['markers']
         markers_hidden = app.PLAYSTATE.player_states[playerid]['markers_hidden']
     if not markers:
+        _RUNTIME['last_result'] = False
+        _RUNTIME['countdown_visible'] = False
+        _RUNTIME['next_check_at'] = float('inf')
         return False
-    return skip_markers(markers, markers_hidden)
+
+    try:
+        progress = app.APP.player.getTime()
+    except RuntimeError:
+        _RUNTIME['last_result'] = False
+        _RUNTIME['countdown_visible'] = False
+        _RUNTIME['next_check_at'] = now + UNKNOWN_PLAYBACK_SPEED_RECHECK_SECONDS
+        return False
+
+    prepared_markers = _prepared_markers(markers)
+    result = skip_markers(markers, markers_hidden, progress=progress)
+    active_marker = None
+    for marker in prepared_markers:
+        if marker['trigger_start'] <= progress < marker['end'] - 1.0:
+            active_marker = marker
+            break
+    _RUNTIME['last_result'] = bool(result)
+    _RUNTIME['countdown_visible'] = bool(result)
+    _schedule_next_check(progress, prepared_markers, active_marker)
+    return bool(result)

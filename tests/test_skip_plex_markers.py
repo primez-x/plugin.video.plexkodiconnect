@@ -1,5 +1,6 @@
 import importlib
 import sys
+import time
 import types
 import unittest
 from pathlib import Path
@@ -7,6 +8,7 @@ from types import SimpleNamespace
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+ORIGINAL_MONOTONIC = time.monotonic
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -23,8 +25,10 @@ class FakePlayer(object):
     def __init__(self, progress):
         self.progress = progress
         self.seeks = []
+        self.get_time_calls = 0
 
     def getTime(self):
+        self.get_time_calls += 1
         return self.progress
 
     def seekTime(self, value):
@@ -90,6 +94,8 @@ def load_skip_plex_markers(progress, settings=None):
     }
     values.update(settings or {})
     properties = {}
+    property_writes = []
+    setting_calls = {}
     utils = types.ModuleType('resources.lib.utils')
     utils.lang = lambda string_id: {
         30525: 'Skip intro',
@@ -97,8 +103,18 @@ def load_skip_plex_markers(progress, settings=None):
         30530: 'Skip commercial',
         39729: 'Skipping in...',
     }[string_id]
-    utils.settings = lambda key: values[key]
-    utils.setGlobalProperty = lambda key, value: properties.__setitem__(key, value)
+    def settings(key):
+        setting_calls[key] = setting_calls.get(key, 0) + 1
+        return values[key]
+
+    def set_global_property(key, value):
+        property_writes.append((key, value))
+        properties[key] = value
+
+    utils.settings = settings
+    utils.setting_calls = setting_calls
+    utils.property_writes = property_writes
+    utils.setGlobalProperty = set_global_property
     utils.getGlobalProperty = lambda key: properties.get(key, '')
     sys.modules['resources.lib.utils'] = utils
 
@@ -195,16 +211,119 @@ class SkipPlexMarkersTests(unittest.TestCase):
             settings={'enableAutoSkipIntro': 'true'})
         ticks = iter([100.0, 100.4])
         skip_plex_markers.time.monotonic = lambda: next(ticks)
+        try:
+            skip_plex_markers.skip_markers([(20.0, 45.0, 'intro', False)], {})
+            app.APP.player.progress = 12.0
+            countdown_visible = skip_plex_markers.skip_markers(
+                [(20.0, 45.0, 'intro', False)], {})
 
-        skip_plex_markers.skip_markers([(20.0, 45.0, 'intro', False)], {})
-        app.APP.player.progress = 12.0
-        countdown_visible = skip_plex_markers.skip_markers(
-            [(20.0, 45.0, 'intro', False)], {})
+            self.assertTrue(countdown_visible)
+            self.assertEqual(properties['skip_marker.hide_remaining'], '8')
+            self.assertEqual(properties['skip_marker.hide_progress_percent'], '80.0')
+            self.assertEqual(properties['skip_marker.hide_progress_frame'], '800')
+        finally:
+            skip_plex_markers.time.monotonic = ORIGINAL_MONOTONIC
 
-        self.assertTrue(countdown_visible)
-        self.assertEqual(properties['skip_marker.hide_remaining'], '8')
-        self.assertEqual(properties['skip_marker.hide_progress_percent'], '80.0')
+    def test_check_revisits_a_visible_countdown_at_33ms(self):
+        skip_plex_markers, app, _ = load_skip_plex_markers(
+            progress=12.0,
+            settings={'enableAutoSkipIntro': 'true'})
+        app.PLAYSTATE.active_players = {1}
+        app.PLAYSTATE.player_states = {
+            1: {
+                'markers': [(20.0, 45.0, 'intro', False)],
+                'markers_hidden': {},
+                'speed': 1,
+            },
+        }
+        ticks = iter([
+            100.000, 100.000, 100.033,
+            100.067, 100.067, 100.100,
+        ])
+        skip_plex_markers.time.monotonic = lambda: next(ticks)
+        try:
+            self.assertTrue(skip_plex_markers.check())
+            self.assertEqual(app.APP.player.get_time_calls, 1)
+
+            self.assertTrue(skip_plex_markers.check())
+            self.assertEqual(app.APP.player.get_time_calls, 2)
+        finally:
+            skip_plex_markers.time.monotonic = ORIGINAL_MONOTONIC
+
+    def test_distant_marker_is_deadline_gated(self):
+        skip_plex_markers, app, properties = load_skip_plex_markers(progress=5.0)
+        app.PLAYSTATE.active_players = {1}
+        app.PLAYSTATE.player_states = {
+            1: {
+                'markers': [(3600.0, 3645.0, 'intro', False)],
+                'markers_hidden': {},
+                'speed': 1,
+            },
+        }
+        player = app.APP.player
+        utils = sys.modules['resources.lib.utils']
+
+        self.assertFalse(skip_plex_markers.check())
+        property_write_count = len(utils.setting_calls)
+        property_set_count = len(properties)
+
+        for _ in range(20):
+            self.assertFalse(skip_plex_markers.check())
+
+        self.assertEqual(player.get_time_calls, 1)
+        self.assertEqual(len(utils.setting_calls), property_write_count)
+        self.assertEqual(len(properties), property_set_count)
+
+    def test_marker_properties_are_diff_written(self):
+        skip_plex_markers, app, properties = load_skip_plex_markers(
+            progress=12.0,
+            settings={'enableAutoSkipIntro': 'true'})
+        utils = sys.modules['resources.lib.utils']
+
+        self.assertTrue(
+            skip_plex_markers.skip_markers(
+                [(20.0, 45.0, 'intro', False)], {}, progress=12.0))
+        writes_after_first_publish = len(utils.setting_calls)
+        property_writes = len(utils.property_writes)
+
+        self.assertTrue(
+            skip_plex_markers.skip_markers(
+                [(20.0, 45.0, 'intro', False)], {}, progress=12.0))
+
+        self.assertEqual(len(utils.setting_calls), writes_after_first_publish)
+        self.assertEqual(len(utils.property_writes), property_writes)
         self.assertEqual(properties['skip_marker.hide_progress_frame'], '800')
+
+    def test_manual_marker_does_not_request_fast_countdown_polling(self):
+        skip_plex_markers, app, _ = load_skip_plex_markers(progress=20.0)
+        app.PLAYSTATE.active_players = {1}
+        app.PLAYSTATE.player_states = {
+            1: {
+                'markers': [(20.0, 45.0, 'intro', False)],
+                'markers_hidden': {},
+                'speed': 1,
+            },
+        }
+
+        self.assertFalse(skip_plex_markers.check())
+
+    def test_runtime_reset_forces_the_next_distant_marker_evaluation(self):
+        skip_plex_markers, app, _ = load_skip_plex_markers(progress=5.0)
+        app.PLAYSTATE.active_players = {1}
+        app.PLAYSTATE.player_states = {
+            1: {
+                'markers': [(3600.0, 3645.0, 'intro', False)],
+                'markers_hidden': {},
+                'speed': 1,
+            },
+        }
+        player = app.APP.player
+
+        skip_plex_markers.check()
+        self.assertEqual(player.get_time_calls, 1)
+        skip_plex_markers.reset_runtime()
+        skip_plex_markers.check()
+        self.assertEqual(player.get_time_calls, 2)
 
     def test_skip_active_marker_seeks_to_published_marker_end(self):
         skip_plex_markers, app, properties = load_skip_plex_markers(progress=15.0)

@@ -3,6 +3,8 @@ import sys
 import types
 import unittest
 from pathlib import Path
+from threading import Event
+from time import monotonic
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -160,6 +162,99 @@ class ServiceEntryStartupTests(unittest.TestCase):
                 )
             ],
         )
+
+    def test_discover_refresh_scheduler_is_idle_without_a_wake_signal(self):
+        service_entry = load_service_entry()
+        service = object.__new__(service_entry.Service)
+        claims = []
+        service.discover_refresh_threader = types.SimpleNamespace(
+            working=lambda: False,
+            addTask=lambda *args: claims.append(args),
+        )
+        maintenance_claims = []
+        service.discover_maintenance_threader = types.SimpleNamespace(
+            working=lambda: False,
+            addTask=lambda *args: maintenance_claims.append(args),
+        )
+        service.next_discover_refresh_fallback = monotonic() + 60
+        service.last_discover_refresh_wake = 0
+        service.next_discover_maintenance_fallback = monotonic() + 60
+        service_entry.app.APP = types.SimpleNamespace(
+            discover_refresh_event=Event(),
+            discover_maintenance_event=Event())
+        service_entry.app.ACCOUNT = types.SimpleNamespace(authenticated=True)
+        service_entry.discover_cache = types.SimpleNamespace(
+            refresh_requested_at=lambda: 0,
+            maintenance_due=lambda: (_ for _ in ()).throw(
+                AssertionError('idle scheduler must not inspect maintenance state')),
+            claim_refresh=lambda: (_ for _ in ()).throw(
+                AssertionError('idle scheduler must not claim refresh work')),
+        )
+
+        service._schedule_discover_refresh()
+        service._schedule_discover_maintenance()
+
+        self.assertEqual(claims, [])
+        self.assertEqual(maintenance_claims, [])
+
+    def test_duplicate_discover_wakes_coalesce_to_one_claim(self):
+        service_entry = load_service_entry()
+        service = object.__new__(service_entry.Service)
+        claims = []
+        service.discover_refresh_threader = types.SimpleNamespace(
+            working=lambda: False,
+            addTask=lambda *args: claims.append(args),
+        )
+        service.next_discover_refresh_fallback = monotonic() + 60
+        service.last_discover_refresh_wake = -1
+        event = Event()
+        event.set()
+        service_entry.app.APP = types.SimpleNamespace(
+            discover_refresh_event=event)
+        service_entry.app.ACCOUNT = types.SimpleNamespace(authenticated=True)
+        service_entry.backgroundthread.FunctionAsTask = lambda *args: args
+        service_entry.discover_cache = types.SimpleNamespace(
+            refresh_requested_at=lambda: 100,
+            claim_hub_prefetch=lambda: (),
+            claim_refresh=lambda: {
+                'url': 'https://discover.provider.plex.tv/hubs/sections/home/test',
+                'kind': 'hub',
+            },
+            refresh_hosts=lambda kind: (),
+        )
+
+        service._schedule_discover_refresh()
+        event.set()
+        service._schedule_discover_refresh()
+
+        self.assertEqual(len(claims), 1)
+
+    def test_slow_fallback_recovers_a_missed_discover_notification(self):
+        service_entry = load_service_entry()
+        service = object.__new__(service_entry.Service)
+        claims = []
+        service.discover_refresh_threader = types.SimpleNamespace(
+            working=lambda: False,
+            addTask=lambda *args: claims.append(args),
+        )
+        service.next_discover_refresh_fallback = monotonic() - 1
+        service.last_discover_refresh_wake = 0
+        service_entry.app.APP = types.SimpleNamespace(
+            discover_refresh_event=Event())
+        service_entry.app.ACCOUNT = types.SimpleNamespace(authenticated=True)
+        service_entry.backgroundthread.FunctionAsTask = lambda *args: args
+        service_entry.discover_cache = types.SimpleNamespace(
+            refresh_requested_at=lambda: 0,
+            claim_hub_prefetch=lambda: (),
+            claim_refresh=lambda: {
+                'url': 'https://discover.provider.plex.tv/hubs/sections/home/test',
+                'kind': 'hub',
+            },
+        )
+
+        service._schedule_discover_refresh()
+
+        self.assertEqual(len(claims), 1)
 
 
 if __name__ == '__main__':

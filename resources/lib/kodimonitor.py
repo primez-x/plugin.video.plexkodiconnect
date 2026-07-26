@@ -17,10 +17,14 @@ from . import utils, timing, plex_functions as PF
 from . import json_rpc as js, playlist_func as PL
 from . import backgroundthread, app, variables as v
 from . import exceptions
-from . import skip_marker_state
+from . import skip_plex_markers
 from . import upnext
 
 LOG = getLogger('PLEX.kodimonitor')
+
+DISCOVER_SIGNAL_SENDER = 'plugin.video.plexkodiconnect.SIGNAL'
+DISCOVER_REFRESH_MESSAGE = 'discover_cache_refresh'
+DISCOVER_MAINTENANCE_MESSAGE = 'discover_cache_maintenance'
 
 WAIT_BEFORE_INIT_STREAMS = 6
 ADDITIONAL_WAIT_BEFORE_INIT_STREAMS = 10
@@ -71,6 +75,7 @@ class KodiMonitor(xbmc.Monitor):
         Monitor the PKC settings for changes made by the user
         """
         LOG.debug('PKC settings change detected')
+        skip_plex_markers.reset_runtime()
 
     def onNotification(self, sender, method, data):
         """
@@ -89,6 +94,19 @@ class KodiMonitor(xbmc.Monitor):
         elif method == "Player.OnStop":
             with app.APP.lock_playqueues:
                 _playback_cleanup(ended=data.get('end'))
+        elif method in ('Player.OnSeek', 'Player.OnPause', 'Player.OnResume'):
+            # A seek or playback-state transition invalidates the next marker
+            # deadline. The next service tick must re-read player time once,
+            # then can return to deadline-driven scheduling.
+            skip_plex_markers.reset_runtime()
+        elif sender == DISCOVER_SIGNAL_SENDER and method == DISCOVER_REFRESH_MESSAGE:
+            event = getattr(app.APP, 'discover_refresh_event', None)
+            if event is not None:
+                event.set()
+        elif sender == DISCOVER_SIGNAL_SENDER and method == DISCOVER_MAINTENANCE_MESSAGE:
+            event = getattr(app.APP, 'discover_maintenance_event', None)
+            if event is not None:
+                event.set()
         elif method == 'Playlist.OnAdd':
             if 'item' in data and data['item'].get('type') == v.KODI_TYPE_SHOW:
                 # Hitting the "browse" button on tv show info dialog
@@ -231,6 +249,7 @@ class KodiMonitor(xbmc.Monitor):
         Unfortunately when using Widgets, Kodi doesn't tell us shit
         """
         self._already_slept = False
+        skip_plex_markers.reset_runtime(clear_properties=True)
         # Get the type of media we're playing
         try:
             playerid = data['player']['playerid']
@@ -420,8 +439,7 @@ def _playback_cleanup(ended=False):
     if app.APP.skip_markers_dialog:
         app.APP.skip_markers_dialog.close()
         app.APP.skip_markers_dialog = None
-    for key, value in skip_marker_state.clear_properties().items():
-        utils.setGlobalProperty('skip_marker.%s' % key, value)
+    skip_plex_markers.reset_runtime(clear_properties=True)
     # We might have saved a transient token from a user flinging media via
     # Companion (if we could not use the playqueue to store the token)
     app.CONN.plex_transient_token = None
@@ -885,6 +903,9 @@ class SendUpNextSignal(backgroundthread.Task):
                 app.PLAYSTATE.player_states[playerid][
                     'upnext_replaces_credit_skip'] = bool(
                         signal_sent and notification_time is not None)
+            # The cached credits/Up Next decision may have been evaluated
+            # before this delayed task completed.
+            skip_plex_markers.reset_runtime()
             if not signal_sent:
                 LOG.debug('Up Next: No next episode - PKC skip credits will handle last episode')
         except Exception as err:
