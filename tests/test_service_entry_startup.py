@@ -71,6 +71,96 @@ class ServiceEntryStartupTests(unittest.TestCase):
             service_entry.service_loop_sleep_ms(skip_marker_countdown_visible=False),
             200)
 
+    def test_failed_discover_cache_write_requeues_the_background_refresh(self):
+        service_entry = load_service_entry()
+        service = object.__new__(service_entry.Service)
+        completed = []
+        service_entry.app.ACCOUNT = types.SimpleNamespace(authenticated=True)
+        service_entry.discover_cache = types.SimpleNamespace(
+            account_matches=lambda account_hash: account_hash == "account-a",
+            refresh_hosts=lambda cache_kind: ("discover.provider.plex.tv",),
+            read_xml=lambda *args: ("stale", [object()]),
+            CACHE_FRESH="fresh",
+            put_xml=lambda *args, **kwargs: False,
+            finish_refresh=lambda request, success: completed.append(success) or True,
+        )
+        entrypoint = types.ModuleType('resources.lib.entrypoint')
+        entrypoint._download_provider_xmls = lambda *args: [object()]
+        resources_lib = sys.modules['resources.lib']
+        previous_module = sys.modules.get('resources.lib.entrypoint')
+        previous_attribute = getattr(resources_lib, 'entrypoint', None)
+        sys.modules['resources.lib.entrypoint'] = entrypoint
+        resources_lib.entrypoint = entrypoint
+        try:
+            self.assertFalse(
+                service._refresh_discover_cache(
+                    {
+                        'url': 'https://discover.provider.plex.tv/hubs/sections/home/test',
+                        'kind': 'hub',
+                        '_account_hash': 'account-a',
+                    }
+                )
+            )
+        finally:
+            if previous_module is None:
+                sys.modules.pop('resources.lib.entrypoint', None)
+            else:
+                sys.modules['resources.lib.entrypoint'] = previous_module
+            if previous_attribute is None:
+                delattr(resources_lib, 'entrypoint')
+            else:
+                resources_lib.entrypoint = previous_attribute
+
+        self.assertEqual(completed, [False])
+
+    def test_fresh_prefetch_snapshot_is_acknowledged_without_cloud_io(self):
+        service_entry = load_service_entry()
+        service = object.__new__(service_entry.Service)
+        completed = []
+        service_entry.app.ACCOUNT = types.SimpleNamespace(authenticated=True)
+        service_entry.discover_cache = types.SimpleNamespace(
+            account_matches=lambda account_hash: account_hash == "account-a",
+            read_xml=lambda *args: ("fresh", [object()]),
+            CACHE_FRESH="fresh",
+            finish_refresh=lambda request, success: completed.append(success) or True,
+        )
+
+        self.assertTrue(
+            service._refresh_discover_cache(
+                {
+                    'url': 'https://discover.provider.plex.tv/hubs/sections/home/test',
+                    'kind': 'hub',
+                    '_account_hash': 'account-a',
+                }
+            )
+        )
+        self.assertEqual(completed, [True])
+
+    def test_catalog_prefetch_is_persisted_by_the_service_at_low_priority(self):
+        service_entry = load_service_entry()
+        service = object.__new__(service_entry.Service)
+        queued = []
+        service_entry.discover_cache = types.SimpleNamespace(
+            claim_hub_prefetch=lambda: ("https://discover.provider.plex.tv/hubs/sections/home/test",),
+            enqueue_refresh=lambda *args, **kwargs: queued.append((args, kwargs)) or True,
+            REFRESH_PRIORITY_PREFETCH=1,
+        )
+
+        service._queue_discover_prefetch()
+
+        self.assertEqual(
+            queued,
+            [
+                (
+                    (
+                        'https://discover.provider.plex.tv/hubs/sections/home/test',
+                        'hub',
+                    ),
+                    {'priority': 1},
+                )
+            ],
+        )
+
 
 if __name__ == '__main__':
     unittest.main()

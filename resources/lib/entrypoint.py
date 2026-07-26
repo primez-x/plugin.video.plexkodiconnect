@@ -35,9 +35,7 @@ LOG = getLogger("PLEX.entrypoint")
 WATCHLIST_PAGE_SIZE = 100
 DISCOVER_REDIRECT_STATUS_CODES = (301, 302, 303, 307, 308)
 DISCOVER_DETAIL_TYPES = frozenset(("movie", "show"))
-DISCOVER_HUBS_CACHE_SECONDS = 300
-DISCOVER_HUB_CACHE_SECONDS = 120
-DISCOVER_DETAIL_CACHE_SECONDS = 300
+DISCOVER_HTTP_TIMEOUT = (3.0, 10.0)
 
 
 class ListingException(Exception):
@@ -56,13 +54,8 @@ def _provider_headers():
     )
 
 
-def _provider_xmls(url, allowed_redirect_hosts, cache_seconds=0):
+def _download_provider_xmls(url, allowed_redirect_hosts):
     """Download trusted provider XML, safely following bounded redirects."""
-    if cache_seconds:
-        cached_xmls = discover_cache.get_xml(url, cache_seconds)
-        if cached_xmls is not None:
-            LOG.debug("Using cached Plex Discover provider response for %s", url)
-            return cached_xmls
     downloader = DU()
     response = downloader.downloadUrl(
         url,
@@ -70,6 +63,7 @@ def _provider_xmls(url, allowed_redirect_hosts, cache_seconds=0):
         headerOptions=_provider_headers(),
         return_response=True,
         allow_redirects=False,
+        timeout=DISCOVER_HTTP_TIMEOUT,
     )
     if response is None:
         return []
@@ -102,6 +96,7 @@ def _provider_xmls(url, allowed_redirect_hosts, cache_seconds=0):
                 headerOptions=_provider_headers(),
                 return_response=True,
                 allow_redirects=False,
+                timeout=DISCOVER_HTTP_TIMEOUT,
             )
             if redirected is None or redirected.status_code not in (200, 201):
                 LOG.warning(
@@ -125,9 +120,44 @@ def _provider_xmls(url, allowed_redirect_hosts, cache_seconds=0):
         except (TypeError, etree.ParseError):
             LOG.warning("Plex provider returned invalid XML for %s", url)
             return []
-    if cache_seconds:
-        discover_cache.put_xml(url, xmls)
     return xmls
+
+
+def _provider_xmls(url, allowed_redirect_hosts, cache_kind=None, item_key=None):
+    """Serve cached Discover XML first, then refresh stale snapshots in PKC."""
+    if cache_kind:
+        freshness, cached_xmls = discover_cache.read_xml(
+            url, cache_kind, item_key=item_key
+        )
+        if cached_xmls is not None:
+            if freshness == discover_cache.CACHE_STALE:
+                discover_cache.enqueue_refresh(url, cache_kind)
+                LOG.debug("Using stale Plex Discover %s cache for %s", cache_kind, url)
+            else:
+                LOG.debug("Using fresh Plex Discover %s cache for %s", cache_kind, url)
+            return cached_xmls
+
+    xmls = _download_provider_xmls(url, allowed_redirect_hosts)
+    if xmls and cache_kind:
+        discover_cache.put_xml(url, xmls, cache_kind)
+    return xmls
+
+
+def _discover_hub_url(hub_id):
+    return (
+        "https://discover.provider.plex.tv/hubs/sections/home/%s"
+        "?includeMetadata=1&limit=20" % hub_id
+    )
+
+
+def _prefetch_discover_hubs(hub_ids):
+    """Offer the catalog's likely next hubs to the idle PKC service worker."""
+    request_prefetch = getattr(discover_cache, "request_hub_prefetch", None)
+    if not callable(request_prefetch):
+        return False
+    return request_prefetch(
+        [_discover_hub_url(hub_id) for hub_id in hub_ids if hub_id]
+    )
 
 
 def guess_video_or_audio():
@@ -676,13 +706,14 @@ def discover_hubs():
     xmls = _provider_xmls(
         "https://discover.provider.plex.tv/hubs/sections/home?includeMetadata=1",
         (plex_discover.DISCOVER_PROVIDER_HOST,),
-        DISCOVER_HUBS_CACHE_SECONDS,
+        "catalog",
     )
     if not xmls:
         LOG.error("Could not download discover hubs from plex.tv")
         raise ListingException
     xbmcplugin.setContent(int(sys.argv[1]), v.CONTENT_TYPE_FILE)
     seen_keys = set()
+    prefetch_hub_ids = []
     for xml in xmls:
         for hub in xml:
             title = hub.get("title")
@@ -705,12 +736,14 @@ def discover_hubs():
             # example, 'home.top_watchlisted') because the API expects the
             # bare slug.
             hub_slug = key.rsplit("/", 1)[-1]
+            prefetch_hub_ids.append(hub_slug)
             path = "plugin://%s/?mode=discover_hub&hub_id=%s" % (
                 v.ADDON_ID,
                 hub_slug,
             )
             directory_item(title, path)
     xbmcplugin.addSortMethod(int(sys.argv[1]), xbmcplugin.SORT_METHOD_UNSORTED)
+    _prefetch_discover_hubs(prefetch_hub_ids)
 
 
 def discover_hub(hub_id):
@@ -725,14 +758,11 @@ def discover_hub(hub_id):
         LOG.error("No discover hub - restricted user")
         raise ListingException
     app.init(entrypoint=True)
-    url = (
-        "https://discover.provider.plex.tv/hubs/sections/home/%s"
-        "?includeMetadata=1&limit=20" % hub_id
-    )
+    url = _discover_hub_url(hub_id)
     xmls = _provider_xmls(
         url,
         (plex_discover.DISCOVER_PROVIDER_HOST,),
-        DISCOVER_HUB_CACHE_SECONDS,
+        "hub",
     )
     if not xmls:
         LOG.error("Could not download discover hub %s from plex.tv", hub_id)
@@ -775,6 +805,10 @@ def discover_hub(hub_id):
         local_guid = local_api.xml.get("guid")
         if local_guid:
             local_apis_by_guid.setdefault(local_guid, local_api)
+    # The provider response has one shared timestamp.  Check it once before
+    # building tiles; doing this per tile needlessly reparses the same cache
+    # record on the Kodi listing hot path.
+    provider_state_is_current = discover_cache.source_is_current(url)
     all_items = []
     for provider_api in mass_api(metadata):
         child = provider_api.xml
@@ -791,7 +825,10 @@ def discover_hub(hub_id):
         # provider-only items need a detail route and a non-playable state.
         props = item.setdefault("extraproperties", {})
         props["ratingKey"] = rating_key
-        watchlist_hint = watchlist_state.provider_state_hint(child.get("userState"))
+        provider_hint = None
+        if provider_state_is_current:
+            provider_hint = watchlist_state.provider_state_hint(child.get("userState"))
+        watchlist_hint = discover_cache.watchlist_hint(rating_key, provider_hint)
         if watchlist_hint:
             props[watchlist_state.DISCOVER_HINT_PROPERTY] = watchlist_hint
         guid = child.get("guid")
@@ -830,10 +867,12 @@ def discover_detail(rating_key):
         LOG.error("No Plex Discover details - restricted user")
         return False
     app.init(entrypoint=True)
+    url = plex_discover.METADATA_ITEM_URL % rating_key
     xmls = _provider_xmls(
-        plex_discover.METADATA_ITEM_URL % rating_key,
+        url,
         (plex_discover.METADATA_PROVIDER_HOST,),
-        DISCOVER_DETAIL_CACHE_SECONDS,
+        "detail",
+        item_key=rating_key,
     )
     metadata = [
         child
@@ -865,7 +904,10 @@ def discover_detail(rating_key):
         return False
     props = item.setdefault("extraproperties", {})
     props["ratingKey"] = rating_key
-    watchlist_hint = watchlist_state.provider_state_hint(metadata[0].get("userState"))
+    provider_hint = None
+    if discover_cache.source_is_current(url):
+        provider_hint = watchlist_state.provider_state_hint(metadata[0].get("userState"))
+    watchlist_hint = discover_cache.watchlist_hint(rating_key, provider_hint)
     if watchlist_hint:
         props[watchlist_state.DISCOVER_HINT_PROPERTY] = watchlist_hint
     guid = metadata[0].get("guid")

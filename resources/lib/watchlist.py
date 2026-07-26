@@ -3,6 +3,7 @@
 """Native Plex Watchlist operations shared by PKC entry points and service."""
 
 from logging import getLogger
+from contextlib import contextmanager
 import threading
 from time import time
 from uuid import uuid4
@@ -50,6 +51,7 @@ TMDB_MONITOR_DBTYPE = "TMDbHelper.ListItem.base_dbtype"
 
 LOCKS = {}
 LOCKS_LOCK = threading.Lock()
+SESSION = threading.local()
 
 
 def _ensure_runtime():
@@ -58,11 +60,34 @@ def _ensure_runtime():
         app.init(entrypoint=True)
 
 
-def _headers(accept_json=False):
-    headers = {"X-Plex-Token": utils.window("plex_token")}
+def _headers(accept_json=False, token=None):
+    headers = {"X-Plex-Token": utils.window("plex_token") if token is None else token}
     if accept_json:
         headers["Accept"] = "application/json"
     return clientinfo.getXArgsDeviceInfo(headers, include_token=False)
+
+
+def _session_credentials():
+    """Return the request-bound token when a mutation is in progress."""
+    credentials = getattr(SESSION, "credentials", None)
+    if credentials is not None:
+        return credentials
+    token = utils.window("plex_token")
+    return token, discover_cache.account_hash_for_token(token)
+
+
+@contextmanager
+def _bound_session(token, account_hash):
+    """Keep all I/O for one mutation bound to the initiating Plex account."""
+    previous = getattr(SESSION, "credentials", None)
+    SESSION.credentials = (token, account_hash)
+    try:
+        yield
+    finally:
+        if previous is None:
+            del SESSION.credentials
+        else:
+            SESSION.credentials = previous
 
 
 def discover_tmdb_ratingkey(tmdb_id, tmdb_type):
@@ -115,11 +140,14 @@ def state(rating_key):
     if rating_key is None:
         LOG.warning("watchlist state requested with an invalid rating key")
         return None
+    token, account_hash = _session_credentials()
+    if not token or account_hash is None or not discover_cache.account_matches(account_hash):
+        return None
     _ensure_runtime()
     response = downloadutils.DownloadUtils().downloadUrl(
         WATCHLIST_USER_STATE_URL % rating_key,
         authenticate=False,
-        headerOptions=_headers(accept_json=True),
+        headerOptions=_headers(accept_json=True, token=token),
         return_response=True,
         timeout=WATCHLIST_HTTP_TIMEOUT,
     )
@@ -134,17 +162,22 @@ def state(rating_key):
     except (TypeError, ValueError):
         LOG.warning("Plex Watchlist user state returned invalid JSON")
         return None
+    if not discover_cache.account_matches(account_hash):
+        return None
     return plex_discover.watchlist_state_from_payload(payload, rating_key)
 
 
 def _action(api_type, rating_key):
+    token, account_hash = _session_credentials()
+    if not token or account_hash is None or not discover_cache.account_matches(account_hash):
+        return False
     _ensure_runtime()
     response = downloadutils.DownloadUtils().downloadUrl(
         "https://discover.provider.plex.tv/actions/%s" % api_type,
         action_type="PUT",
         parameters={"ratingKey": rating_key},
         authenticate=False,
-        headerOptions=_headers(),
+        headerOptions=_headers(token=token),
         return_response=True,
         timeout=WATCHLIST_HTTP_TIMEOUT,
     )
@@ -155,7 +188,7 @@ def _action(api_type, rating_key):
             getattr(response, "status_code", "unknown"),
         )
         return False
-    return True
+    return discover_cache.account_matches(account_hash)
 
 
 def _lock(rating_key):
@@ -174,34 +207,51 @@ def change(api_type, rating_key):
     """Set an absolute Watchlist state and verify it before reporting success."""
     rating_key = plex_discover.normalize_rating_key(rating_key)
     desired_state = _desired_state(api_type)
-    if rating_key is None or desired_state is None:
+    token = utils.window("plex_token")
+    account_hash = discover_cache.account_hash_for_token(token)
+    if (
+        rating_key is None
+        or desired_state is None
+        or not token
+        or account_hash is None
+        or not discover_cache.account_matches(account_hash)
+    ):
         return False, None
 
-    with _lock(rating_key):
-        current_state = state(rating_key)
-        if current_state is desired_state:
-            discover_cache.invalidate()
-            return True, current_state
+    with _bound_session(token, account_hash):
+        with _lock(rating_key):
+            current_state = state(rating_key)
+            if not discover_cache.account_matches(account_hash):
+                return False, None
+            if current_state is desired_state:
+                discover_cache.record_watchlist_state(
+                    rating_key, current_state, account_hash
+                )
+                return True, current_state
 
-        action_acknowledged = _action(api_type, rating_key)
-        observed_state = None
-        for attempt in range(WATCHLIST_VERIFY_ATTEMPTS):
-            observed_state = state(rating_key)
-            if observed_state is desired_state:
-                discover_cache.invalidate()
-                return True, observed_state
-            if attempt + 1 < WATCHLIST_VERIFY_ATTEMPTS:
-                xbmc.sleep(WATCHLIST_VERIFY_SLEEP_MS)
+            action_acknowledged = _action(api_type, rating_key)
+            observed_state = None
+            for attempt in range(WATCHLIST_VERIFY_ATTEMPTS):
+                observed_state = state(rating_key)
+                if not discover_cache.account_matches(account_hash):
+                    return False, None
+                if observed_state is desired_state:
+                    discover_cache.record_watchlist_state(
+                        rating_key, observed_state, account_hash
+                    )
+                    return True, observed_state
+                if attempt + 1 < WATCHLIST_VERIFY_ATTEMPTS:
+                    xbmc.sleep(WATCHLIST_VERIFY_SLEEP_MS)
 
-        LOG.warning(
-            "Plex Watchlist %s was not verified for rating key %s "
-            "(HTTP acknowledged: %s, observed: %s)",
-            api_type,
-            rating_key,
-            action_acknowledged,
-            observed_state,
-        )
-        return False, observed_state
+            LOG.warning(
+                "Plex Watchlist %s was not verified for rating key %s "
+                "(HTTP acknowledged: %s, observed: %s)",
+                api_type,
+                rating_key,
+                action_acknowledged,
+                observed_state,
+            )
+            return False, observed_state
 
 
 def notify_error(message="Plex Watchlist could not be updated."):
@@ -841,6 +891,9 @@ def status_key(params):
     rating_key = plex_discover.normalize_rating_key(params.get("rating_key"))
     if identity is None or rating_key is None or not supports_key_watchlist(params):
         return False
+    account_hash = discover_cache.active_account_hash()
+    if account_hash is None:
+        return False
     seed_key_status_hint(params)
     revision = _capture_status(identity)
     if revision is None:
@@ -848,7 +901,13 @@ def status_key(params):
     mutation_marker = _item_mutation_marker(identity)
     _project_cached_status(identity, revision[0], revision[1])
     observed_state = state(rating_key)
-    _remember_status_if_current(identity, mutation_marker, observed_state)
+    if not discover_cache.account_matches(account_hash):
+        return False
+    accepted = _remember_status_if_current(identity, mutation_marker, observed_state)
+    if accepted:
+        discover_cache.record_watchlist_state(
+            rating_key, observed_state, account_hash
+        )
     return _project_status(identity, revision[0], revision[1], observed_state)
 
 
@@ -856,6 +915,9 @@ def status_tmdb(params):
     """Silently project an authoritative state for the active TMDb detail."""
     identity = params.get("watchlist_identity") or _identity_for_tmdb(params)
     if identity is None:
+        return False
+    account_hash = discover_cache.active_account_hash()
+    if account_hash is None:
         return False
     revision = _capture_status(identity)
     if revision is None:
@@ -866,7 +928,13 @@ def status_tmdb(params):
     if rating_key is None:
         return False
     observed_state = state(rating_key)
-    _remember_status_if_current(identity, mutation_marker, observed_state)
+    if not discover_cache.account_matches(account_hash):
+        return False
+    accepted = _remember_status_if_current(identity, mutation_marker, observed_state)
+    if accepted:
+        discover_cache.record_watchlist_state(
+            rating_key, observed_state, account_hash
+        )
     return _project_status(identity, revision[0], revision[1], observed_state)
 
 

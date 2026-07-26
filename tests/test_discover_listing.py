@@ -102,6 +102,15 @@ def load_entrypoint():
     variables.CONTENT_TYPE_FILE = "files"
     variables.CONTENT_FROM_PLEX_TYPE = {"movie": "movies", "show": "tvshows"}
 
+    cache = modules["resources.lib.discover_cache"]
+    cache.CACHE_FRESH = "fresh"
+    cache.CACHE_STALE = "stale"
+    cache.read_xml = lambda *args, **kwargs: ("miss", None)
+    cache.put_xml = lambda *args, **kwargs: True
+    cache.enqueue_refresh = lambda *args, **kwargs: True
+    cache.source_is_current = lambda *args, **kwargs: True
+    cache.watchlist_hint = lambda rating_key, fallback=None: fallback
+
     class API(object):
         def __init__(self, xml):
             self.xml = xml
@@ -158,40 +167,52 @@ class DiscoverListingTests(unittest.TestCase):
         calls = []
 
         class Cache(object):
-            @staticmethod
-            def get_xml(url, cache_seconds):
-                calls.append(("get", url, cache_seconds))
-                return cached
+            CACHE_STALE = "stale"
 
             @staticmethod
-            def put_xml(url, xmls):
+            def read_xml(url, cache_kind, item_key=None):
+                calls.append(("read", url, cache_kind, item_key))
+                return "fresh", cached
+
+            @staticmethod
+            def put_xml(url, xmls, cache_kind):
                 raise AssertionError("a cache hit must not be written or fetched")
+
+            @staticmethod
+            def enqueue_refresh(url, cache_kind):
+                raise AssertionError("a fresh cache hit must not enqueue a refresh")
 
         entrypoint.discover_cache = Cache()
 
         xmls = entrypoint._provider_xmls(
             "https://discover.provider.plex.tv/hubs/sections/home/new-for-you",
             ("discover.provider.plex.tv",),
-            120,
+            "hub",
         )
 
         self.assertEqual(xmls, cached)
-        self.assertEqual(calls[0][0], "get")
-        self.assertEqual(calls[0][2], 120)
+        self.assertEqual(calls[0][0], "read")
+        self.assertEqual(calls[0][2], "hub")
 
     def test_provider_cache_miss_falls_back_to_network_then_stores_response(self):
         entrypoint, _, _, _ = load_entrypoint()
         stored = []
 
         class Cache(object):
-            @staticmethod
-            def get_xml(url, cache_seconds):
-                return None
+            CACHE_STALE = "stale"
 
             @staticmethod
-            def put_xml(url, xmls):
-                stored.append((url, list(xmls)))
+            def read_xml(url, cache_kind, item_key=None):
+                return "miss", None
+
+            @staticmethod
+            def put_xml(url, xmls, cache_kind):
+                stored.append((url, list(xmls), cache_kind))
                 return True
+
+            @staticmethod
+            def enqueue_refresh(url, cache_kind):
+                raise AssertionError("a cold cache miss must fetch immediately")
 
         class Response(object):
             status_code = 200
@@ -212,13 +233,55 @@ class DiscoverListingTests(unittest.TestCase):
         xmls = entrypoint._provider_xmls(
             "https://discover.provider.plex.tv/hubs/sections/home/new-for-you",
             ("discover.provider.plex.tv",),
-            120,
+            "hub",
         )
 
         self.assertEqual(len(downloader.calls), 1)
         self.assertEqual(xmls[0][0].get("ratingKey"), "network")
         self.assertEqual(len(stored), 1)
         self.assertEqual(stored[0][1][0][0].get("ratingKey"), "network")
+        self.assertEqual(stored[0][2], "hub")
+
+    def test_provider_stale_cache_renders_without_foreground_network_io(self):
+        entrypoint, _, _, _ = load_entrypoint()
+        cached = [provider_metadata("stale")]
+        refreshes = []
+
+        class Cache(object):
+            CACHE_STALE = "stale"
+
+            @staticmethod
+            def read_xml(url, cache_kind, item_key=None):
+                return "stale", cached
+
+            @staticmethod
+            def enqueue_refresh(url, cache_kind):
+                refreshes.append((url, cache_kind))
+                return True
+
+            @staticmethod
+            def put_xml(url, xmls, cache_kind):
+                raise AssertionError("a stale cache must not block on a foreground write")
+
+        entrypoint.discover_cache = Cache()
+        entrypoint.DU = lambda: self.fail("stale cache must not call Plex in the UI")
+
+        xmls = entrypoint._provider_xmls(
+            "https://discover.provider.plex.tv/hubs/sections/home/new-for-you",
+            ("discover.provider.plex.tv",),
+            "hub",
+        )
+
+        self.assertEqual(xmls, cached)
+        self.assertEqual(
+            refreshes,
+            [
+                (
+                    "https://discover.provider.plex.tv/hubs/sections/home/new-for-you",
+                    "hub",
+                )
+            ],
+        )
 
     def test_provider_redirect_uses_one_bounded_batch_for_widget_latency(self):
         entrypoint, _, _, _ = load_entrypoint()

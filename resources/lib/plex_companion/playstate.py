@@ -16,7 +16,7 @@ from .. import backgroundthread
 from .. import app
 from .. import timing
 from .. import utils
-from .timeline_policy import should_send_pms_timeline
+from .timeline_policy import PauseTimelineState
 
 
 # Disable annoying requests warnings
@@ -64,6 +64,14 @@ class PlaystateMgr(backgroundthread.KillableThread):
             0: msg[0].attrib,
             1: msg[1].attrib,
             2: msg[2].attrib
+        }
+        # Keep pause suppression independent from the last successful
+        # timeline. A resumed request may fail after a long pause, but the
+        # next pause must still reach Plex with its newer position.
+        self.pause_timeline_state = {
+            0: PauseTimelineState(),
+            1: PauseTimelineState(),
+            2: PauseTimelineState(),
         }
         super().__init__()
 
@@ -175,12 +183,26 @@ class PlaystateMgr(backgroundthread.KillableThread):
         url = f'{app.CONN.server}/:/timeline'
         self._get_requests_session()
         current = message[playerid].attrib
-        if current.get('state') != 'stopped':
+        current_state = current.get('state')
+        rearmed_paused_item = None
+        pause_state = self.pause_timeline_state.setdefault(
+            playerid, PauseTimelineState()
+        )
+        if current_state == 'paused':
+            if pause_state.suppresses(current):
+                return
+        else:
+            # Observing a resume re-arms the next pause before making network
+            # I/O. If the resumed request fails, a later pause still reports
+            # its new position instead of being suppressed by stale state.
+            rearmed_paused_item = pause_state.observe(current)
+            if rearmed_paused_item is not None:
+                log.info('Observed %s timeline for player %s item %s; '
+                         're-armed pause reporting',
+                         current_state, playerid, rearmed_paused_item)
+        if current_state != 'stopped':
             params = proxy_params()
             params.update(current)
-            if not should_send_pms_timeline(
-                    self.last_pms_msg[playerid], params):
-                return
         else:
             params = dict(self.last_pms_msg[playerid])
             params['state'] = 'stopped'
@@ -199,10 +221,14 @@ class PlaystateMgr(backgroundthread.KillableThread):
             log_error(log.error, 'Failed reporting playback progress', req)
             return
         self.last_pms_msg[playerid] = params
-        if params.get('state') == 'paused':
+        if current_state == 'paused':
+            pause_state.record_success(current)
             log.info('Reported paused playback once for player %s item %s; '
                      'suppressing repeats until playback state changes',
                      playerid, params.get('ratingKey'))
+        elif current_state == 'playing' and rearmed_paused_item is not None:
+            log.info('Reported resumed playback to PMS for player %s item %s',
+                     playerid, rearmed_paused_item)
 
     def pms_timeline(self, players, message):
         if utils.settings('enablePMSTimeline') == 'false':

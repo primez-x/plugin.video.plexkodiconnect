@@ -66,7 +66,7 @@ def load_service_entry():
     sys.modules.pop("resources.lib.watchlist", None)
     resources_lib = sys.modules.get("resources.lib")
     if resources_lib is not None:
-        for attribute in ("watchlist", "discover_cache"):
+        for attribute in ("watchlist", "discover_cache", "plex_discover"):
             if hasattr(resources_lib, attribute):
                 delattr(resources_lib, attribute)
 
@@ -114,6 +114,12 @@ def load_service_entry():
     modules["resources.lib.windows"].userselect = modules[
         "resources.lib.windows.userselect"
     ]
+
+    # plex_discover deliberately has no Kodi runtime dependency.  Use the
+    # actual validation helpers here so these Watchlist tests cover the same
+    # canonical key/type boundary as the service does.
+    sys.modules.pop("resources.lib.plex_discover", None)
+    importlib.import_module("resources.lib.plex_discover")
 
     service_entry = importlib.import_module("resources.lib.service_entry")
     return service_entry, xbmc, notifications, window_properties
@@ -1096,6 +1102,10 @@ class TmdbWatchlistTests(unittest.TestCase):
         watchlist = service_entry.watchlist
         identity = "plex.%s" % self.MOVIE_KEY
         properties[watchlist.DETAIL_IDENTITY] = identity
+        overlays = []
+        watchlist.discover_cache.record_watchlist_state = (
+            lambda *args, **kwargs: overlays.append((args, kwargs))
+        )
 
         def stale_state(rating_key):
             self.assertEqual(rating_key, self.MOVIE_KEY)
@@ -1112,20 +1122,90 @@ class TmdbWatchlistTests(unittest.TestCase):
             )
         )
         self.assertNotIn(watchlist._item_state_property(identity), properties)
+        self.assertEqual(overlays, [])
 
-    def test_verified_watchlist_change_invalidates_discovery_rankings(self):
+    def test_verified_watchlist_change_updates_only_its_watchlist_overlay(self):
         service_entry, _, _, _ = load_service_entry()
         watchlist = service_entry.watchlist
-        invalidations = []
+        updates = []
         states = iter((False, True))
         watchlist.state = lambda rating_key: next(states)
         watchlist._action = lambda api_type, rating_key: True
-        watchlist.discover_cache.invalidate = lambda: invalidations.append(True)
+        watchlist.discover_cache.record_watchlist_state = (
+            lambda rating_key, state, *args, **kwargs: updates.append(
+                (rating_key, state)
+            )
+        )
 
         self.assertEqual(
             watchlist.change("addToWatchlist", self.MOVIE_KEY), (True, True)
         )
-        self.assertEqual(invalidations, [True])
+        self.assertEqual(updates, [(self.MOVIE_KEY, True)])
+
+    def test_watchlist_action_uses_the_mutation_initiating_token(self):
+        service_entry, _, _, properties = load_service_entry()
+        watchlist = service_entry.watchlist
+        downloader = DownloadRecorder([FakeResponse()])
+        active_token = {"value": "account-b"}
+
+        def window(key, value=None, clear=False):
+            if key == "plex_token" and value is None and not clear:
+                return active_token["value"]
+            if clear:
+                properties.pop(key, None)
+            elif value is not None:
+                properties[key] = value
+            else:
+                return properties.get(key, "")
+
+        initiating_token = "account-a"
+        initiating_account = watchlist.discover_cache.account_hash_for_token(
+            initiating_token
+        )
+        watchlist.utils.window = window
+        watchlist.downloadutils.DownloadUtils = lambda: downloader
+        watchlist.discover_cache.account_matches = (
+            lambda account_hash: account_hash == initiating_account
+        )
+
+        with watchlist._bound_session(initiating_token, initiating_account):
+            self.assertTrue(watchlist._action("addToWatchlist", self.MOVIE_KEY))
+
+        self.assertEqual(
+            downloader.calls[0][2]["headerOptions"]["X-Plex-Token"],
+            initiating_token,
+        )
+
+    def test_watchlist_change_does_not_mutate_after_an_account_switch(self):
+        service_entry, _, _, properties = load_service_entry()
+        watchlist = service_entry.watchlist
+        active_token = {"value": "account-a"}
+
+        def window(key, value=None, clear=False):
+            if key == "plex_token" and value is None and not clear:
+                return active_token["value"]
+            if clear:
+                properties.pop(key, None)
+            elif value is not None:
+                properties[key] = value
+            else:
+                return properties.get(key, "")
+
+        calls = []
+
+        def state_after_switch(rating_key):
+            active_token["value"] = "account-b"
+            return False
+
+        watchlist.utils.window = window
+        watchlist.state = state_after_switch
+        watchlist._action = lambda *args: calls.append(args) or True
+
+        self.assertEqual(
+            watchlist.change("addToWatchlist", self.MOVIE_KEY),
+            (False, None),
+        )
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

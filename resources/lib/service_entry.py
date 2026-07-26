@@ -2,11 +2,12 @@
 # -*- coding: utf-8 -*-
 import logging
 import sys
+from time import monotonic
 
 import xbmc
 import xbmcvfs
 
-from . import utils, clientinfo
+from . import utils, clientinfo, discover_cache
 from . import initialsetup
 from . import kodimonitor
 from . import sync, library_sync
@@ -43,6 +44,8 @@ def _watchlist_notification(message):
 
 SERVICE_LOOP_SLEEP_MS = 200
 SKIP_MARKER_COUNTDOWN_SLEEP_MS = 33
+DISCOVER_REFRESH_POLL_SECONDS = 5.0
+DISCOVER_MAINTENANCE_POLL_SECONDS = 30.0
 
 WINDOW_PROPERTIES = (
     "pms_token",
@@ -145,6 +148,11 @@ class Service(object):
         # Flags for other threads
         self.connection_check_running = False
         self.auth_running = False
+        self.discover_refresh_threader = None
+        self.next_discover_refresh_poll = 0.0
+        self.last_discover_refresh_wake = 0.0
+        self.discover_maintenance_threader = None
+        self.next_discover_maintenance_poll = 0.0
         self._init_done = True
 
     def should_cancel(self):
@@ -637,6 +645,105 @@ class Service(object):
             app.ACCOUNT.set_authenticated()
             return True
 
+    def _refresh_discover_cache(self, request):
+        """Refresh one stale Discover source without competing with UI work."""
+        try:
+            account_hash = request.get("_account_hash")
+            if (
+                not account_hash
+                or not getattr(getattr(app, "ACCOUNT", None), "authenticated", False)
+                or not discover_cache.account_matches(account_hash)
+            ):
+                discover_cache.finish_refresh(request, False)
+                return False
+            freshness, _ = discover_cache.read_xml(request["url"], request["kind"])
+            if freshness == discover_cache.CACHE_FRESH:
+                discover_cache.finish_refresh(request, True)
+                return True
+            if not discover_cache.account_matches(account_hash):
+                discover_cache.finish_refresh(request, False)
+                return False
+            from . import entrypoint
+
+            xmls = entrypoint._download_provider_xmls(
+                request["url"], discover_cache.refresh_hosts(request["kind"])
+            )
+            if not xmls or not discover_cache.account_matches(account_hash):
+                discover_cache.finish_refresh(request, False)
+                return False
+            if not discover_cache.put_xml(
+                request["url"], xmls, request["kind"], account_hash=account_hash
+            ):
+                discover_cache.finish_refresh(request, False)
+                return False
+            discover_cache.finish_refresh(request, True)
+            return True
+        except Exception:
+            LOG.exception("Plex Discover background refresh failed")
+            discover_cache.finish_refresh(request, False)
+            return False
+        finally:
+            # A completed request should release the next queued warmup
+            # immediately rather than waiting for the periodic recovery poll.
+            self.next_discover_refresh_poll = 0.0
+
+    def _queue_discover_prefetch(self):
+        """Persist catalog warmup requests from the non-UI service process."""
+        for url in discover_cache.claim_hub_prefetch():
+            discover_cache.enqueue_refresh(
+                url,
+                "hub",
+                priority=discover_cache.REFRESH_PRIORITY_PREFETCH,
+            )
+
+    def _schedule_discover_refresh(self):
+        """Claim at most one durable refresh request on a dedicated worker."""
+        if self.discover_refresh_threader is None:
+            return
+        if not getattr(getattr(app, "ACCOUNT", None), "authenticated", False):
+            return
+        self._queue_discover_prefetch()
+        now = monotonic()
+        refresh_wake = discover_cache.refresh_requested_at()
+        if (
+            now < self.next_discover_refresh_poll
+            and refresh_wake <= self.last_discover_refresh_wake
+        ):
+            return
+        self.last_discover_refresh_wake = max(
+            self.last_discover_refresh_wake, refresh_wake
+        )
+        self.next_discover_refresh_poll = now + DISCOVER_REFRESH_POLL_SECONDS
+        if self.discover_refresh_threader.working():
+            return
+        request = discover_cache.claim_refresh()
+        if request is None:
+            return
+        self.discover_refresh_threader.addTask(
+            backgroundthread.FunctionAsTask(self._refresh_discover_cache, None, request)
+        )
+
+    def _maintain_discover_cache(self):
+        """Enforce durable Discover retention away from Kodi's listing path."""
+        return discover_cache.sweep()
+
+    def _schedule_discover_maintenance(self):
+        """Run bounded cache cleanup only in the low-priority service worker."""
+        if self.discover_maintenance_threader is None:
+            return
+        now = monotonic()
+        if now < self.next_discover_maintenance_poll:
+            return
+        self.next_discover_maintenance_poll = now + DISCOVER_MAINTENANCE_POLL_SECONDS
+        if (
+            self.discover_maintenance_threader.working()
+            or not discover_cache.maintenance_due()
+        ):
+            return
+        self.discover_maintenance_threader.addTask(
+            backgroundthread.FunctionAsTask(self._maintain_discover_cache, None)
+        )
+
     def ServiceEntryPoint(self):
         if not self._init_done:
             return
@@ -646,6 +753,13 @@ class Service(object):
         app.init()
         app.APP.monitor = kodimonitor.KodiMonitor()
         app.APP.player = kodimonitor.PKCPlayer()
+        self.discover_refresh_threader = backgroundthread.BackgroundThreader(
+            name="discover-refresh", worker_count=1
+        )
+        self.discover_maintenance_threader = backgroundthread.BackgroundThreader(
+            name="discover-maintenance", worker_count=1
+        )
+        discover_cache.recover_refresh_claims()
 
         # Server auto-detect
         self.setup = initialsetup.InitialSetup()
@@ -856,6 +970,9 @@ class Service(object):
                     self.companion_polling.start()
                 self.alexa_ws.start()
 
+            self._schedule_discover_maintenance()
+            self._schedule_discover_refresh()
+
             skip_marker_countdown_visible = False
             if app.APP.is_playing:
                 skip_marker_countdown_visible = skip_plex_markers.check()
@@ -866,6 +983,10 @@ class Service(object):
         # Tell all threads to terminate (e.g. several lib sync threads)
         LOG.debug("Aborting all threads")
         app.APP.stop_pkc = True
+        if self.discover_refresh_threader is not None:
+            self.discover_refresh_threader.shutdown(block=False)
+        if self.discover_maintenance_threader is not None:
+            self.discover_maintenance_threader.shutdown(block=False)
         backgroundthread.BGThreader.shutdown(block=False)
         # Load/Reset PKC entirely - important for user/Kodi profile switch
         # Clear video nodes properties
