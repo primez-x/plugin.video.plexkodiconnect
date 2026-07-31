@@ -155,9 +155,7 @@ def _prefetch_discover_hubs(hub_ids):
     request_prefetch = getattr(discover_cache, "request_hub_prefetch", None)
     if not callable(request_prefetch):
         return False
-    return request_prefetch(
-        [_discover_hub_url(hub_id) for hub_id in hub_ids if hub_id]
-    )
+    return request_prefetch([_discover_hub_url(hub_id) for hub_id in hub_ids if hub_id])
 
 
 def guess_video_or_audio():
@@ -695,16 +693,21 @@ def discover_hubs():
     """
     Listing for Plex Discover hub categories (if signed in to plex.tv)
     """
-    _wait_for_auth()
-    if utils.window("plex_token") == "":
-        LOG.error("No discover hubs - not signed in to plex.tv")
-        raise ListingException
-    if utils.window("plex_restricteduser") == "true":
-        LOG.error("No discover hubs - restricted user")
-        raise ListingException
-    app.init(entrypoint=True)
+    url = "https://discover.provider.plex.tv/hubs/sections/home?includeMetadata=1"
+    # Try the cache first. A cache hit avoids ~850 ms of PMS session init
+    # that ``_wait_for_auth`` / ``app.init`` would pay on every cold plugin spawn.
+    cached_xmls = discover_cache.read_xml(url, "catalog")[1]
+    if cached_xmls is None:
+        _wait_for_auth()
+        if utils.window("plex_token") == "":
+            LOG.error("No discover hubs - not signed in to plex.tv")
+            raise ListingException
+        if utils.window("plex_restricteduser") == "true":
+            LOG.error("No discover hubs - restricted user")
+            raise ListingException
+        app.init(entrypoint=True)
     xmls = _provider_xmls(
-        "https://discover.provider.plex.tv/hubs/sections/home?includeMetadata=1",
+        url,
         (plex_discover.DISCOVER_PROVIDER_HOST,),
         "catalog",
     )
@@ -750,15 +753,17 @@ def discover_hub(hub_id):
     """
     Listing for a specific Plex Discover hub (if signed in to plex.tv)
     """
-    _wait_for_auth()
-    if utils.window("plex_token") == "":
-        LOG.error("No discover hub - not signed in to plex.tv")
-        raise ListingException
-    if utils.window("plex_restricteduser") == "true":
-        LOG.error("No discover hub - restricted user")
-        raise ListingException
-    app.init(entrypoint=True)
     url = _discover_hub_url(hub_id)
+    cached_xmls = discover_cache.read_xml(url, "hub")[1]
+    if cached_xmls is None:
+        _wait_for_auth()
+        if utils.window("plex_token") == "":
+            LOG.error("No discover hub - not signed in to plex.tv")
+            raise ListingException
+        if utils.window("plex_restricteduser") == "true":
+            LOG.error("No discover hub - restricted user")
+            raise ListingException
+        app.init(entrypoint=True)
     xmls = _provider_xmls(
         url,
         (plex_discover.DISCOVER_PROVIDER_HOST,),
@@ -773,10 +778,7 @@ def discover_hub(hub_id):
     for xml in xmls:
         for child in xml:
             rating_key = plex_discover.normalize_rating_key(child.get("ratingKey"))
-            if (
-                child.get("type") not in DISCOVER_DETAIL_TYPES
-                or rating_key is None
-            ):
+            if child.get("type") not in DISCOVER_DETAIL_TYPES or rating_key is None:
                 continue
             if rating_key in seen_rating_keys:
                 continue
@@ -906,7 +908,9 @@ def discover_detail(rating_key):
     props["ratingKey"] = rating_key
     provider_hint = None
     if discover_cache.source_is_current(url):
-        provider_hint = watchlist_state.provider_state_hint(metadata[0].get("userState"))
+        provider_hint = watchlist_state.provider_state_hint(
+            metadata[0].get("userState")
+        )
     watchlist_hint = discover_cache.watchlist_hint(rating_key, provider_hint)
     if watchlist_hint:
         props[watchlist_state.DISCOVER_HINT_PROPERTY] = watchlist_hint
@@ -920,9 +924,7 @@ def discover_detail(rating_key):
         item["file"] = ""
         item["isFolder"] = False
         item["IsPlayable"] = "false"
-    listitem = widgets.create_listitem(
-        widgets.prepare_listitem(item), as_tuple=False
-    )
+    listitem = widgets.create_listitem(widgets.prepare_listitem(item), as_tuple=False)
     xbmcgui.Dialog().info(listitem)
     return True
 

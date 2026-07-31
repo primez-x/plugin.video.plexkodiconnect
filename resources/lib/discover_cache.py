@@ -26,7 +26,6 @@ import zlib
 
 from . import plex_discover, utils, variables as v
 
-
 LOG = getLogger("PLEX.discover_cache")
 
 CACHE_VERSION = "v3"
@@ -167,16 +166,18 @@ def _notify_service(message):
         import xbmc
 
         xbmc.executeJSONRPC(
-            json.dumps({
-                "jsonrpc": "2.0",
-                "id": "pkc-discover-wake",
-                "method": "JSONRPC.NotifyAll",
-                "params": {
-                    "sender": DISCOVER_SIGNAL_SENDER,
-                    "message": message,
-                    "data": [],
-                },
-            })
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "pkc-discover-wake",
+                    "method": "JSONRPC.NotifyAll",
+                    "params": {
+                        "sender": DISCOVER_SIGNAL_SENDER,
+                        "message": message,
+                        "data": [],
+                    },
+                }
+            )
         )
         return True
     except Exception:
@@ -191,7 +192,9 @@ def _ensure_directory(directory):
     try:
         os.makedirs(directory, exist_ok=True)
     except OSError as err:
-        LOG.debug("Could not create Plex Discover cache directory %s: %s", directory, err)
+        LOG.debug(
+            "Could not create Plex Discover cache directory %s: %s", directory, err
+        )
         return False
     return True
 
@@ -344,7 +347,11 @@ def _encode_xmls(xmls):
 
 
 def _decode_xmls(encoded):
-    if not isinstance(encoded, str) or not encoded or len(encoded) > CACHE_MAX_ENCODED_BYTES:
+    if (
+        not isinstance(encoded, str)
+        or not encoded
+        or len(encoded) > CACHE_MAX_ENCODED_BYTES
+    ):
         return None
     try:
         compressed = b64decode(encoded.encode("ascii"), validate=True)
@@ -415,7 +422,9 @@ def _overlay_path(rating_key, account_hash=None):
     rating_key = plex_discover.normalize_rating_key(rating_key)
     if not directory or rating_key is None:
         return None
-    return os.path.join(directory, "%s.json" % sha256(rating_key.encode("utf-8")).hexdigest())
+    return os.path.join(
+        directory, "%s.json" % sha256(rating_key.encode("utf-8")).hexdigest()
+    )
 
 
 def _refresh_path(url, cache_kind, account_hash=None):
@@ -423,7 +432,9 @@ def _refresh_path(url, cache_kind, account_hash=None):
     if not directory or not isinstance(url, str) or not url:
         return None
     material = "%s\x00%s" % (cache_kind, url)
-    return os.path.join(directory, "%s.json" % sha256(material.encode("utf-8")).hexdigest())
+    return os.path.join(
+        directory, "%s.json" % sha256(material.encode("utf-8")).hexdigest()
+    )
 
 
 def _record_timestamp(record):
@@ -613,8 +624,7 @@ def source_is_current(url, max_age_seconds=WATCHLIST_OVERLAY_SECONDS):
     l1_stored_at = _l1_stored_at(url, account_hash)
     if (
         l1_stored_at is not None
-        and _freshness(l1_stored_at, max_age_seconds, max_age_seconds)
-        == CACHE_FRESH
+        and _freshness(l1_stored_at, max_age_seconds, max_age_seconds) == CACHE_FRESH
         and account_matches(account_hash)
     ):
         return True
@@ -762,6 +772,86 @@ def watchlist_hint(rating_key, fallback=None):
         _window_set(state_property, state)
         _window_set(updated_property, str(record.get("stored_at")))
     return state
+
+
+# --- tmdb → ratingKey resolution cache ---------------------------------------
+# Persists resolved tmdb→ratingKey mappings so a detail dialog opened a second
+# time (or after a Kodi restart) skips the metadata match API call (~300 ms).
+
+TMDB_KEY_RETENTION_SECONDS = 14 * 24 * 60 * 60
+
+
+def _tmdb_key_path(identity, account_hash=None):
+    directory = _directory("tmdb_keys", account_hash)
+    if not directory or not isinstance(identity, str) or not identity:
+        return None
+    return os.path.join(
+        directory, "%s.json" % sha256(identity.encode("utf-8")).hexdigest()
+    )
+
+
+def record_tmdb_rating_key(identity, rating_key, account_hash=None):
+    """Persist a resolved tmdb→ratingKey mapping to disk."""
+    account_hash = active_account_hash() if account_hash is None else account_hash
+    rating_key = plex_discover.normalize_rating_key(rating_key)
+    if (
+        rating_key is None
+        or not isinstance(identity, str)
+        or not identity
+        or not account_matches(account_hash)
+    ):
+        return False
+    filename = _tmdb_key_path(identity, account_hash)
+    if filename is None:
+        return False
+    stored_at = time()
+    record = {
+        "schema": RECORD_SCHEMA_VERSION,
+        "record_id": uuid4().hex,
+        "account": account_hash,
+        "identity": identity,
+        "rating_key": rating_key,
+        "stored_at": stored_at,
+        "last_accessed_at": stored_at,
+    }
+    try:
+        with _static_lock() as locked:
+            if not locked:
+                return False
+            return _write_json(filename, record)
+    except Exception as err:
+        LOG.debug("Could not store tmdb ratingKey mapping: %s", err)
+        return False
+
+
+def cached_tmdb_rating_key(identity, account_hash=None):
+    """Return a previously resolved ratingKey for *identity*, or ``None``."""
+    account_hash = active_account_hash() if account_hash is None else account_hash
+    if (
+        not isinstance(identity, str)
+        or not identity
+        or not _valid_account_hash(account_hash)
+    ):
+        return None
+    filename = _tmdb_key_path(identity, account_hash)
+    record = _read_json(filename)
+    if (
+        record is None
+        or record.get("schema") != RECORD_SCHEMA_VERSION
+        or record.get("account") != account_hash
+        or record.get("identity") != identity
+    ):
+        return None
+    if (
+        _freshness(
+            record.get("stored_at"),
+            TMDB_KEY_RETENTION_SECONDS,
+            TMDB_KEY_RETENTION_SECONDS,
+        )
+        != CACHE_FRESH
+    ):
+        return None
+    return plex_discover.normalize_rating_key(record.get("rating_key"))
 
 
 def refresh_hosts(cache_kind):
@@ -1039,7 +1129,9 @@ def recover_refresh_claims():
         return 0
     try:
         with _refresh_lock(account_hash) as locked:
-            return _recover_refresh_claims_locked(account_hash, directory) if locked else 0
+            return (
+                _recover_refresh_claims_locked(account_hash, directory) if locked else 0
+            )
     except Exception as err:
         LOG.debug("Could not recover Plex Discover refresh claims: %s", err)
         return 0
@@ -1163,9 +1255,7 @@ def finish_refresh(request, success):
 
 
 def _namespace_hashes():
-    return [
-        name for name in _listdir(_profile_root()) if _valid_account_hash(name)
-    ]
+    return [name for name in _listdir(_profile_root()) if _valid_account_hash(name)]
 
 
 def _window_timestamp(key):
@@ -1245,12 +1335,14 @@ def _sweep_static_locked():
                 if directory_name == "entries":
                     source_records.append(record_info)
 
-    for _, _, filename in sorted(source_records)[: max(
-        0, len(source_records) - CACHE_MAX_SOURCE_RECORDS
-    )]:
+    for _, _, filename in sorted(source_records)[
+        : max(0, len(source_records) - CACHE_MAX_SOURCE_RECORDS)
+    ]:
         if _safe_remove(filename):
             removed += 1
-            static_records = [record for record in static_records if record[2] != filename]
+            static_records = [
+                record for record in static_records if record[2] != filename
+            ]
 
     total_size = sum(size for _, size, _ in static_records)
     for _, size, filename in sorted(static_records):

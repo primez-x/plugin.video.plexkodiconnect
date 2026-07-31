@@ -6,13 +6,34 @@ import requests.exceptions as exceptions
 
 from . import utils, clientinfo, app
 
+# A lazily-created Session for ``authenticate=False`` calls (plex.tv,
+# discover.provider.plex.tv, metadata.provider.plex.tv).  These hosts are
+# hit repeatedly during Discover browsing and Watchlist status resolution.
+# Reusing a Session avoids a full TLS handshake (~80 ms) on every call.
+_DISCOVER_SESSION = None
+
+
+def _discover_session():
+    global _DISCOVER_SESSION
+    if _DISCOVER_SESSION is None:
+        session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=4, pool_maxsize=8, max_retries=1
+        )
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        _DISCOVER_SESSION = session
+    return _DISCOVER_SESSION
+
+
 ###############################################################################
 
 # Disable annoying requests warnings
 import requests.packages.urllib3
+
 requests.packages.urllib3.disable_warnings()
 
-LOG = getLogger('PLEX.download')
+LOG = getLogger("PLEX.download")
 
 ###############################################################################
 
@@ -56,7 +77,7 @@ class DownloadUtils(object):
         """
         User should be authenticated when this method is called
         """
-        if not reset and hasattr(self, 's'):
+        if not reset and hasattr(self, "s"):
             LOG.debug("Requests session already alive, reusing")
             return
         # Start session
@@ -65,7 +86,7 @@ class DownloadUtils(object):
         self.deviceId = clientinfo.getDeviceId()
         # Attach authenticated header to the session
         self.s.headers = clientinfo.getXArgsDeviceInfo()
-        self.s.encoding = 'utf-8'
+        self.s.encoding = "utf-8"
         # Set SSL settings
         self.setSSL()
 
@@ -89,7 +110,7 @@ class DownloadUtils(object):
             del self.s
         except AttributeError:
             pass
-        LOG.info('Request session stopped')
+        LOG.info("Request session stopped")
 
     @staticmethod
     def getHeader(options=None):
@@ -112,10 +133,21 @@ class DownloadUtils(object):
             r = s.put(**kwargs)
         return r
 
-    def downloadUrl(self, url, action_type="GET", postBody=None,
-                    parameters=None, authenticate=True, headerOptions=None,
-                    verifySSL=True, timeout=None, return_response=False,
-                    headerOverride=None, reraise=False, allow_redirects=True):
+    def downloadUrl(
+        self,
+        url,
+        action_type="GET",
+        postBody=None,
+        parameters=None,
+        authenticate=True,
+        headerOptions=None,
+        verifySSL=True,
+        timeout=None,
+        return_response=False,
+        headerOverride=None,
+        reraise=False,
+        allow_redirects=True,
+    ):
         """
         Override SSL check with verifySSL=False
 
@@ -131,8 +163,8 @@ class DownloadUtils(object):
             json               json() object, if applicable
             <response-object>  if return_response=True is set
         """
-        kwargs = {'timeout': self.timeout}
-        kwargs['allow_redirects'] = allow_redirects
+        kwargs = {"timeout": self.timeout}
+        kwargs["allow_redirects"] = allow_redirects
         if authenticate is True:
             # Get requests session
             try:
@@ -145,29 +177,31 @@ class DownloadUtils(object):
             url = url.replace("{server}", app.CONN.server)
         else:
             # User is not (yet) authenticated. Used to communicate with
-            # plex.tv and to check for PMS servers
-            s = requests
+            # plex.tv and to check for PMS servers.  Use a shared Session so
+            # repeated calls to discover/metadata hosts reuse their TLS
+            # connection instead of paying a full handshake each time.
+            s = _discover_session()
             if not headerOverride:
                 headerOptions = self.getHeader(options=headerOptions)
             else:
                 headerOptions = headerOverride
-            kwargs['verify'] = app.CONN.verify_ssl_cert
+            kwargs["verify"] = app.CONN.verify_ssl_cert
             if app.CONN.ssl_cert_path:
-                kwargs['cert'] = app.CONN.ssl_cert_path
+                kwargs["cert"] = app.CONN.ssl_cert_path
 
         # Set the variables we were passed (fallback to request session
         # otherwise - faster)
-        kwargs['url'] = url
+        kwargs["url"] = url
         if verifySSL is False:
-            kwargs['verify'] = False
+            kwargs["verify"] = False
         if headerOptions is not None:
-            kwargs['headers'] = headerOptions
+            kwargs["headers"] = headerOptions
         if postBody is not None:
-            kwargs['data'] = postBody
+            kwargs["data"] = postBody
         if parameters is not None:
-            kwargs['params'] = parameters
+            kwargs["params"] = parameters
         if timeout is not None:
-            kwargs['timeout'] = timeout
+            kwargs["timeout"] = timeout
 
         # ACTUAL DOWNLOAD HAPPENING HERE
         success = False
@@ -192,7 +226,7 @@ class DownloadUtils(object):
             if reraise:
                 raise
         except exceptions.HTTPError as e:
-            LOG.warn('HTTP Error at %s', url)
+            LOG.warn("HTTP Error at %s", url)
             LOG.warn(e)
             if reraise:
                 raise
@@ -207,13 +241,14 @@ class DownloadUtils(object):
             if reraise:
                 raise
         except SystemExit:
-            LOG.info('SystemExit detected, aborting download')
+            LOG.info("SystemExit detected, aborting download")
             self.stopSession()
             if reraise:
                 raise
         except Exception:
-            LOG.warn('Unknown error while downloading. Traceback:')
+            LOG.warn("Unknown error while downloading. Traceback:")
             import traceback
+
             LOG.warn(traceback.format_exc())
             if reraise:
                 raise
@@ -242,24 +277,25 @@ class DownloadUtils(object):
                 if authenticate is False:
                     # Called when checking a connect - no need for rash action
                     return 401
-                r.encoding = 'utf-8'
-                LOG.warn('HTTP error 401 from PMS %s', url)
+                r.encoding = "utf-8"
+                LOG.warn("HTTP error 401 from PMS %s", url)
                 LOG.info(r.text)
-                if '401 Unauthorized' in r.text:
+                if "401 Unauthorized" in r.text:
                     # Truly unauthorized
                     self.count_unauthorized += 1
                     if self.count_unauthorized >= self.unauthorized_attempts:
-                        LOG.warn('We seem to be truly unauthorized for PMS'
-                                 ' %s ', url)
+                        LOG.warn("We seem to be truly unauthorized for PMS" " %s ", url)
                         # Unauthorized access, user no longer has access
                         app.ACCOUNT.log_out()
-                        utils.dialog('notification',
-                                     utils.lang(29999),
-                                     utils.lang(30017),
-                                     icon='{error}')
+                        utils.dialog(
+                            "notification",
+                            utils.lang(29999),
+                            utils.lang(30017),
+                            icon="{error}",
+                        )
                 else:
                     # there might be other 401 where e.g. PMS under strain
-                    LOG.info('PMS might only be under strain')
+                    LOG.info("PMS might only be under strain")
                 return 401
 
             elif r.status_code in (200, 201):
@@ -270,8 +306,8 @@ class DownloadUtils(object):
                     r = utils.etree.fromstring(r.content)
                     return r
                 except Exception:
-                    r.encoding = 'utf-8'
-                    if r.text == '':
+                    r.encoding = "utf-8"
+                    if r.text == "":
                         # Answer does not contain a body
                         return True
                     try:
@@ -279,24 +315,27 @@ class DownloadUtils(object):
                         r = r.json()
                         return r
                     except Exception:
-                        if '200 OK' in r.text:
+                        if "200 OK" in r.text:
                             # Received fucked up OK from PMS on playstate
                             # update
                             pass
                         else:
-                            LOG.warn("Unable to convert the response for: "
-                                     "%s", url)
+                            LOG.warn("Unable to convert the response for: " "%s", url)
                             LOG.warn("Received headers were: %s", r.headers)
-                            LOG.warn('Received text: %s', r.text)
+                            LOG.warn("Received text: %s", r.text)
                         return True
             elif r.status_code == 403:
                 # E.g. deleting a PMS item
-                LOG.warn('PMS sent 403: Forbidden error for url %s', url)
+                LOG.warn("PMS sent 403: Forbidden error for url %s", url)
                 return
             else:
-                r.encoding = 'utf-8'
-                LOG.warn('Unknown answer from PMS %s with status code %s: %s',
-                         url, r.status_code, r.text)
+                r.encoding = "utf-8"
+                LOG.warn(
+                    "Unknown answer from PMS %s with status code %s: %s",
+                    url,
+                    r.status_code,
+                    r.text,
+                )
                 return True
 
         finally:
@@ -305,6 +344,8 @@ class DownloadUtils(object):
                 # Make the addon aware of status
                 self.count_error += 1
                 if self.count_error >= self.connection_attempts:
-                    LOG.warn('Failed to connect to %s too many times. '
-                             'Declare PMS dead', url)
+                    LOG.warn(
+                        "Failed to connect to %s too many times. " "Declare PMS dead",
+                        url,
+                    )
                     app.CONN.online = False

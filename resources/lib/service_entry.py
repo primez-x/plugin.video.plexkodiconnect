@@ -30,6 +30,7 @@ loghandler.config()
 LOG = logging.getLogger("PLEX.service")
 ###############################################################################
 
+
 def _discover_tmdb_ratingkey(tmdb_id, tmdb_type):
     return watchlist.discover_tmdb_ratingkey(tmdb_id, tmdb_type)
 
@@ -297,26 +298,23 @@ class Service(object):
     def watchlist_add(self, raw_params):
         return self.watchlist_modify("addToWatchlist", raw_params)
 
-
     def watchlist_status_key(self, raw_params):
         return watchlist.status_key(dict(utils.parse_qsl(raw_params)))
-
 
     def watchlist_status_tmdb(self, raw_params):
         return watchlist.status_tmdb(dict(utils.parse_qsl(raw_params)))
 
-
     def watchlist_status_monitor(self):
         return watchlist.status_monitor()
 
+    def watchlist_status_search(self, raw_params):
+        return watchlist.status_search(dict(utils.parse_qsl(raw_params)))
 
     def watchlist_detail_key(self, raw_params):
         return watchlist.complete_key(dict(utils.parse_qsl(raw_params)))
 
-
     def watchlist_detail_tmdb(self, raw_params):
         return watchlist.complete_tmdb(dict(utils.parse_qsl(raw_params)))
-
 
     def watchlist_remove(self, raw_params):
         return self.watchlist_modify("removeFromWatchlist", raw_params)
@@ -686,8 +684,7 @@ class Service(object):
             # wake is cheap when no newer durable request exists because the
             # scheduler compares the persisted signal before claiming work.
             self.next_discover_refresh_fallback = 0.0
-            event = getattr(getattr(app, 'APP', None),
-                            'discover_refresh_event', None)
+            event = getattr(getattr(app, "APP", None), "discover_refresh_event", None)
             if event is not None:
                 event.set()
 
@@ -702,7 +699,7 @@ class Service(object):
 
     @staticmethod
     def _consume_discover_event(event_name):
-        event = getattr(getattr(app, 'APP', None), event_name, None)
+        event = getattr(getattr(app, "APP", None), event_name, None)
         if event is None or not event.is_set():
             return False
         event.clear()
@@ -715,7 +712,7 @@ class Service(object):
         if not getattr(getattr(app, "ACCOUNT", None), "authenticated", False):
             return
         now = monotonic()
-        notified = self._consume_discover_event('discover_refresh_event')
+        notified = self._consume_discover_event("discover_refresh_event")
         fallback_due = now >= self.next_discover_refresh_fallback
         if not notified and not fallback_due:
             return
@@ -725,7 +722,8 @@ class Service(object):
         if refresh_wake > time():
             self.next_discover_refresh_fallback = min(
                 self.next_discover_refresh_fallback,
-                now + max(0.0, refresh_wake - time()))
+                now + max(0.0, refresh_wake - time()),
+            )
             return
         # A notification is coalesced by its durable timestamp. A due slow
         # recovery check is intentionally allowed to scan once, even when the
@@ -754,13 +752,14 @@ class Service(object):
         if self.discover_maintenance_threader is None:
             return
         now = monotonic()
-        notified = self._consume_discover_event('discover_maintenance_event')
+        notified = self._consume_discover_event("discover_maintenance_event")
         fallback_due = now >= self.next_discover_maintenance_fallback
         if not notified and not fallback_due:
             return
         if fallback_due:
             self.next_discover_maintenance_fallback = (
-                now + DISCOVER_WAKE_FALLBACK_SECONDS)
+                now + DISCOVER_WAKE_FALLBACK_SECONDS
+            )
         if (
             self.discover_maintenance_threader.working()
             or not discover_cache.maintenance_due()
@@ -786,8 +785,8 @@ class Service(object):
             name="discover-maintenance", worker_count=1
         )
         discover_cache.recover_refresh_claims()
-        for event_name in ('discover_refresh_event', 'discover_maintenance_event'):
-            event = getattr(getattr(app, 'APP', None), event_name, None)
+        for event_name in ("discover_refresh_event", "discover_maintenance_event"):
+            event = getattr(getattr(app, "APP", None), event_name, None)
             if event is not None:
                 event.set()
 
@@ -896,6 +895,13 @@ class Service(object):
                 elif plex_command == "WATCHLIST_STATUS_MONITOR":
                     task = backgroundthread.FunctionAsTask(
                         self.watchlist_status_monitor, None
+                    )
+                    normal_priority = True
+                elif plex_command.startswith("WATCHLIST_STATUS_SEARCH?"):
+                    task = backgroundthread.FunctionAsTask(
+                        self.watchlist_status_search,
+                        None,
+                        plex_command.replace("WATCHLIST_STATUS_SEARCH?", ""),
                     )
                     normal_priority = True
                 elif plex_command.startswith("WATCHLIST_ADD_SEARCH?"):

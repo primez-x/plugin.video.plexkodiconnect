@@ -12,7 +12,6 @@ import xbmc
 
 from . import app, clientinfo, discover_cache, downloadutils, plex_discover, utils
 
-
 LOG = getLogger("PLEX.watchlist")
 
 WATCHLIST_USER_STATE_URL = (
@@ -113,7 +112,9 @@ def discover_tmdb_ratingkey(tmdb_id, tmdb_type):
     try:
         payload = response.json()
     except (TypeError, ValueError):
-        LOG.warning("discover_tmdb_ratingkey: Plex metadata match returned invalid JSON")
+        LOG.warning(
+            "discover_tmdb_ratingkey: Plex metadata match returned invalid JSON"
+        )
         return None
     match = plex_discover.resolve_tmdb_match(payload, tmdb_type)
     if match is None:
@@ -126,11 +127,16 @@ def _rating_key_for_tmdb(params, identity):
     rating_key = _cached_rating_key(identity)
     if rating_key is not None:
         return rating_key
+    rating_key = discover_cache.cached_tmdb_rating_key(identity)
+    if rating_key is not None:
+        _remember_rating_key(identity, rating_key)
+        return rating_key
     rating_key = discover_tmdb_ratingkey(
         params.get("tmdb_id"), params.get("tmdb_type") or params.get("plex_type")
     )
     if rating_key is not None:
         _remember_rating_key(identity, rating_key)
+        discover_cache.record_tmdb_rating_key(identity, rating_key)
     return rating_key
 
 
@@ -141,7 +147,11 @@ def state(rating_key):
         LOG.warning("watchlist state requested with an invalid rating key")
         return None
     token, account_hash = _session_credentials()
-    if not token or account_hash is None or not discover_cache.account_matches(account_hash):
+    if (
+        not token
+        or account_hash is None
+        or not discover_cache.account_matches(account_hash)
+    ):
         return None
     _ensure_runtime()
     response = downloadutils.DownloadUtils().downloadUrl(
@@ -169,7 +179,11 @@ def state(rating_key):
 
 def _action(api_type, rating_key):
     token, account_hash = _session_credentials()
-    if not token or account_hash is None or not discover_cache.account_matches(account_hash):
+    if (
+        not token
+        or account_hash is None
+        or not discover_cache.account_matches(account_hash)
+    ):
         return False
     _ensure_runtime()
     response = downloadutils.DownloadUtils().downloadUrl(
@@ -339,7 +353,9 @@ def _cached_rating_key(identity):
     rating_key = plex_discover.normalize_rating_key(utils.window(DETAIL_RATING_KEY))
     if utils.window(DETAIL_IDENTITY) == identity and rating_key is not None:
         return rating_key
-    return plex_discover.normalize_rating_key(utils.window(_item_rating_key_property(identity)))
+    return plex_discover.normalize_rating_key(
+        utils.window(_item_rating_key_property(identity))
+    )
 
 
 def _identity_for_key(params):
@@ -378,9 +394,8 @@ def seed_key_status_hint(params):
         return False
     # Do not allow a stale provider listing to replace the foreground's
     # optimistic projection while a mutation is being published.
-    if (
-        utils.window(DETAIL_IDENTITY) == identity
-        and (utils.window(DETAIL_PENDING) or _optimistic_projection_active(identity))
+    if utils.window(DETAIL_IDENTITY) == identity and (
+        utils.window(DETAIL_PENDING) or _optimistic_projection_active(identity)
     ):
         return False
     _remember_state(identity, hint)
@@ -452,9 +467,7 @@ def _begin(identity, desired):
     # or a complete new intent, never a new request paired with old desired
     # state.
     utils.window(_item_mutation_desired_property(identity), value=desired)
-    utils.window(
-        _item_mutation_previous_state_property(identity), value=previous_state
-    )
+    utils.window(_item_mutation_previous_state_property(identity), value=previous_state)
     utils.window(_item_mutation_request_property(identity), value=request_id)
     # A completion marker carries its generation, so a stale worker cannot
     # clear a foreground intent that is written while it terminally projects.
@@ -484,7 +497,9 @@ def _optimistic_projection_active(identity=None):
     if utils.window(DETAIL_OPTIMISTIC_STATE) not in ("present", "absent"):
         return False
     optimistic_identity = utils.window(DETAIL_OPTIMISTIC_IDENTITY)
-    return identity is None or not optimistic_identity or optimistic_identity == identity
+    return (
+        identity is None or not optimistic_identity or optimistic_identity == identity
+    )
 
 
 def _clear_optimistic_projection(identity=None):
@@ -573,7 +588,9 @@ def _project_mutation(identity, request_id, observed_state):
 
 def _project_failure(identity, request_id, observed_state, previous_state):
     confirmed_name = _state_name(observed_state)
-    fallback_state = previous_state if previous_state in ("present", "absent") else "absent"
+    fallback_state = (
+        previous_state if previous_state in ("present", "absent") else "absent"
+    )
     # Preserve the best confirmed state before a racing next intent reads it.
     _remember_state(identity, confirmed_name or fallback_state)
     if not _clear_worker_request(identity, request_id):
@@ -590,9 +607,7 @@ def _project_failure(identity, request_id, observed_state, previous_state):
 
 
 def _api_type_for_desired(desired):
-    return {"present": "addToWatchlist", "absent": "removeFromWatchlist"}.get(
-        desired
-    )
+    return {"present": "addToWatchlist", "absent": "removeFromWatchlist"}.get(desired)
 
 
 def _begin_detail_request(params, desired, identity):
@@ -851,10 +866,7 @@ def _remember_status_if_current(identity, mutation_marker, observed_state):
     # `_begin()` writes Pending before its item-level mutation marker.  This
     # prevents a status response that races that short publication window from
     # caching the pre-mutation server state.
-    if (
-        utils.window(DETAIL_IDENTITY) == identity
-        and utils.window(DETAIL_PENDING)
-    ):
+    if utils.window(DETAIL_IDENTITY) == identity and utils.window(DETAIL_PENDING):
         return False
     _remember_state(identity, state_name)
     return True
@@ -905,9 +917,7 @@ def status_key(params):
         return False
     accepted = _remember_status_if_current(identity, mutation_marker, observed_state)
     if accepted:
-        discover_cache.record_watchlist_state(
-            rating_key, observed_state, account_hash
-        )
+        discover_cache.record_watchlist_state(rating_key, observed_state, account_hash)
     return _project_status(identity, revision[0], revision[1], observed_state)
 
 
@@ -932,9 +942,165 @@ def status_tmdb(params):
         return False
     accepted = _remember_status_if_current(identity, mutation_marker, observed_state)
     if accepted:
-        discover_cache.record_watchlist_state(
-            rating_key, observed_state, account_hash
+        discover_cache.record_watchlist_state(rating_key, observed_state, account_hash)
+    return _project_status(identity, revision[0], revision[1], observed_state)
+
+
+# --- title+year search resolver (bypasses TMDb Helper dependency) ------------
+
+DETAIL_CONTEXT_YEAR = "PKC.Watchlist.Detail.Context.Year"
+DISCOVER_SEARCH_URL = "https://discover.provider.plex.tv/library/search"
+
+
+def _exact_search_match(payload, expected_title, expected_year, media_type):
+    """3-tier match on Discover search results — never fuzzy."""
+    expected_type = "movie" if media_type == "movie" else "show"
+    title_lower = (expected_title or "").strip().lower()
+    if not title_lower:
+        return None
+    year_int = None
+    if expected_year and str(expected_year).strip().isdigit():
+        year_int = int(str(expected_year).strip())
+    candidates = []
+    container = payload.get("MediaContainer") if isinstance(payload, dict) else None
+    if not isinstance(container, dict):
+        return None
+    for result_group in plex_discover._as_list(container.get("SearchResults")):
+        if not isinstance(result_group, dict):
+            continue
+        for result in plex_discover._as_list(result_group.get("SearchResult")):
+            if not isinstance(result, dict):
+                continue
+            metadata = result.get("Metadata")
+            if not isinstance(metadata, dict):
+                continue
+            if metadata.get("type") != expected_type:
+                continue
+            rk = metadata.get("ratingKey")
+            if not rk:
+                continue
+            match_title = (metadata.get("title") or "").strip().lower()
+            candidates.append(
+                {
+                    "rating_key": rk,
+                    "title": match_title,
+                    "year": metadata.get("year"),
+                    "score": float(result.get("score", 0) or 0),
+                }
+            )
+    if not candidates:
+        return None
+    # Tier 1: exact title + exact year
+    if year_int is not None:
+        for c in candidates:
+            if c["title"] == title_lower and c["year"] == year_int:
+                return c["rating_key"]
+    # Tier 2: exact title, highest score
+    exact_title = [c for c in candidates if c["title"] == title_lower]
+    if exact_title:
+        return max(exact_title, key=lambda c: c["score"])["rating_key"]
+    # Tier 3: no exact title match — refuse to guess
+    return None
+
+
+def discover_search_ratingkey(title, year, plex_type):
+    """Resolve a title+year to Plex's canonical ratingKey via Discover search."""
+    media_type = plex_discover.normalize_tmdb_type(plex_type)
+    if media_type is None or not title:
+        return None
+    search_types = "movies" if media_type == "movie" else "tv"
+    _ensure_runtime()
+    response = downloadutils.DownloadUtils().downloadUrl(
+        DISCOVER_SEARCH_URL,
+        parameters={
+            "query": title,
+            "searchTypes": search_types,
+            "searchProviders": "discover",
+            "includeMetadata": 1,
+            "limit": 5,
+        },
+        authenticate=False,
+        headerOptions=_headers(accept_json=True),
+        return_response=True,
+        timeout=WATCHLIST_HTTP_TIMEOUT,
+    )
+    if response is None or not getattr(response, "ok", False):
+        LOG.warning(
+            "discover_search_ratingkey: search returned HTTP %s",
+            getattr(response, "status_code", "unknown"),
         )
+        return None
+    try:
+        payload = response.json()
+    except (TypeError, ValueError):
+        LOG.warning("discover_search_ratingkey: invalid JSON response")
+        return None
+    return _exact_search_match(payload, title, year, media_type)
+
+
+def _identity_for_search(params):
+    title = params.get("title")
+    year = params.get("year")
+    plex_type = params.get("plex_type") or params.get("tmdb_type")
+    media_type = plex_discover.normalize_tmdb_type(plex_type)
+    if not title or media_type is None:
+        return None
+    return "search.%s.%s.%s" % (media_type, title.lower(), year or "")
+
+
+def bootstrap_status_search(params):
+    """Restore a cached state for a title+year search detail item."""
+    title = params.get("title") or utils.window(DETAIL_CONTEXT_LABEL)
+    year = params.get("year") or utils.window(DETAIL_CONTEXT_YEAR)
+    plex_type = params.get("plex_type") or params.get("tmdb_type")
+    if not title:
+        return False
+    enriched = dict(params)
+    enriched["title"] = title
+    enriched["year"] = year
+    enriched["plex_type"] = plex_type
+    identity = _identity_for_search(enriched)
+    if identity is None:
+        return False
+    # The search tier runs when no higher tier set Identity from a known ID.
+    # Set it here so _capture_status and the service-side resolver agree.
+    utils.window(DETAIL_IDENTITY, value=identity)
+    return _bootstrap_cached_status(identity)
+
+
+def status_search(params):
+    """Resolve watchlist state by title+year, bypassing TMDb Helper dependency."""
+    title = params.get("title") or utils.window(DETAIL_CONTEXT_LABEL)
+    year = params.get("year") or utils.window(DETAIL_CONTEXT_YEAR)
+    plex_type = params.get("plex_type") or params.get("tmdb_type")
+    media_type = plex_discover.normalize_tmdb_type(plex_type)
+    if not title or media_type is None:
+        return False
+    identity = _identity_for_search(
+        {"title": title, "year": year, "plex_type": plex_type}
+    )
+    if identity is None:
+        return False
+    account_hash = discover_cache.active_account_hash()
+    if account_hash is None:
+        return False
+    revision = _capture_status(identity)
+    if revision is None:
+        return False
+    mutation_marker = _item_mutation_marker(identity)
+    _project_cached_status(identity, revision[0], revision[1])
+    rating_key = discover_cache.cached_tmdb_rating_key(identity)
+    if rating_key is None:
+        rating_key = discover_search_ratingkey(title, year, plex_type)
+    if rating_key is None:
+        return False
+    observed_state = state(rating_key)
+    if not discover_cache.account_matches(account_hash):
+        return False
+    accepted = _remember_status_if_current(identity, mutation_marker, observed_state)
+    if accepted:
+        discover_cache.record_watchlist_state(rating_key, observed_state, account_hash)
+        discover_cache.record_tmdb_rating_key(identity, rating_key, account_hash)
     return _project_status(identity, revision[0], revision[1], observed_state)
 
 
@@ -954,9 +1120,11 @@ def status_monitor():
     utils.window(DETAIL_MONITOR_REVISION, value=monitor_revision)
 
     for attempt in range(WATCHLIST_MONITOR_ATTEMPTS):
-        if (
-            utils.window(DETAIL_MONITOR_REVISION) != monitor_revision
-            or _monitor_context() != (expected_label, expected_dbtype)
+        if utils.window(
+            DETAIL_MONITOR_REVISION
+        ) != monitor_revision or _monitor_context() != (
+            expected_label,
+            expected_dbtype,
         ):
             return False
         if utils.window(DETAIL_IDENTITY) or utils.window(DETAIL_PENDING):

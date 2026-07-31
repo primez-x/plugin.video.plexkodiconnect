@@ -22,6 +22,7 @@ WATCHLIST_ACTION_MODES = frozenset(
         "watchlist_status_key",
         "watchlist_status_tmdb",
         "watchlist_status_monitor",
+        "watchlist_status_search",
         "watchlist_add_search",
         "watchlist_remove_search",
     )
@@ -128,6 +129,10 @@ def triage(mode, params, path, arguments, itemid):
         return
     elif mode == "watchlist_status_monitor":
         transfer.plex_command("WATCHLIST_STATUS_MONITOR")
+        return
+    elif mode == "watchlist_status_search":
+        watchlist.bootstrap_status_search(params)
+        transfer.plex_command("WATCHLIST_STATUS_SEARCH?%s" % urlencode(params))
         return
     elif mode == "discover_detail":
         from resources.lib import entrypoint
