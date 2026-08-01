@@ -694,8 +694,8 @@ def discover_hubs():
     Listing for Plex Discover hub categories (if signed in to plex.tv)
     """
     url = "https://discover.provider.plex.tv/hubs/sections/home?includeMetadata=1"
-    # Try the cache first. A cache hit avoids ~850 ms of PMS session init
-    # that ``_wait_for_auth`` / ``app.init`` would pay on every cold plugin spawn.
+    # Try the cache first. A cache hit avoids ~850 ms of _wait_for_auth()
+    # busy-waiting for the service to authenticate on every cold plugin spawn.
     cached_xmls = discover_cache.read_xml(url, "catalog")[1]
     if cached_xmls is None:
         _wait_for_auth()
@@ -705,7 +705,14 @@ def discover_hubs():
         if utils.window("plex_restricteduser") == "true":
             LOG.error("No discover hubs - restricted user")
             raise ListingException
-        app.init(entrypoint=True)
+    # app.init(entrypoint=True) MUST run on every path (cache hit or miss):
+    # it is pure in-memory settings construction (no network I/O in entrypoint
+    # mode) and sets app.SYNC/app.CONN/app.ACCOUNT, which listitem generation
+    # dereferences via widgets._generate_content -> api.fullpath(). Skipping
+    # it on a cache hit leaves app.SYNC=None and crashes with
+    # "AttributeError: 'NoneType' object has no attribute 'direct_paths'".
+    # Only _wait_for_auth() above is expensive.
+    app.init(entrypoint=True)
     xmls = _provider_xmls(
         url,
         (plex_discover.DISCOVER_PROVIDER_HOST,),
@@ -763,7 +770,9 @@ def discover_hub(hub_id):
         if utils.window("plex_restricteduser") == "true":
             LOG.error("No discover hub - restricted user")
             raise ListingException
-        app.init(entrypoint=True)
+    # See discover_hubs(): app.init(entrypoint=True) must run on every path
+    # or app.SYNC stays None and listitem generation crashes in fullpath().
+    app.init(entrypoint=True)
     xmls = _provider_xmls(
         url,
         (plex_discover.DISCOVER_PROVIDER_HOST,),

@@ -58,8 +58,14 @@ class File(object):
                          instance - because otherwise direct paths will
                          evaluate to False!
         """
-        direct_paths = app.SYNC.direct_paths if direct_paths is None \
-            else direct_paths
+        if direct_paths is None:
+            # app.SYNC is None when fullpath() is invoked from an entrypoint
+            # path that did not run app.init() (notably a Discover cache hit).
+            # Discover items are online-only and carry no local file, so fall
+            # back to addon paths (False) instead of crashing on
+            # NoneType.direct_paths.
+            sync = app.SYNC
+            direct_paths = sync.direct_paths if sync is not None else False
         if (not direct_paths or force_addon or
                 self.plex_type == v.PLEX_TYPE_CLIP):
             if self.plex_type == v.PLEX_TYPE_SONG:
