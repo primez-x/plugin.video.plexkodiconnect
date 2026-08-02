@@ -40,11 +40,13 @@ def load_kodimonitor():
         'resources.lib.skip_plex_markers',
         'resources.lib.skip_marker_state',
         'resources.lib.upnext',
+        'resources.lib.gui_refresh',
     ):
         sys.modules.pop(module_name, None)
     lib_package = sys.modules.get('resources.lib')
     if lib_package is not None:
         lib_package.__dict__.pop('skip_plex_markers', None)
+        lib_package.__dict__.pop('gui_refresh', None)
 
     xbmc = types.ModuleType('xbmc')
     xbmc.commands = []
@@ -82,6 +84,12 @@ def load_kodimonitor():
     utils.delete_temporary_subtitles = lambda: None
 
     timing = types.ModuleType('resources.lib.timing')
+    timing.kodi_time_to_millis = lambda value: (
+        (value['hours'] * 3600 +
+         value['minutes'] * 60 +
+         value['seconds']) * 1000 +
+        value['milliseconds'])
+    timing.kodi_now = lambda: '2026-08-02 09:00:00'
 
     json_rpc = types.ModuleType('resources.lib.json_rpc')
     json_rpc.players = {}
@@ -115,8 +123,21 @@ def load_kodimonitor():
         def addTask(cls, task):
             cls.tasks.append(task)
 
+        @classmethod
+        def addTasksToFront(cls, tasks):
+            cls.tasks.extend(tasks)
+
+    class FunctionAsTask(Task):
+        def __init__(self, function, callback, *args, **kwargs):
+            super(FunctionAsTask, self).__init__()
+            self.function = function
+            self.callback = callback
+            self.args = args
+            self.kwargs = kwargs
+
     backgroundthread.Task = Task
     backgroundthread.BGThreader = BGThreader
+    backgroundthread.FunctionAsTask = FunctionAsTask
 
     app = types.ModuleType('resources.lib.app')
     app.PLAYSTATE = SimpleNamespace(
@@ -140,6 +161,13 @@ def load_kodimonitor():
     variables = types.ModuleType('resources.lib.variables')
     variables.PLAYBACK_METHOD_TRANSCODE = 3
     variables.PLEX_VIDEOTYPES = ('movie', 'episode', 'clip')
+    variables.PLEX_TYPE_EPISODE = 'episode'
+    variables.LIBRARY_VIDEO_PLAYED_AT_BEHAVIOUR = 0
+    variables.MARK_PLAYED_AT = 0.90
+    variables.KODI_PLAYCOUNTMINIMUMPERCENT = 0.80
+    variables.KODI_IGNORESECONDSATSTART = 10
+    variables.KODI_IGNOREPERCENTATEND = 8
+    variables.IGNORE_SECONDS_AT_START = 5
 
     exceptions = types.ModuleType('resources.lib.exceptions')
 
@@ -152,6 +180,11 @@ def load_kodimonitor():
         skip_plex_markers.reset_calls.append(clear_properties)
 
     upnext = types.ModuleType('resources.lib.upnext')
+
+    gui_refresh = types.ModuleType('resources.lib.gui_refresh')
+    gui_refresh.calls = []
+    gui_refresh.refresh_sidepanel_containers = \
+        lambda items: gui_refresh.calls.append(tuple(items))
 
     for module_name, module in {
         'resources.lib.plex_api': plex_api,
@@ -170,10 +203,69 @@ def load_kodimonitor():
         'resources.lib.skip_marker_state': skip_marker_state,
         'resources.lib.skip_plex_markers': skip_plex_markers,
         'resources.lib.upnext': upnext,
+        'resources.lib.gui_refresh': gui_refresh,
     }.items():
         sys.modules[module_name] = module
 
     return importlib.import_module('resources.lib.kodimonitor'), xbmc, json_rpc, backgroundthread
+
+
+def kodi_time(seconds):
+    milliseconds = int(seconds * 1000)
+    return {
+        'hours': milliseconds // 3600000,
+        'minutes': milliseconds // 60000 % 60,
+        'seconds': milliseconds // 1000 % 60,
+        'milliseconds': milliseconds % 1000,
+    }
+
+
+def playback_status(plex_type='episode', position_seconds=1020,
+                    total_seconds=1200):
+    return {
+        'plex_id': '16388',
+        'plex_type': plex_type,
+        'playcount': 0,
+        'external_player': False,
+        'time': kodi_time(position_seconds),
+        'totaltime': kodi_time(total_seconds),
+        'first_credits_marker': None,
+        'final_credits_marker': None,
+    }
+
+
+def install_playstate_databases(kodimonitor):
+    writes = []
+
+    class FakePlexDB(object):
+        def __init__(self, lock=False):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def item_by_id(self, plex_id, plex_type):
+            return {'plex_id': plex_id, 'kodi_fileid': 42}
+
+    class FakeKodiVideoDB(object):
+        def __init__(self, lock=True):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def set_resume(self, *args):
+            writes.append(args)
+
+    kodimonitor.PlexDB = FakePlexDB
+    kodimonitor.kodi_db.KodiVideoDB = FakeKodiVideoDB
+    return writes
 
 
 class KodiMonitorTests(unittest.TestCase):
@@ -279,6 +371,48 @@ class KodiMonitorTests(unittest.TestCase):
         kodimonitor.RecoverStrandedPlaybackWindow(delay=0).run()
 
         self.assertEqual(xbmc.commands, [])
+
+    def test_completed_episode_write_refreshes_outer_and_nested_containers(self):
+        kodimonitor, xbmc, _, _ = load_kodimonitor()
+        writes = install_playstate_databases(kodimonitor)
+        kodimonitor._playback_progress = lambda status, ended, db_item: (
+            0.0, 1434.96, 1, '2026-08-02 08:53:51')
+
+        kodimonitor._record_playstate(playback_status(), ended=True)
+
+        self.assertEqual(writes, [
+            (42, 0.0, 1434.96, 1, '2026-08-02 08:53:51'),
+        ])
+        self.assertEqual(xbmc.commands, ['Container.Refresh'])
+        self.assertEqual(kodimonitor.gui_refresh.calls,
+                         [(('16388', 'episode'),)])
+
+    def test_partial_episode_threshold_mismatch_uses_scoped_refresh(self):
+        kodimonitor, xbmc, _, _ = load_kodimonitor()
+        writes = install_playstate_databases(kodimonitor)
+
+        kodimonitor._record_playstate(
+            playback_status(position_seconds=1020, total_seconds=1200),
+            ended=False)
+
+        self.assertEqual(writes, [
+            (42, 1020.0, 1200.0, 0, '2026-08-02 09:00:00'),
+        ])
+        self.assertEqual(xbmc.commands, ['Container.Refresh'])
+        self.assertEqual(kodimonitor.gui_refresh.calls,
+                         [(('16388', 'episode'),)])
+
+    def test_movie_write_refreshes_only_outer_container(self):
+        kodimonitor, xbmc, _, _ = load_kodimonitor()
+        install_playstate_databases(kodimonitor)
+        kodimonitor._playback_progress = lambda status, ended, db_item: (
+            300.0, 7200.0, 0, '2026-08-02 09:00:00')
+
+        kodimonitor._record_playstate(
+            playback_status(plex_type='movie'), ended=False)
+
+        self.assertEqual(xbmc.commands, ['Container.Refresh'])
+        self.assertEqual(kodimonitor.gui_refresh.calls, [])
 
 
 if __name__ == '__main__':
