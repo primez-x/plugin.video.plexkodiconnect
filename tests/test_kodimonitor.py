@@ -321,31 +321,148 @@ def install_onupdate_databases(kodimonitor, playcount=0):
 class KodiMonitorTests(unittest.TestCase):
     def test_upnext_marker_timing_replaces_credit_skip(self):
         kodimonitor, _, _, _ = load_kodimonitor()
-        item = SimpleNamespace(playerid=2, api='api')
+        item = SimpleNamespace(
+            playerid=2,
+            api='api',
+            kodi_id=8950,
+            kodi_type='episode',
+            plex_id='16390',
+            pkc_playback_generation=4,
+        )
+        kodimonitor.app.PLAYSTATE.item = item
+        kodimonitor.app.PLAYSTATE.playback_generation = 4
         kodimonitor.upnext.get_notification_time_from_markers = \
             lambda status: 88.205
-        kodimonitor.upnext.send_upnext_signal = \
-            lambda api, notification_time: True
+        kodimonitor.upnext.prepare_upnext_signal = \
+            lambda api, notification_time: {
+                'token': 'token',
+                'next_plex_id': '16391',
+                'data': {},
+            }
+        emitted = []
+        kodimonitor.upnext.emit_upnext_signal = \
+            lambda prepared: emitted.append(prepared) or {
+                'token': prepared['token'],
+                'next_plex_id': prepared['next_plex_id'],
+            }
 
         kodimonitor.SendUpNextSignal(item, {'totaltime': {}}).run()
 
         state = kodimonitor.app.PLAYSTATE.player_states[2]
+        self.assertEqual(len(emitted), 1)
         self.assertTrue(state['upnext_signal_sent'])
         self.assertTrue(state['upnext_replaces_credit_skip'])
+        self.assertEqual(
+            kodimonitor.app.PLAYSTATE.expected_upnext_handoff['token'],
+            'token')
 
     def test_native_upnext_fallback_does_not_replace_credit_skip(self):
         kodimonitor, _, _, _ = load_kodimonitor()
-        item = SimpleNamespace(playerid=2, api='api')
+        item = SimpleNamespace(
+            playerid=2,
+            api='api',
+            kodi_id=8950,
+            kodi_type='episode',
+            plex_id='16390',
+            pkc_playback_generation=4,
+        )
+        kodimonitor.app.PLAYSTATE.item = item
+        kodimonitor.app.PLAYSTATE.playback_generation = 4
         kodimonitor.upnext.get_notification_time_from_markers = \
             lambda status: None
-        kodimonitor.upnext.send_upnext_signal = \
-            lambda api, notification_time: True
+        kodimonitor.upnext.prepare_upnext_signal = \
+            lambda api, notification_time: {
+                'token': 'token',
+                'next_plex_id': '16391',
+                'data': {},
+            }
+        kodimonitor.upnext.emit_upnext_signal = lambda prepared: prepared
 
         kodimonitor.SendUpNextSignal(item, {'totaltime': {}}).run()
 
         state = kodimonitor.app.PLAYSTATE.player_states[2]
         self.assertTrue(state['upnext_signal_sent'])
         self.assertFalse(state['upnext_replaces_credit_skip'])
+
+    def test_stale_upnext_task_after_wait_does_not_prepare_or_mutate_state(self):
+        kodimonitor, _, _, _ = load_kodimonitor()
+        item = SimpleNamespace(
+            playerid=2,
+            api='old-api',
+            kodi_id=8950,
+            kodi_type='episode',
+            plex_id='16390',
+            pkc_playback_generation=4,
+        )
+        replacement = SimpleNamespace(pkc_playback_generation=5)
+        kodimonitor.app.PLAYSTATE.item = item
+        kodimonitor.app.PLAYSTATE.playback_generation = 4
+        state = kodimonitor.app.PLAYSTATE.player_states[2]
+        state['upnext_signal_sent'] = False
+        state['upnext_replaces_credit_skip'] = True
+        prepared = []
+        emitted = []
+        kodimonitor.upnext.prepare_upnext_signal = \
+            lambda *args: prepared.append(args) or {}
+        kodimonitor.upnext.emit_upnext_signal = \
+            lambda data: emitted.append(data)
+
+        def transition_during_wait(timeout):
+            kodimonitor.app.PLAYSTATE.item = replacement
+            kodimonitor.app.PLAYSTATE.playback_generation = 5
+            return False
+
+        kodimonitor.app.APP.monitor.waitForAbort = transition_during_wait
+
+        kodimonitor.SendUpNextSignal(item, {'totaltime': {}}).run()
+
+        self.assertEqual(prepared, [])
+        self.assertEqual(emitted, [])
+        self.assertFalse(hasattr(
+            kodimonitor.app.PLAYSTATE, 'expected_upnext_handoff'))
+        self.assertFalse(state['upnext_signal_sent'])
+        self.assertTrue(state['upnext_replaces_credit_skip'])
+
+    def test_stale_upnext_task_after_preparation_does_not_emit_or_mutate_state(self):
+        kodimonitor, _, _, _ = load_kodimonitor()
+        item = SimpleNamespace(
+            playerid=2,
+            api='old-api',
+            kodi_id=8950,
+            kodi_type='episode',
+            plex_id='16390',
+            pkc_playback_generation=4,
+        )
+        replacement = SimpleNamespace(pkc_playback_generation=5)
+        kodimonitor.app.PLAYSTATE.item = item
+        kodimonitor.app.PLAYSTATE.playback_generation = 4
+        state = kodimonitor.app.PLAYSTATE.player_states[2]
+        state['upnext_signal_sent'] = False
+        state['upnext_replaces_credit_skip'] = True
+        emitted = []
+        kodimonitor.upnext.get_notification_time_from_markers = \
+            lambda status: 88.205
+
+        def transition_during_preparation(api, notification_time):
+            kodimonitor.app.PLAYSTATE.item = replacement
+            kodimonitor.app.PLAYSTATE.playback_generation = 5
+            return {
+                'token': 'stale-token',
+                'next_plex_id': '16391',
+                'data': {},
+            }
+
+        kodimonitor.upnext.prepare_upnext_signal = transition_during_preparation
+        kodimonitor.upnext.emit_upnext_signal = \
+            lambda data: emitted.append(data)
+
+        kodimonitor.SendUpNextSignal(item, {'totaltime': {}}).run()
+
+        self.assertEqual(emitted, [])
+        self.assertFalse(hasattr(
+            kodimonitor.app.PLAYSTATE, 'expected_upnext_handoff'))
+        self.assertFalse(state['upnext_signal_sent'])
+        self.assertTrue(state['upnext_replaces_credit_skip'])
 
     def test_discover_notifications_wake_the_matching_service_event(self):
         kodimonitor, _, _, _ = load_kodimonitor()

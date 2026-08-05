@@ -1085,32 +1085,52 @@ class SendUpNextSignal(backgroundthread.Task):
     def __init__(self, item, status):
         self.item = item
         self.status = status
+        self.playback_generation = getattr(
+            item, 'pkc_playback_generation', None)
         super().__init__()
+
+    def _is_current_playback(self):
+        return self.playback_generation is not None and \
+            app.PLAYSTATE.item is self.item and \
+            getattr(app.PLAYSTATE, 'playback_generation', None) == \
+            self.playback_generation and \
+            getattr(self.item, 'pkc_playback_generation', None) == \
+            self.playback_generation
 
     def run(self):
         # Wait for playback to stabilize before sending Up Next signal
         if app.APP.monitor.waitForAbort(2):
             return
         try:
+            with app.APP.lock_playqueues:
+                if not self._is_current_playback():
+                    LOG.debug('Discarding stale Up Next task before payload '
+                              'preparation')
+                    return
             # Get notification time from Plex credits markers if available
             notification_time = upnext.get_notification_time_from_markers(self.status)
-            handoff = upnext.send_upnext_signal(
+            prepared = upnext.prepare_upnext_signal(
                 self.item.api, notification_time)
-            signal_sent = bool(handoff)
-            # Store whether Up Next found a next episode
-            # If False, PKC skip credits popup will still show for last episodes
+            # Payload preparation may perform a slow PMS lookup. Revalidate the
+            # exact playback generation before broadcasting or changing state.
             with app.APP.lock_playqueues:
+                if not self._is_current_playback():
+                    LOG.debug('Discarding stale Up Next task after payload '
+                              'preparation')
+                    return
+                handoff = upnext.emit_upnext_signal(prepared) \
+                    if prepared else False
+                signal_sent = bool(handoff)
+                # Store whether Up Next found a next episode. If False, PKC
+                # skip credits popup will still show for last episodes.
                 playerid = self.item.playerid
-                generation = getattr(
-                    self.item, 'pkc_playback_generation', None)
-                if handoff and app.PLAYSTATE.item is self.item and \
-                        generation is not None:
+                if handoff:
                     app.PLAYSTATE.expected_upnext_handoff = {
                         'token': handoff['token'],
                         'previous_kodi_id': self.item.kodi_id,
                         'previous_kodi_type': self.item.kodi_type,
                         'previous_plex_id': self.item.plex_id,
-                        'previous_generation': generation,
+                        'previous_generation': self.playback_generation,
                         'next_plex_id': handoff['next_plex_id'],
                         'created_at': monotonic(),
                     }

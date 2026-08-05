@@ -147,9 +147,9 @@ def _upnext_signal(data):
     LOG.debug('Up Next signal sent. Result: %s', result)
 
 
-def send_upnext_signal(current_api, notification_time=None):
+def prepare_upnext_signal(current_api, notification_time=None):
     """
-    Send the Up Next signal if there is a next episode.
+    Prepare the Up Next signal if there is a next episode.
 
     Args:
         current_api: The API object of the currently playing episode
@@ -157,7 +157,7 @@ def send_upnext_signal(current_api, notification_time=None):
                           the notification. If None, Up Next uses its default.
 
     Returns:
-        Handoff token and next Plex id if sent, False otherwise
+        Handoff token, next Plex id, and payload if available, False otherwise
     """
     if current_api.plex_type != v.PLEX_TYPE_EPISODE:
         LOG.debug('Not an episode - skipping Up Next signal')
@@ -204,11 +204,28 @@ def send_upnext_signal(current_api, notification_time=None):
               next_api.season_number() or 0,
               next_api.index() or 0)
 
-    _upnext_signal(upnext_data)
     return {
         'token': handoff_token,
         'next_plex_id': next_api.plex_id,
+        'data': upnext_data,
     }
+
+
+def emit_upnext_signal(prepared):
+    """Emit a prepared Up Next payload and return its handoff identity."""
+    _upnext_signal(prepared['data'])
+    return {
+        'token': prepared['token'],
+        'next_plex_id': prepared['next_plex_id'],
+    }
+
+
+def send_upnext_signal(current_api, notification_time=None):
+    """Prepare and immediately emit an Up Next signal."""
+    prepared = prepare_upnext_signal(current_api, notification_time)
+    if not prepared:
+        return False
+    return emit_upnext_signal(prepared)
 
 
 def _get_total_seconds_from_kodi_time(total_time):
