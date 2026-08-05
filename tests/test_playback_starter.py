@@ -83,6 +83,20 @@ def load_playback_starter():
 class PlaybackStarterTests(unittest.TestCase):
     def test_upnext_invocation_marks_exact_handoff_before_playback(self):
         playback_starter, app, calls = load_playback_starter()
+        app.PLAYSTATE.item = SimpleNamespace(
+            kodi_id=8950,
+            kodi_type='episode',
+            plex_id='16390',
+            pkc_playback_generation=4,
+        )
+        app.PLAYSTATE.expected_upnext_handoff = {
+            'token': 'verified-token',
+            'previous_kodi_id': 8950,
+            'previous_kodi_type': 'episode',
+            'previous_plex_id': '16390',
+            'previous_generation': 4,
+            'next_plex_id': '16391',
+        }
         task = playback_starter.PlaybackTask(
             'plugin://plugin.video.plexkodiconnect?'
             'mode=play&plex_id=16391&plex_type=episode&handle=-1&'
@@ -92,12 +106,47 @@ class PlaybackStarterTests(unittest.TestCase):
 
         self.assertEqual(
             {key: app.PLAYSTATE.started_upnext_handoff[key]
-             for key in ('token', 'plex_id')},
-            {'token': 'verified-token', 'plex_id': '16391'},
+             for key in (
+                 'token', 'plex_id', 'previous_kodi_id',
+                 'previous_kodi_type', 'previous_plex_id',
+                 'previous_generation')},
+            {
+                'token': 'verified-token',
+                'plex_id': '16391',
+                'previous_kodi_id': 8950,
+                'previous_kodi_type': 'episode',
+                'previous_plex_id': '16390',
+                'previous_generation': 4,
+            },
         )
         self.assertIsInstance(
             app.PLAYSTATE.started_upnext_handoff['created_at'], float)
         self.assertEqual(calls[0]['plex_id'], '16391')
+
+    def test_upnext_invocation_rejects_changed_outgoing_playback(self):
+        playback_starter, app, _ = load_playback_starter()
+        app.PLAYSTATE.item = SimpleNamespace(
+            kodi_id=9999,
+            kodi_type='episode',
+            plex_id='19999',
+            pkc_playback_generation=5,
+        )
+        app.PLAYSTATE.expected_upnext_handoff = {
+            'token': 'stale-token',
+            'previous_kodi_id': 8950,
+            'previous_kodi_type': 'episode',
+            'previous_plex_id': '16390',
+            'previous_generation': 4,
+            'next_plex_id': '16391',
+        }
+        task = playback_starter.PlaybackTask(
+            'plugin://plugin.video.plexkodiconnect?'
+            'mode=play&plex_id=16391&plex_type=episode&handle=-1&'
+            'pkc_upnext=stale-token')
+
+        task.run()
+
+        self.assertIsNone(app.PLAYSTATE.started_upnext_handoff)
 
     def test_regular_playback_clears_stale_started_handoff(self):
         playback_starter, app, _ = load_playback_starter()

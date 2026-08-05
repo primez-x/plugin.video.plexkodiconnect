@@ -40,14 +40,32 @@ class PlaybackTask(backgroundthread.Task):
         if mode == 'play':
             upnext_token = params.get('pkc_upnext')
             with app.APP.lock_playqueues:
-                app.PLAYSTATE.started_upnext_handoff = (
-                    {
+                expected = getattr(
+                    app.PLAYSTATE, 'expected_upnext_handoff', None)
+                outgoing = getattr(app.PLAYSTATE, 'item', None)
+                if upnext_token and expected and outgoing and \
+                        upnext_token == expected.get('token') and \
+                        str(params.get('plex_id')) == str(
+                            expected.get('next_plex_id')) and \
+                        outgoing.kodi_id == expected.get('previous_kodi_id') and \
+                        outgoing.kodi_type == expected.get(
+                            'previous_kodi_type') and \
+                        str(outgoing.plex_id) == str(
+                            expected.get('previous_plex_id')) and \
+                        getattr(outgoing, 'pkc_playback_generation', None) == \
+                        expected.get('previous_generation'):
+                    app.PLAYSTATE.started_upnext_handoff = {
                         'token': upnext_token,
                         'plex_id': params.get('plex_id'),
+                        'previous_kodi_id': outgoing.kodi_id,
+                        'previous_kodi_type': outgoing.kodi_type,
+                        'previous_plex_id': outgoing.plex_id,
+                        'previous_generation': getattr(
+                            outgoing, 'pkc_playback_generation', None),
                         'created_at': monotonic(),
                     }
-                    if upnext_token else None
-                )
+                else:
+                    app.PLAYSTATE.started_upnext_handoff = None
             if params.get('force_transcode') == '1':
                 app.PLAYSTATE.force_transcode = True
             if params.get('pms_play') == '1':

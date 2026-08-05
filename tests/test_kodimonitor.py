@@ -394,19 +394,13 @@ class KodiMonitorTests(unittest.TestCase):
         install_onupdate_databases(kodimonitor)
         kodimonitor.PF.scrobble = lambda plex_id, state: None
         kodimonitor.app.PLAYSTATE.item = None
-        old_item = SimpleNamespace(
-            kodi_id=8950,
-            kodi_type='episode',
-            plex_id='16390',
-            pkc_playback_generation=4,
-        )
         new_item = SimpleNamespace(
             kodi_id=8951,
             kodi_type='episode',
             plex_id='16391',
         )
         self.assertFalse(kodimonitor._activate_upnext_handoff(
-            old_item, new_item, now=100.0))
+            new_item, now=100.0))
         kodimonitor.monotonic = lambda: 101.0
 
         kodimonitor._videolibrary_onupdate({
@@ -444,12 +438,6 @@ class KodiMonitorTests(unittest.TestCase):
         kodimonitor.v.KODI_VIDEO_PLAYER_ID = 99
         kodimonitor.app.APP.player = SimpleNamespace(
             isExternalPlayer=lambda: 0)
-        old_item = SimpleNamespace(
-            kodi_id=8950,
-            kodi_type='episode',
-            plex_id='16390',
-            pkc_playback_generation=4,
-        )
         new_item = SimpleNamespace(
             kodi_id=8951,
             kodi_type='episode',
@@ -472,10 +460,15 @@ class KodiMonitorTests(unittest.TestCase):
         kodimonitor.app.PLAYSTATE.started_upnext_handoff = {
             'token': 'verified-token',
             'plex_id': '16391',
+            'previous_kodi_id': 8950,
+            'previous_kodi_type': 'episode',
+            'previous_plex_id': '16390',
+            'previous_generation': 4,
             'created_at': 100.0,
         }
         kodimonitor.monotonic = lambda: 100.0
-        kodimonitor.app.PLAYSTATE.item = old_item
+        # playback.py's resolver stores the incoming item before OnPlay.
+        kodimonitor.app.PLAYSTATE.item = new_item
         kodimonitor.app.PLAYSTATE.active_players = set()
         kodimonitor.app.PLAYSTATE.template = {'playmethod': None}
         kodimonitor.app.PLAYSTATE.player_states = {
@@ -558,14 +551,18 @@ class KodiMonitorTests(unittest.TestCase):
         kodimonitor.app.PLAYSTATE.started_upnext_handoff = {
             'token': 'verified-token',
             'plex_id': '16391',
+            'previous_kodi_id': 8950,
+            'previous_kodi_type': 'episode',
+            'previous_plex_id': '16390',
+            'previous_generation': 4,
             'created_at': 100.0,
         }
         self.assertTrue(kodimonitor._activate_upnext_handoff(
-            first, second, now=100.0))
+            second, now=100.0))
 
         kodimonitor.app.PLAYSTATE.started_upnext_handoff = None
         self.assertFalse(kodimonitor._activate_upnext_handoff(
-            second, first, now=101.0))
+            first, now=101.0))
         kodimonitor.app.PLAYSTATE.item = None
         kodimonitor._videolibrary_onupdate({
             'item': {'id': 8951, 'type': 'episode'},

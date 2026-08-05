@@ -59,7 +59,7 @@ _PENDING_PLAYBACK_RESTORES = {}
 _PLAYBACK_RESTORE_LOCK = Lock()
 
 
-def _activate_upnext_handoff(previous_item, next_item, now=None):
+def _activate_upnext_handoff(next_item, now=None):
     """Arm delayed-update protection for a proven Up Next invocation."""
     global _ACTIVE_UPNEXT_HANDOFF
     now = monotonic() if now is None else now
@@ -69,7 +69,7 @@ def _activate_upnext_handoff(previous_item, next_item, now=None):
     app.PLAYSTATE.started_upnext_handoff = None
     # Every playback start invalidates protection from an older transition.
     _ACTIVE_UPNEXT_HANDOFF = None
-    if not expected or not started or not previous_item or not next_item:
+    if not expected or not started or not next_item:
         return False
     created_at = expected.get('created_at')
     started_at = started.get('created_at')
@@ -84,20 +84,24 @@ def _activate_upnext_handoff(previous_item, next_item, now=None):
     if str(expected.get('next_plex_id')) != str(started.get('plex_id')) or \
             str(expected.get('next_plex_id')) != str(next_item.plex_id):
         return False
-    if expected.get('previous_kodi_id') != previous_item.kodi_id or \
-            expected.get('previous_kodi_type') != previous_item.kodi_type or \
-            str(expected.get('previous_plex_id')) != str(previous_item.plex_id) or \
-            expected.get('previous_generation') != getattr(
-                previous_item, 'pkc_playback_generation', None):
+    if expected.get('previous_kodi_id') != \
+            started.get('previous_kodi_id') or \
+            expected.get('previous_kodi_type') != \
+            started.get('previous_kodi_type') or \
+            str(expected.get('previous_plex_id')) != str(
+                started.get('previous_plex_id')) or \
+            expected.get('previous_generation') != \
+            started.get('previous_generation'):
         return False
     _ACTIVE_UPNEXT_HANDOFF = {
-        'previous_item': (previous_item.kodi_id, previous_item.kodi_type),
+        'previous_item': (
+            expected['previous_kodi_id'], expected['previous_kodi_type']),
         'next_item': (next_item.kodi_id, next_item.kodi_type),
         'previous_generation': expected['previous_generation'],
         'expires_at': now + UPNEXT_HANDOFF_SUPPRESSION_SECONDS,
     }
     LOG.debug('Verified Up Next handoff for Kodi item %s/%s -> %s/%s',
-              previous_item.kodi_type, previous_item.kodi_id,
+              expected['previous_kodi_type'], expected['previous_kodi_id'],
               next_item.kodi_type, next_item.kodi_id)
     return True
 
@@ -493,11 +497,10 @@ class KodiMonitor(xbmc.Monitor):
         if item.playmethod is None and path and not path.startswith('plugin://'):
             item.playmethod = v.PLAYBACK_METHOD_DIRECT_PATH
         item.playerid = playerid
-        previous_item = app.PLAYSTATE.item
         playback_generation = getattr(
             app.PLAYSTATE, 'playback_generation', 0) + 1
         item.pkc_playback_generation = playback_generation
-        _activate_upnext_handoff(previous_item, item)
+        _activate_upnext_handoff(item)
         # Remember the currently playing item
         app.PLAYSTATE.item = item
         app.PLAYSTATE.playback_generation = playback_generation
