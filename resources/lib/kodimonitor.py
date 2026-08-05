@@ -6,6 +6,7 @@ PKC Kodi Monitoring implementation
 from logging import getLogger
 from json import loads
 import copy
+from time import monotonic
 import xbmc
 
 from .plex_api import API
@@ -29,6 +30,7 @@ DISCOVER_MAINTENANCE_MESSAGE = 'discover_cache_maintenance'
 
 WAIT_BEFORE_INIT_STREAMS = 6
 ADDITIONAL_WAIT_BEFORE_INIT_STREAMS = 10
+PLAYBACK_UPDATE_SUPPRESSION_SECONDS = 5.0
 STRANDED_PLAYBACK_WINDOW_RECOVERY_DELAY = 1
 STRANDED_PLAYBACK_WINDOW_IDS = {
     12005,  # Fullscreen video
@@ -45,6 +47,32 @@ STRANDED_PLAYBACK_WINDOW_RECOVERY_COMMANDS = (
     'Dialog.Close(fullscreeninfo, true)',
     'ActivateWindow(Home)',
 )
+_RECENT_PLAYBACK_ITEMS = {}
+
+
+def _remember_playback_item(kodi_id, kodi_type, now=None):
+    if kodi_id is None or kodi_type is None:
+        return
+    now = monotonic() if now is None else now
+    expired = [
+        item for item, expires_at in _RECENT_PLAYBACK_ITEMS.items()
+        if expires_at < now
+    ]
+    for item in expired:
+        del _RECENT_PLAYBACK_ITEMS[item]
+    _RECENT_PLAYBACK_ITEMS[(kodi_id, kodi_type)] = (
+        now + PLAYBACK_UPDATE_SUPPRESSION_SECONDS)
+
+
+def _is_recent_playback_item(kodi_id, kodi_type, now=None):
+    now = monotonic() if now is None else now
+    expired = [
+        item for item, expires_at in _RECENT_PLAYBACK_ITEMS.items()
+        if expires_at < now
+    ]
+    for item in expired:
+        del _RECENT_PLAYBACK_ITEMS[item]
+    return (kodi_id, kodi_type) in _RECENT_PLAYBACK_ITEMS
 
 
 class KodiMonitor(xbmc.Monitor):
@@ -392,6 +420,12 @@ class KodiMonitor(xbmc.Monitor):
         if item.playmethod is None and path and not path.startswith('plugin://'):
             item.playmethod = v.PLAYBACK_METHOD_DIRECT_PATH
         item.playerid = playerid
+        previous_item = app.PLAYSTATE.item
+        if previous_item and (
+                previous_item.kodi_id != item.kodi_id or
+                previous_item.kodi_type != item.kodi_type):
+            _remember_playback_item(previous_item.kodi_id,
+                                    previous_item.kodi_type)
         # Remember the currently playing item
         app.PLAYSTATE.item = item
         # Remember that this player has been active
@@ -743,6 +777,10 @@ def _videolibrary_onupdate(data):
             kodi_type == app.PLAYSTATE.item.kodi_type:
         # Kodi updates an item immediately after playback. Hence we do NOT
         # increase or decrease the viewcount
+        return
+    if _is_recent_playback_item(kodi_id, kodi_type):
+        LOG.debug('Ignoring delayed playback update for Kodi item %s/%s',
+                  kodi_type, kodi_id)
         return
     # Send notification to the server.
     with PlexDB(lock=False) as plexdb:

@@ -268,6 +268,43 @@ def install_playstate_databases(kodimonitor):
     return writes
 
 
+def install_onupdate_databases(kodimonitor, playcount=0):
+    class FakePlexDB(object):
+        def __init__(self, lock=False):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def item_by_kodi_id(self, kodi_id, kodi_type):
+            return {'plex_id': '16390'}
+
+    class FakeKodiVideoDB(object):
+        def __init__(self, lock=False):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def file_id_from_id(self, kodi_id, kodi_type):
+            return 42
+
+        def get_resume(self, file_id):
+            return None
+
+        def get_playcount(self, file_id):
+            return playcount
+
+    kodimonitor.PlexDB = FakePlexDB
+    kodimonitor.KodiVideoDB = FakeKodiVideoDB
+
+
 class KodiMonitorTests(unittest.TestCase):
     def test_upnext_marker_timing_replaces_credit_skip(self):
         kodimonitor, _, _, _ = load_kodimonitor()
@@ -338,6 +375,91 @@ class KodiMonitorTests(unittest.TestCase):
             backgroundthread.BGThreader.tasks[0].__class__.__name__,
             'RecoverStrandedPlaybackWindow',
         )
+
+    def test_manual_watch_update_propagates_after_handoff_window(self):
+        kodimonitor, _, _, backgroundthread = load_kodimonitor()
+        install_onupdate_databases(kodimonitor)
+        kodimonitor.PF.scrobble = lambda plex_id, state: None
+        kodimonitor.app.PLAYSTATE.item = None
+        kodimonitor._remember_playback_item(
+            8950, 'episode', now=100.0)
+        kodimonitor.monotonic = lambda: 106.0
+
+        kodimonitor._videolibrary_onupdate({
+            'item': {'id': 8950, 'type': 'episode'},
+            'playcount': 1,
+        })
+
+        scrobbles = [
+            task for task in backgroundthread.BGThreader.tasks
+            if isinstance(task, backgroundthread.FunctionAsTask)
+            and task.function is kodimonitor.PF.scrobble
+        ]
+        self.assertEqual(len(scrobbles), 1)
+        self.assertEqual(scrobbles[0].args, ('16390', 'watched'))
+
+    def test_up_next_start_ignores_both_delayed_update_shapes(self):
+        kodimonitor, xbmc, json_rpc, backgroundthread = load_kodimonitor()
+        install_onupdate_databases(kodimonitor)
+        kodimonitor.PF.scrobble = lambda plex_id, state: None
+        kodimonitor.utils.settings = lambda setting_id: 'false'
+        xbmc.getCondVisibility = lambda condition: False
+        kodimonitor.v.KODI_VIDEO_PLAYER_ID = 99
+        kodimonitor.app.APP.player = SimpleNamespace(
+            isExternalPlayer=lambda: 0)
+        old_item = SimpleNamespace(kodi_id=8950, kodi_type='episode')
+        new_item = SimpleNamespace(
+            kodi_id=8951,
+            kodi_type='episode',
+            plex_id='16391',
+            plex_type='episode',
+            file='plugin://plugin.video.plexkodiconnect/?plex_id=16391',
+            playmethod=1,
+            playcount=0,
+            playerid=None,
+        )
+        kodimonitor.app.PLAYSTATE.item = old_item
+        kodimonitor.app.PLAYSTATE.active_players = set()
+        kodimonitor.app.PLAYSTATE.template = {'playmethod': None}
+        kodimonitor.app.PLAYSTATE.player_states = {
+            1: dict(kodimonitor.app.PLAYSTATE.template),
+        }
+        kodimonitor.app.PLAYQUEUES = {
+            1: SimpleNamespace(
+                items=[new_item],
+                kodi_playlist_playback=False,
+                id=None,
+            ),
+        }
+        json_rpc.get_player_props = lambda playerid: {
+            'position': 0,
+            'playlistid': -1,
+        }
+
+        monitor = kodimonitor.KodiMonitor()
+        monitor.PlayBackStart({
+            'item': {
+                'id': 8951,
+                'type': 'episode',
+                'file': new_item.file,
+            },
+            'player': {'playerid': 1, 'speed': 1},
+        })
+        kodimonitor._videolibrary_onupdate({
+            'item': {'id': 8950, 'type': 'episode'},
+            'playcount': 0,
+        })
+        kodimonitor._videolibrary_onupdate({
+            'id': 8950,
+            'type': 'episode',
+        })
+
+        scrobbles = [
+            task for task in backgroundthread.BGThreader.tasks
+            if isinstance(task, backgroundthread.FunctionAsTask)
+            and task.function is kodimonitor.PF.scrobble
+        ]
+        self.assertEqual(scrobbles, [])
 
     def test_recovery_closes_playback_window_when_no_players_remain(self):
         kodimonitor, xbmc, json_rpc, _ = load_kodimonitor()
