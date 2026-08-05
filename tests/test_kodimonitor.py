@@ -2,6 +2,7 @@ import importlib
 import sys
 import types
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
@@ -269,6 +270,8 @@ def install_playstate_databases(kodimonitor):
 
 
 def install_onupdate_databases(kodimonitor, playcount=0):
+    writes = []
+
     class FakePlexDB(object):
         def __init__(self, lock=False):
             pass
@@ -280,7 +283,12 @@ def install_onupdate_databases(kodimonitor, playcount=0):
             return False
 
         def item_by_kodi_id(self, kodi_id, kodi_type):
-            return {'plex_id': '16390'}
+            return {
+                'plex_id': '16390',
+                'plex_type': 'episode',
+                'kodi_fileid': 42,
+                'kodi_fileid_2': 43,
+            }
 
     class FakeKodiVideoDB(object):
         def __init__(self, lock=False):
@@ -301,8 +309,13 @@ def install_onupdate_databases(kodimonitor, playcount=0):
         def get_playcount(self, file_id):
             return playcount
 
+        def set_resume(self, *args):
+            writes.append(args)
+
     kodimonitor.PlexDB = FakePlexDB
     kodimonitor.KodiVideoDB = FakeKodiVideoDB
+    kodimonitor.kodi_db.KodiVideoDB = FakeKodiVideoDB
+    return writes
 
 
 class KodiMonitorTests(unittest.TestCase):
@@ -400,8 +413,21 @@ class KodiMonitorTests(unittest.TestCase):
 
     def test_up_next_start_ignores_both_delayed_update_shapes(self):
         kodimonitor, xbmc, json_rpc, backgroundthread = load_kodimonitor()
-        install_onupdate_databases(kodimonitor)
+        writes = install_onupdate_databases(kodimonitor)
         kodimonitor.PF.scrobble = lambda plex_id, state: None
+        kodimonitor.PF.GetPlexMetadata = lambda plex_id: [ET.Element(
+            'Video',
+            viewCount='1',
+            viewOffset='0',
+            duration='1434000',
+            lastViewedAt='1785892781',
+        )]
+        kodimonitor.API = lambda xml: SimpleNamespace(
+            resume_point=lambda: 0.0,
+            runtime=lambda: 1434.0,
+            viewcount=lambda: 1,
+            lastplayed=lambda: '2026-08-04 19:19:41',
+        )
         kodimonitor.utils.settings = lambda setting_id: 'false'
         xbmc.getCondVisibility = lambda condition: False
         kodimonitor.v.KODI_VIDEO_PLAYER_ID = 99
@@ -460,6 +486,17 @@ class KodiMonitorTests(unittest.TestCase):
             and task.function is kodimonitor.PF.scrobble
         ]
         self.assertEqual(scrobbles, [])
+        restores = [
+            task for task in backgroundthread.BGThreader.tasks
+            if isinstance(task, kodimonitor.RestorePlexPlaystate)
+        ]
+        self.assertEqual(len(restores), 1)
+
+        restores[0].run()
+
+        self.assertEqual(len(writes), 2)
+        self.assertEqual(writes[0][:4], (42, 0.0, 1434.0, 1))
+        self.assertEqual(writes[1][:4], (43, 0.0, 1434.0, 1))
 
     def test_recovery_closes_playback_window_when_no_players_remain(self):
         kodimonitor, xbmc, json_rpc, _ = load_kodimonitor()

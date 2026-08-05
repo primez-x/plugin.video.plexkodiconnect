@@ -48,6 +48,7 @@ STRANDED_PLAYBACK_WINDOW_RECOVERY_COMMANDS = (
     'ActivateWindow(Home)',
 )
 _RECENT_PLAYBACK_ITEMS = {}
+_RECENT_PLAYBACK_RESTORES = {}
 
 
 def _remember_playback_item(kodi_id, kodi_type, now=None):
@@ -73,6 +74,22 @@ def _is_recent_playback_item(kodi_id, kodi_type, now=None):
     for item in expired:
         del _RECENT_PLAYBACK_ITEMS[item]
     return (kodi_id, kodi_type) in _RECENT_PLAYBACK_ITEMS
+
+
+def _request_playback_restore(kodi_id, kodi_type, now=None):
+    now = monotonic() if now is None else now
+    expired = [
+        item for item, expires_at in _RECENT_PLAYBACK_RESTORES.items()
+        if expires_at < now
+    ]
+    for item in expired:
+        del _RECENT_PLAYBACK_RESTORES[item]
+    item = (kodi_id, kodi_type)
+    if item in _RECENT_PLAYBACK_RESTORES:
+        return False
+    _RECENT_PLAYBACK_RESTORES[item] = (
+        now + PLAYBACK_UPDATE_SUPPRESSION_SECONDS)
+    return True
 
 
 class KodiMonitor(xbmc.Monitor):
@@ -740,6 +757,59 @@ def _complete_artwork_keys(info):
             info['art'][key] = ''
 
 
+class RestorePlexPlaystate(backgroundthread.Task):
+    """Restore PMS-authoritative playstate after a delayed Kodi handoff update."""
+    def __init__(self, kodi_id, kodi_type):
+        self.kodi_id = kodi_id
+        self.kodi_type = kodi_type
+        super(RestorePlexPlaystate, self).__init__()
+
+    def run(self):
+        try:
+            with PlexDB() as plexdb:
+                db_item = plexdb.item_by_kodi_id(
+                    self.kodi_id, self.kodi_type)
+            if not db_item:
+                LOG.error('Could not restore delayed playback update for '
+                          'Kodi item %s/%s: Plex mapping not found',
+                          self.kodi_type, self.kodi_id)
+                return
+            xml = PF.GetPlexMetadata(db_item['plex_id'])
+            if not xml or xml == 401:
+                LOG.error('Could not restore delayed playback update for '
+                          'Plex item %s: metadata unavailable',
+                          db_item['plex_id'])
+                return
+            api = API(xml[0])
+            resume = api.resume_point()
+            runtime = api.runtime()
+            playcount = api.viewcount()
+            lastplayed = api.lastplayed()
+            with kodi_db.KodiVideoDB() as kodidb:
+                kodidb.set_resume(db_item['kodi_fileid'],
+                                  resume,
+                                  runtime,
+                                  playcount,
+                                  lastplayed)
+                if db_item.get('kodi_fileid_2'):
+                    kodidb.set_resume(db_item['kodi_fileid_2'],
+                                      resume,
+                                      runtime,
+                                      playcount,
+                                      lastplayed)
+            xbmc.executebuiltin('Container.Refresh')
+            if db_item['plex_type'] == v.PLEX_TYPE_EPISODE:
+                gui_refresh.refresh_sidepanel_containers((
+                    (db_item['plex_id'], db_item['plex_type']),
+                ))
+            LOG.info('Restored PMS playstate after delayed Kodi update for '
+                     'Plex item %s', db_item['plex_id'])
+        except Exception:
+            LOG.exception('Could not restore PMS playstate after delayed '
+                          'Kodi update for item %s/%s',
+                          self.kodi_type, self.kodi_id)
+
+
 def _videolibrary_onupdate(data):
     """
     A specific Kodi library item has been updated. This seems to happen if the
@@ -781,6 +851,9 @@ def _videolibrary_onupdate(data):
     if _is_recent_playback_item(kodi_id, kodi_type):
         LOG.debug('Ignoring delayed playback update for Kodi item %s/%s',
                   kodi_type, kodi_id)
+        if _request_playback_restore(kodi_id, kodi_type):
+            backgroundthread.BGThreader.addTask(
+                RestorePlexPlaystate(kodi_id, kodi_type))
         return
     # Send notification to the server.
     with PlexDB(lock=False) as plexdb:
