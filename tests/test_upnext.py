@@ -196,7 +196,11 @@ class UpNextCreditTimingTests(unittest.TestCase):
         upnext._episode_info = lambda api: {'plex_id': api.plex_id}
         upnext._upnext_signal = captured.append
 
-        self.assertTrue(upnext.send_upnext_signal(current, 88.205))
+        handoff = upnext.send_upnext_signal(current, 88.205)
+        self.assertEqual(handoff['next_plex_id'], '2')
+        self.assertEqual(len(handoff['token']), 32)
+        self.assertIn('pkc_upnext=%s' % handoff['token'],
+                      captured[0]['play_url'])
         self.assertEqual(captured[0]['notification_time'], 88.205)
         self.assertEqual(captured[0]['notification_duration'], 10)
 

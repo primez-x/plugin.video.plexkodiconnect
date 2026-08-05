@@ -10,6 +10,7 @@ See https://github.com/im85288/service.upnext/wiki/Integration
 from logging import getLogger
 from json import dumps
 from base64 import b64encode
+from uuid import uuid4
 
 import xbmc
 import xbmcaddon
@@ -156,7 +157,7 @@ def send_upnext_signal(current_api, notification_time=None):
                           the notification. If None, Up Next uses its default.
 
     Returns:
-        True if signal was sent, False otherwise
+        Handoff token and next Plex id if sent, False otherwise
     """
     if current_api.plex_type != v.PLEX_TYPE_EPISODE:
         LOG.debug('Not an episode - skipping Up Next signal')
@@ -170,13 +171,17 @@ def send_upnext_signal(current_api, notification_time=None):
     LOG.debug('Preparing Up Next signal for episode "%s" -> "%s"',
               current_api.title(), next_api.title())
 
-    # Build the play_url for the next episode
-    # This URL will be called by Up Next to start playback
-    play_url = 'plugin://%s?plex_id=%s&plex_type=%s&mode=play' % (
-        v.ADDON_ID,
-        next_api.plex_id,
-        v.PLEX_TYPE_EPISODE
-    )
+    # The one-time token proves that a later playback request came from this
+    # exact Up Next signal rather than an unrelated library selection.
+    handoff_token = uuid4().hex
+    # This URL will be called by Up Next to start playback.
+    play_url = ('plugin://%s?plex_id=%s&plex_type=%s&mode=play&'
+                'pkc_upnext=%s') % (
+                    v.ADDON_ID,
+                    next_api.plex_id,
+                    v.PLEX_TYPE_EPISODE,
+                    handoff_token,
+                )
 
     # Build the data structure for Up Next
     upnext_data = {
@@ -200,7 +205,10 @@ def send_upnext_signal(current_api, notification_time=None):
               next_api.index() or 0)
 
     _upnext_signal(upnext_data)
-    return True
+    return {
+        'token': handoff_token,
+        'next_plex_id': next_api.plex_id,
+    }
 
 
 def _get_total_seconds_from_kodi_time(total_time):

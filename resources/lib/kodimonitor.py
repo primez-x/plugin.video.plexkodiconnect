@@ -6,6 +6,7 @@ PKC Kodi Monitoring implementation
 from logging import getLogger
 from json import loads
 import copy
+from threading import Lock
 from time import monotonic
 import xbmc
 
@@ -30,7 +31,13 @@ DISCOVER_MAINTENANCE_MESSAGE = 'discover_cache_maintenance'
 
 WAIT_BEFORE_INIT_STREAMS = 6
 ADDITIONAL_WAIT_BEFORE_INIT_STREAMS = 10
-PLAYBACK_UPDATE_SUPPRESSION_SECONDS = 5.0
+UPNEXT_HANDOFF_TOKEN_SECONDS = 7200.0
+UPNEXT_HANDOFF_START_SECONDS = 120.0
+UPNEXT_HANDOFF_SUPPRESSION_SECONDS = 30.0
+PLAYBACK_RESTORE_QUIET_SECONDS = 0.25
+PLAYBACK_RESTORE_RETRY_SECONDS = 0.5
+PLAYBACK_RESTORE_MAX_ATTEMPTS = 3
+PLAYBACK_RESTORE_MAX_PASSES = 8
 STRANDED_PLAYBACK_WINDOW_RECOVERY_DELAY = 1
 STRANDED_PLAYBACK_WINDOW_IDS = {
     12005,  # Fullscreen video
@@ -47,49 +54,98 @@ STRANDED_PLAYBACK_WINDOW_RECOVERY_COMMANDS = (
     'Dialog.Close(fullscreeninfo, true)',
     'ActivateWindow(Home)',
 )
-_RECENT_PLAYBACK_ITEMS = {}
-_RECENT_PLAYBACK_RESTORES = {}
+_ACTIVE_UPNEXT_HANDOFF = None
+_PENDING_PLAYBACK_RESTORES = {}
+_PLAYBACK_RESTORE_LOCK = Lock()
 
 
-def _remember_playback_item(kodi_id, kodi_type, now=None):
-    if kodi_id is None or kodi_type is None:
-        return
+def _activate_upnext_handoff(previous_item, next_item, now=None):
+    """Arm delayed-update protection for a proven Up Next invocation."""
+    global _ACTIVE_UPNEXT_HANDOFF
     now = monotonic() if now is None else now
-    expired = [
-        item for item, expires_at in _RECENT_PLAYBACK_ITEMS.items()
-        if expires_at < now
-    ]
-    for item in expired:
-        del _RECENT_PLAYBACK_ITEMS[item]
-    _RECENT_PLAYBACK_ITEMS[(kodi_id, kodi_type)] = (
-        now + PLAYBACK_UPDATE_SUPPRESSION_SECONDS)
+    expected = getattr(app.PLAYSTATE, 'expected_upnext_handoff', None)
+    started = getattr(app.PLAYSTATE, 'started_upnext_handoff', None)
+    app.PLAYSTATE.expected_upnext_handoff = None
+    app.PLAYSTATE.started_upnext_handoff = None
+    # Every playback start invalidates protection from an older transition.
+    _ACTIVE_UPNEXT_HANDOFF = None
+    if not expected or not started or not previous_item or not next_item:
+        return False
+    created_at = expected.get('created_at')
+    started_at = started.get('created_at')
+    if created_at is None or not 0 <= now - created_at <= \
+            UPNEXT_HANDOFF_TOKEN_SECONDS:
+        return False
+    if started_at is None or not 0 <= now - started_at <= \
+            UPNEXT_HANDOFF_START_SECONDS:
+        return False
+    if expected.get('token') != started.get('token'):
+        return False
+    if str(expected.get('next_plex_id')) != str(started.get('plex_id')) or \
+            str(expected.get('next_plex_id')) != str(next_item.plex_id):
+        return False
+    if expected.get('previous_kodi_id') != previous_item.kodi_id or \
+            expected.get('previous_kodi_type') != previous_item.kodi_type or \
+            str(expected.get('previous_plex_id')) != str(previous_item.plex_id) or \
+            expected.get('previous_generation') != getattr(
+                previous_item, 'pkc_playback_generation', None):
+        return False
+    _ACTIVE_UPNEXT_HANDOFF = {
+        'previous_item': (previous_item.kodi_id, previous_item.kodi_type),
+        'next_item': (next_item.kodi_id, next_item.kodi_type),
+        'previous_generation': expected['previous_generation'],
+        'expires_at': now + UPNEXT_HANDOFF_SUPPRESSION_SECONDS,
+    }
+    LOG.debug('Verified Up Next handoff for Kodi item %s/%s -> %s/%s',
+              previous_item.kodi_type, previous_item.kodi_id,
+              next_item.kodi_type, next_item.kodi_id)
+    return True
 
 
-def _is_recent_playback_item(kodi_id, kodi_type, now=None):
+def _is_upnext_handoff_update(kodi_id, kodi_type, now=None):
     now = monotonic() if now is None else now
-    expired = [
-        item for item, expires_at in _RECENT_PLAYBACK_ITEMS.items()
-        if expires_at < now
-    ]
-    for item in expired:
-        del _RECENT_PLAYBACK_ITEMS[item]
-    return (kodi_id, kodi_type) in _RECENT_PLAYBACK_ITEMS
+    handoff = _ACTIVE_UPNEXT_HANDOFF
+    return bool(handoff and handoff['expires_at'] >= now and
+                handoff['previous_item'] == (kodi_id, kodi_type))
 
 
 def _request_playback_restore(kodi_id, kodi_type, now=None):
-    now = monotonic() if now is None else now
-    expired = [
-        item for item, expires_at in _RECENT_PLAYBACK_RESTORES.items()
-        if expires_at < now
-    ]
-    for item in expired:
-        del _RECENT_PLAYBACK_RESTORES[item]
     item = (kodi_id, kodi_type)
-    if item in _RECENT_PLAYBACK_RESTORES:
-        return False
-    _RECENT_PLAYBACK_RESTORES[item] = (
-        now + PLAYBACK_UPDATE_SUPPRESSION_SECONDS)
-    return True
+    with _PLAYBACK_RESTORE_LOCK:
+        state = _PENDING_PLAYBACK_RESTORES.get(item)
+        if state is not None:
+            state['revision'] += 1
+            return False
+        _PENDING_PLAYBACK_RESTORES[item] = {'revision': 1}
+        return True
+
+
+def _playback_restore_revision(item):
+    with _PLAYBACK_RESTORE_LOCK:
+        state = _PENDING_PLAYBACK_RESTORES.get(item)
+        return state['revision'] if state is not None else None
+
+
+def _finish_playback_restore(item, revision):
+    with _PLAYBACK_RESTORE_LOCK:
+        state = _PENDING_PLAYBACK_RESTORES.get(item)
+        if state is None or state['revision'] != revision:
+            return False
+        del _PENDING_PLAYBACK_RESTORES[item]
+        return True
+
+
+def _release_playback_restore(item):
+    with _PLAYBACK_RESTORE_LOCK:
+        return _PENDING_PLAYBACK_RESTORES.pop(item, None)
+
+
+def _resume_playback_restore(item, state):
+    with _PLAYBACK_RESTORE_LOCK:
+        if item in _PENDING_PLAYBACK_RESTORES:
+            return False
+        _PENDING_PLAYBACK_RESTORES[item] = state
+        return True
 
 
 class KodiMonitor(xbmc.Monitor):
@@ -438,13 +494,13 @@ class KodiMonitor(xbmc.Monitor):
             item.playmethod = v.PLAYBACK_METHOD_DIRECT_PATH
         item.playerid = playerid
         previous_item = app.PLAYSTATE.item
-        if previous_item and (
-                previous_item.kodi_id != item.kodi_id or
-                previous_item.kodi_type != item.kodi_type):
-            _remember_playback_item(previous_item.kodi_id,
-                                    previous_item.kodi_type)
+        playback_generation = getattr(
+            app.PLAYSTATE, 'playback_generation', 0) + 1
+        item.pkc_playback_generation = playback_generation
+        _activate_upnext_handoff(previous_item, item)
         # Remember the currently playing item
         app.PLAYSTATE.item = item
+        app.PLAYSTATE.playback_generation = playback_generation
         # Remember that this player has been active
         app.PLAYSTATE.active_players.add(playerid)
         status.update(info)
@@ -764,50 +820,87 @@ class RestorePlexPlaystate(backgroundthread.Task):
         self.kodi_type = kodi_type
         super(RestorePlexPlaystate, self).__init__()
 
-    def run(self):
-        try:
-            with PlexDB() as plexdb:
-                db_item = plexdb.item_by_kodi_id(
-                    self.kodi_id, self.kodi_type)
-            if not db_item:
-                LOG.error('Could not restore delayed playback update for '
-                          'Kodi item %s/%s: Plex mapping not found',
-                          self.kodi_type, self.kodi_id)
-                return
-            xml = PF.GetPlexMetadata(db_item['plex_id'])
-            if not xml or xml == 401:
-                LOG.error('Could not restore delayed playback update for '
-                          'Plex item %s: metadata unavailable',
-                          db_item['plex_id'])
-                return
-            api = API(xml[0])
-            resume = api.resume_point()
-            runtime = api.runtime()
-            playcount = api.viewcount()
-            lastplayed = api.lastplayed()
-            with kodi_db.KodiVideoDB() as kodidb:
-                kodidb.set_resume(db_item['kodi_fileid'],
+    def _restore_once(self):
+        with PlexDB() as plexdb:
+            db_item = plexdb.item_by_kodi_id(
+                self.kodi_id, self.kodi_type)
+        if not db_item:
+            LOG.error('Could not restore delayed playback update for '
+                      'Kodi item %s/%s: Plex mapping not found',
+                      self.kodi_type, self.kodi_id)
+            return False
+        xml = PF.GetPlexMetadata(db_item['plex_id'])
+        if not xml or xml == 401:
+            LOG.error('Could not restore delayed playback update for '
+                      'Plex item %s: metadata unavailable',
+                      db_item['plex_id'])
+            return False
+        api = API(xml[0])
+        resume = api.resume_point()
+        runtime = api.runtime()
+        playcount = api.viewcount()
+        lastplayed = api.lastplayed()
+        with kodi_db.KodiVideoDB() as kodidb:
+            kodidb.set_resume(db_item['kodi_fileid'],
+                              resume,
+                              runtime,
+                              playcount,
+                              lastplayed)
+            if db_item.get('kodi_fileid_2'):
+                kodidb.set_resume(db_item['kodi_fileid_2'],
                                   resume,
                                   runtime,
                                   playcount,
                                   lastplayed)
-                if db_item.get('kodi_fileid_2'):
-                    kodidb.set_resume(db_item['kodi_fileid_2'],
-                                      resume,
-                                      runtime,
-                                      playcount,
-                                      lastplayed)
-            xbmc.executebuiltin('Container.Refresh')
-            if db_item['plex_type'] == v.PLEX_TYPE_EPISODE:
-                gui_refresh.refresh_sidepanel_containers((
-                    (db_item['plex_id'], db_item['plex_type']),
-                ))
-            LOG.info('Restored PMS playstate after delayed Kodi update for '
-                     'Plex item %s', db_item['plex_id'])
-        except Exception:
-            LOG.exception('Could not restore PMS playstate after delayed '
-                          'Kodi update for item %s/%s',
-                          self.kodi_type, self.kodi_id)
+        xbmc.executebuiltin('Container.Refresh')
+        if db_item['plex_type'] == v.PLEX_TYPE_EPISODE:
+            gui_refresh.refresh_sidepanel_containers((
+                (db_item['plex_id'], db_item['plex_type']),
+            ))
+        LOG.info('Restored PMS playstate after delayed Kodi update for '
+                 'Plex item %s', db_item['plex_id'])
+        return True
+
+    def run(self):
+        item = (self.kodi_id, self.kodi_type)
+        failures = 0
+        last_attempted_revision = None
+        aborted = False
+        for _ in range(PLAYBACK_RESTORE_MAX_PASSES):
+            if app.APP.monitor.waitForAbort(PLAYBACK_RESTORE_QUIET_SECONDS):
+                aborted = True
+                break
+            revision = _playback_restore_revision(item)
+            if revision is None:
+                return
+            last_attempted_revision = revision
+            try:
+                restored = self._restore_once()
+            except Exception:
+                restored = False
+                LOG.exception('Could not restore PMS playstate after delayed '
+                              'Kodi update for item %s/%s',
+                              self.kodi_type, self.kodi_id)
+            if restored:
+                failures = 0
+                if _finish_playback_restore(item, revision):
+                    return
+                # A callback arrived while the restore was in flight. Wait for
+                # its quiet period, then repair the authoritative final state.
+                continue
+            failures += 1
+            if failures >= PLAYBACK_RESTORE_MAX_ATTEMPTS:
+                break
+            if app.APP.monitor.waitForAbort(PLAYBACK_RESTORE_RETRY_SECONDS):
+                aborted = True
+                break
+        state = _release_playback_restore(item)
+        if aborted or state is None:
+            return
+        if state['revision'] != last_attempted_revision and \
+                _resume_playback_restore(item, state):
+            backgroundthread.BGThreader.addTask(
+                RestorePlexPlaystate(self.kodi_id, self.kodi_type))
 
 
 def _videolibrary_onupdate(data):
@@ -848,7 +941,7 @@ def _videolibrary_onupdate(data):
         # Kodi updates an item immediately after playback. Hence we do NOT
         # increase or decrease the viewcount
         return
-    if _is_recent_playback_item(kodi_id, kodi_type):
+    if _is_upnext_handoff_update(kodi_id, kodi_type):
         LOG.debug('Ignoring delayed playback update for Kodi item %s/%s',
                   kodi_type, kodi_id)
         if _request_playback_restore(kodi_id, kodi_type):
@@ -998,11 +1091,26 @@ class SendUpNextSignal(backgroundthread.Task):
         try:
             # Get notification time from Plex credits markers if available
             notification_time = upnext.get_notification_time_from_markers(self.status)
-            signal_sent = upnext.send_upnext_signal(self.item.api, notification_time)
+            handoff = upnext.send_upnext_signal(
+                self.item.api, notification_time)
+            signal_sent = bool(handoff)
             # Store whether Up Next found a next episode
             # If False, PKC skip credits popup will still show for last episodes
             with app.APP.lock_playqueues:
                 playerid = self.item.playerid
+                generation = getattr(
+                    self.item, 'pkc_playback_generation', None)
+                if handoff and app.PLAYSTATE.item is self.item and \
+                        generation is not None:
+                    app.PLAYSTATE.expected_upnext_handoff = {
+                        'token': handoff['token'],
+                        'previous_kodi_id': self.item.kodi_id,
+                        'previous_kodi_type': self.item.kodi_type,
+                        'previous_plex_id': self.item.plex_id,
+                        'previous_generation': generation,
+                        'next_plex_id': handoff['next_plex_id'],
+                        'created_at': monotonic(),
+                    }
                 app.PLAYSTATE.player_states[playerid]['upnext_signal_sent'] = signal_sent
                 app.PLAYSTATE.player_states[playerid][
                     'upnext_replaces_credit_skip'] = bool(

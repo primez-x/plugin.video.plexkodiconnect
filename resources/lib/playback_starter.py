@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 from logging import getLogger
+from time import monotonic
 
 from . import utils, playback, transfer, backgroundthread, app
 from .contextmenu import menu
@@ -37,6 +38,16 @@ class PlaybackTask(backgroundthread.Task):
         resolve = False if params.get('handle') == '-1' else True
         LOG.debug('Received mode: %s, params: %s', mode, params)
         if mode == 'play':
+            upnext_token = params.get('pkc_upnext')
+            with app.APP.lock_playqueues:
+                app.PLAYSTATE.started_upnext_handoff = (
+                    {
+                        'token': upnext_token,
+                        'plex_id': params.get('plex_id'),
+                        'created_at': monotonic(),
+                    }
+                    if upnext_token else None
+                )
             if params.get('force_transcode') == '1':
                 app.PLAYSTATE.force_transcode = True
             if params.get('pms_play') == '1':
