@@ -949,7 +949,11 @@ class Service(object):
                     LOG.info("Generating new UUID for PKC")
                     clientinfo.getDeviceId(reset=True)
                 else:
-                    raise RuntimeError("Unknown command: %s", plex_command)
+                    # Log-and-ignore: raising here kills the entire service
+                    # entry (and with it the command loop), so a single
+                    # stray/misspelled window property would silently
+                    # degrade PKC until Kodi is restarted.
+                    LOG.error("Unknown command: %s - ignoring", plex_command)
                 if task:
                     if normal_priority:
                         backgroundthread.BGThreader.addTask(task)
