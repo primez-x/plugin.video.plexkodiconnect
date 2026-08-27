@@ -4,7 +4,7 @@ import types
 import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from threading import Event
+from threading import Event, Thread
 from types import SimpleNamespace
 
 
@@ -46,8 +46,8 @@ def load_kodimonitor():
         sys.modules.pop(module_name, None)
     lib_package = sys.modules.get('resources.lib')
     if lib_package is not None:
-        lib_package.__dict__.pop('skip_plex_markers', None)
-        lib_package.__dict__.pop('gui_refresh', None)
+        for attribute in ('gui_refresh', 'skip_plex_markers', 'timing'):
+            lib_package.__dict__.pop(attribute, None)
 
     xbmc = types.ModuleType('xbmc')
     xbmc.commands = []
@@ -269,7 +269,8 @@ def install_playstate_databases(kodimonitor):
     return writes
 
 
-def install_onupdate_databases(kodimonitor, playcount=0):
+def install_onupdate_databases(kodimonitor, playcount=0, state=None,
+                               resume=None, plex_id='16390'):
     writes = []
 
     class FakePlexDB(object):
@@ -284,7 +285,7 @@ def install_onupdate_databases(kodimonitor, playcount=0):
 
         def item_by_kodi_id(self, kodi_id, kodi_type):
             return {
-                'plex_id': '16390',
+                'plex_id': plex_id,
                 'plex_type': 'episode',
                 'kodi_fileid': 42,
                 'kodi_fileid_2': 43,
@@ -304,13 +305,20 @@ def install_onupdate_databases(kodimonitor, playcount=0):
             return 42
 
         def get_resume(self, file_id):
-            return None
+            return resume
 
         def get_playcount(self, file_id):
-            return playcount
+            return state.get(file_id, playcount) if state is not None else playcount
 
         def set_resume(self, *args):
             writes.append(args)
+            if state is not None:
+                state[args[0]] = args[3] or None
+
+        def set_watched(self, file_id, dateplayed):
+            writes.append((file_id, 0.0, 0.0, 1, dateplayed))
+            if state is not None:
+                state[file_id] = max(1, state.get(file_id, 0) or 0)
 
     kodimonitor.PlexDB = FakePlexDB
     kodimonitor.KodiVideoDB = FakeKodiVideoDB
@@ -617,6 +625,87 @@ class KodiMonitorTests(unittest.TestCase):
             'item': {'id': 8950, 'type': 'episode'},
             'playcount': 0,
         })
+
+        scrobbles = [
+            task for task in backgroundthread.BGThreader.tasks
+            if isinstance(task, backgroundthread.FunctionAsTask)
+            and task.function is kodimonitor.PF.scrobble
+        ]
+        self.assertEqual(len(scrobbles), 1)
+        self.assertEqual(scrobbles[0].args, ('16390', 'unwatched'))
+        self.assertEqual([write[3] for write in writes], [0, 0])
+        self.assertIsNone(kodimonitor._ACTIVE_UPNEXT_HANDOFF)
+
+    def test_upnext_completed_update_scrobbles_watched_episode(self):
+        kodimonitor, _, _, backgroundthread = load_kodimonitor()
+        install_onupdate_databases(kodimonitor)
+        kodimonitor.PF.scrobble = lambda plex_id, state: None
+        kodimonitor.app.PLAYSTATE.item = None
+        kodimonitor._ACTIVE_UPNEXT_HANDOFF = {
+            'previous_item': (8950, 'episode'),
+            'expires_at': 130.0,
+        }
+        kodimonitor.monotonic = lambda: 101.0
+
+        kodimonitor._videolibrary_onupdate({
+            'item': {'id': 8950, 'type': 'episode'},
+            'playcount': 1,
+        })
+
+        scrobbles = [
+            task for task in backgroundthread.BGThreader.tasks
+            if isinstance(task, backgroundthread.FunctionAsTask)
+            and task.function is kodimonitor.PF.scrobble
+        ]
+        self.assertEqual(len(scrobbles), 1)
+        self.assertEqual(scrobbles[0].args, ('16390', 'watched'))
+
+    def test_upnext_completion_before_handoff_activation_scrobbles_once(self):
+        kodimonitor, _, _, backgroundthread = load_kodimonitor()
+        install_onupdate_databases(kodimonitor, playcount=1)
+        kodimonitor.PF.scrobble = lambda plex_id, state: None
+        kodimonitor.app.PLAYSTATE.item = SimpleNamespace(
+            kodi_id=8950,
+            kodi_type='episode',
+            plex_id='16390',
+            pkc_playback_generation=4,
+        )
+        kodimonitor.app.PLAYSTATE.playback_generation = 4
+        kodimonitor.app.PLAYSTATE.expected_upnext_handoff = {
+            'token': 'verified-token',
+            'previous_kodi_id': 8950,
+            'previous_kodi_type': 'episode',
+            'previous_plex_id': '16390',
+            'previous_generation': 4,
+            'next_plex_id': '16391',
+            'created_at': 100.0,
+        }
+        kodimonitor.monotonic = lambda: 100.0
+        kodimonitor._videolibrary_onupdate({
+            'item': {'id': 8950, 'type': 'episode'},
+            'playcount': 1,
+        })
+        self.assertEqual([
+            task for task in backgroundthread.BGThreader.tasks
+            if isinstance(task, backgroundthread.FunctionAsTask)
+            and task.function is kodimonitor.PF.scrobble
+        ][0].args, ('16390', 'watched'))
+        kodimonitor.app.PLAYSTATE.started_upnext_handoff = {
+            'token': 'verified-token',
+            'plex_id': '16391',
+            'previous_kodi_id': 8950,
+            'previous_kodi_type': 'episode',
+            'previous_plex_id': '16390',
+            'previous_generation': 4,
+            'created_at': 100.0,
+        }
+        next_item = SimpleNamespace(
+            kodi_id=8951,
+            kodi_type='episode',
+            plex_id='16391',
+        )
+        self.assertTrue(kodimonitor._activate_upnext_handoff(
+            next_item, now=100.0))
         kodimonitor._videolibrary_onupdate({
             'id': 8950,
             'type': 'episode',
@@ -627,18 +716,773 @@ class KodiMonitorTests(unittest.TestCase):
             if isinstance(task, backgroundthread.FunctionAsTask)
             and task.function is kodimonitor.PF.scrobble
         ]
-        self.assertEqual(scrobbles, [])
+        self.assertEqual(len(scrobbles), 1)
+        self.assertEqual(scrobbles[0].args, ('16390', 'watched'))
+
+    def test_expected_completion_reset_repairs_kodi_after_activation(self):
+        kodimonitor, _, _, backgroundthread = load_kodimonitor()
+        state = {42: 0, 43: 0}
+        writes = install_onupdate_databases(kodimonitor, state=state)
+        kodimonitor.PF.scrobble = lambda plex_id, state: None
+        previous = SimpleNamespace(
+            kodi_id=8950,
+            kodi_type='episode',
+            plex_id='16390',
+            pkc_playback_generation=4,
+        )
+        next_item = SimpleNamespace(
+            kodi_id=8951,
+            kodi_type='episode',
+            plex_id='16391',
+        )
+        kodimonitor.app.PLAYSTATE.item = previous
+        kodimonitor.app.PLAYSTATE.playback_generation = 4
+        kodimonitor.app.PLAYSTATE.expected_upnext_handoff = {
+            'token': 'verified-token',
+            'previous_kodi_id': 8950,
+            'previous_kodi_type': 'episode',
+            'previous_plex_id': '16390',
+            'previous_generation': 4,
+            'next_plex_id': '16391',
+            'created_at': 100.0,
+        }
+        kodimonitor.monotonic = lambda: 100.0
+        kodimonitor._videolibrary_onupdate({
+            'item': {'id': 8950, 'type': 'episode'},
+            'playcount': 1,
+        })
+        state[42] = 0
+        state[43] = 0
+        kodimonitor._videolibrary_onupdate({
+            'item': {'id': 8950, 'type': 'episode'},
+        })
+        kodimonitor.app.PLAYSTATE.started_upnext_handoff = {
+            'token': 'verified-token',
+            'plex_id': '16391',
+            'previous_kodi_id': 8950,
+            'previous_kodi_type': 'episode',
+            'previous_plex_id': '16390',
+            'previous_generation': 4,
+            'created_at': 100.0,
+        }
+        self.assertTrue(kodimonitor._activate_upnext_handoff(
+            next_item, now=100.0))
+
+        self.assertEqual(state, {42: 1, 43: 1})
+        self.assertEqual([write[3] for write in writes], [1, 1, 1, 1])
+        self.assertEqual(len([
+            task for task in backgroundthread.BGThreader.tasks
+            if isinstance(task, backgroundthread.FunctionAsTask)
+            and task.function is kodimonitor.PF.scrobble
+        ]), 1)
+
+    def test_expected_completion_repairs_kodi_without_activation(self):
+        kodimonitor, _, _, backgroundthread = load_kodimonitor()
+        state = {42: 0, 43: 0}
+        writes = install_onupdate_databases(kodimonitor, state=state)
+        kodimonitor.PF.scrobble = lambda plex_id, state: None
+        kodimonitor.app.PLAYSTATE.item = SimpleNamespace(
+            kodi_id=8950,
+            kodi_type='episode',
+            plex_id='16390',
+            pkc_playback_generation=4,
+        )
+        kodimonitor.app.PLAYSTATE.playback_generation = 4
+        kodimonitor.app.PLAYSTATE.expected_upnext_handoff = {
+            'token': 'verified-token',
+            'previous_kodi_id': 8950,
+            'previous_kodi_type': 'episode',
+            'previous_plex_id': '16390',
+            'previous_generation': 4,
+            'next_plex_id': '16391',
+            'created_at': 100.0,
+        }
+        kodimonitor.monotonic = lambda: 100.0
+
+        kodimonitor._videolibrary_onupdate({
+            'item': {'id': 8950, 'type': 'episode'},
+            'playcount': 1,
+        })
+        self.assertEqual(state, {42: 1, 43: 1})
+
+        state[42] = 0
+        state[43] = 0
+        kodimonitor._videolibrary_onupdate({
+            'id': 8950,
+            'type': 'episode',
+        })
+
+        self.assertEqual(state, {42: 1, 43: 1})
+        self.assertEqual(len([
+            task for task in backgroundthread.BGThreader.tasks
+            if isinstance(task, backgroundthread.FunctionAsTask)
+            and task.function is kodimonitor.PF.scrobble
+        ]), 1)
+        self.assertEqual(len(writes), 4)
+
+    def test_completed_handoff_repairs_after_restore_writes_stale_state(self):
+        kodimonitor, _, _, backgroundthread = load_kodimonitor()
+        state = {42: 0, 43: 0}
+        writes = install_onupdate_databases(kodimonitor, state=state)
+        kodimonitor.PF.scrobble = lambda plex_id, state: None
+        kodimonitor.PF.GetPlexMetadata = lambda plex_id: [ET.Element('Video')]
+        kodimonitor.API = lambda xml: SimpleNamespace(
+            resume_point=lambda: 0.0,
+            runtime=lambda: 1434.0,
+            viewcount=lambda: 0,
+            lastplayed=lambda: None,
+        )
+        kodimonitor.app.PLAYSTATE.item = None
+        kodimonitor._ACTIVE_UPNEXT_HANDOFF = {
+            'token': 'verified-token',
+            'previous_item': (8950, 'episode'),
+            'previous_plex_id': '16390',
+            'next_item': (8951, 'episode'),
+            'expires_at': 130.0,
+        }
+        kodimonitor.monotonic = lambda: 101.0
+
+        kodimonitor._videolibrary_onupdate({
+            'item': {'id': 8950, 'type': 'episode'},
+        })
+        restore = [
+            task for task in backgroundthread.BGThreader.tasks
+            if isinstance(task, kodimonitor.RestorePlexPlaystate)
+        ][0]
+        restore.run()
+        self.assertEqual(state, {42: None, 43: None})
+
+        kodimonitor._videolibrary_onupdate({
+            'item': {'id': 8950, 'type': 'episode'},
+            'playcount': 1,
+        })
+
+        self.assertEqual(state, {42: 1, 43: 1})
+        self.assertEqual([write[3] for write in writes[-2:]], [1, 1])
+        self.assertEqual([write[3] for write in writes[:-2]], [0, 0])
+        self.assertEqual(len([
+            task for task in backgroundthread.BGThreader.tasks
+            if isinstance(task, backgroundthread.FunctionAsTask)
+            and task.function is kodimonitor.PF.scrobble
+        ]), 1)
+
+    def test_completed_handoff_repairs_resume_bearing_reset(self):
+        kodimonitor, _, _, _ = load_kodimonitor()
+        state = {42: 0, 43: 0}
+        writes = install_onupdate_databases(
+            kodimonitor, state=state, resume=45.0)
+        kodimonitor.PF.scrobble = lambda plex_id, state: None
+        kodimonitor.app.PLAYSTATE.item = None
+        kodimonitor._ACTIVE_UPNEXT_HANDOFF = {
+            'token': 'verified-token',
+            'previous_item': (8950, 'episode'),
+            'previous_plex_id': '16390',
+            'next_item': (8951, 'episode'),
+            'expires_at': 130.0,
+            'completion_seen': True,
+            'watched_queued': True,
+        }
+        kodimonitor.monotonic = lambda: 101.0
+
+        kodimonitor._videolibrary_onupdate({
+            'id': 8950,
+            'type': 'episode',
+        })
+
+        self.assertEqual(state, {42: 1, 43: 1})
+        self.assertEqual([write[3] for write in writes], [1, 1])
+
+    def test_completed_handoff_repairs_every_reset_callback(self):
+        kodimonitor, _, _, _ = load_kodimonitor()
+        state = {42: 0, 43: 0}
+        writes = install_onupdate_databases(kodimonitor, state=state)
+        kodimonitor.PF.scrobble = lambda plex_id, state: None
+        kodimonitor.app.PLAYSTATE.item = None
+        kodimonitor._ACTIVE_UPNEXT_HANDOFF = {
+            'token': 'verified-token',
+            'previous_item': (8950, 'episode'),
+            'previous_plex_id': '16390',
+            'next_item': (8951, 'episode'),
+            'expires_at': 130.0,
+        }
+        kodimonitor.monotonic = lambda: 101.0
+
+        for index in range(3):
+            update = {'item': {'id': 8950, 'type': 'episode'}}
+            if index == 0:
+                update['playcount'] = 1
+            kodimonitor._videolibrary_onupdate(update)
+            state[42] = 0
+            state[43] = 0
+
+        self.assertEqual([write[3] for write in writes], [1, 1, 1, 1, 1, 1])
+
+    def test_completed_handoff_fence_survives_timeout_and_new_playback(self):
+        kodimonitor, _, _, backgroundthread = load_kodimonitor()
+        state = {42: 0, 43: 0}
+        writes = install_onupdate_databases(kodimonitor, state=state)
+        kodimonitor.PF.scrobble = lambda plex_id, state: None
+        kodimonitor.app.PLAYSTATE.item = None
+        kodimonitor._ACTIVE_UPNEXT_HANDOFF = {
+            'token': 'verified-token',
+            'previous_item': (8950, 'episode'),
+            'previous_plex_id': '16390',
+            'next_item': (8951, 'episode'),
+            'expires_at': 130.0,
+        }
+        kodimonitor.monotonic = lambda: 101.0
+
+        kodimonitor._videolibrary_onupdate({
+            'item': {'id': 8950, 'type': 'episode'},
+            'playcount': 1,
+        })
+        kodimonitor._ACTIVE_UPNEXT_HANDOFF = None
+        state[42] = 0
+        state[43] = 0
+        kodimonitor.monotonic = lambda: 250.0
+
+        kodimonitor._videolibrary_onupdate({
+            'item': {'id': 8950, 'type': 'episode'},
+        })
+
+        scrobbles = [
+            task for task in backgroundthread.BGThreader.tasks
+            if isinstance(task, backgroundthread.FunctionAsTask)
+            and task.function is kodimonitor.PF.scrobble
+        ]
+        self.assertEqual(state, {42: 1, 43: 1})
+        self.assertEqual([write[3] for write in writes], [1, 1, 1, 1])
+        self.assertEqual(len(scrobbles), 1)
+        self.assertEqual(scrobbles[0].args, ('16390', 'watched'))
+
+    def test_explicit_unwatched_update_is_not_swallowed_by_completed_handoff(self):
+        kodimonitor, _, _, backgroundthread = load_kodimonitor()
+        writes = install_onupdate_databases(kodimonitor, playcount=1)
+        kodimonitor.PF.scrobble = lambda plex_id, state: None
+        kodimonitor.app.PLAYSTATE.item = None
+        kodimonitor._ACTIVE_UPNEXT_HANDOFF = {
+            'token': 'verified-token',
+            'previous_item': (8950, 'episode'),
+            'previous_plex_id': '16390',
+            'next_item': (8951, 'episode'),
+            'expires_at': 130.0,
+            'completion_seen': True,
+            'watched_queued': True,
+        }
+        kodimonitor.monotonic = lambda: 101.0
+
+        kodimonitor._videolibrary_onupdate({
+            'item': {'id': 8950, 'type': 'episode'},
+            'playcount': 0,
+        })
+
+        scrobbles = [
+            task for task in backgroundthread.BGThreader.tasks
+            if isinstance(task, backgroundthread.FunctionAsTask)
+            and task.function is kodimonitor.PF.scrobble
+        ]
+        self.assertEqual([write[3] for write in writes], [0, 0])
+        self.assertEqual(len(scrobbles), 1)
+        self.assertEqual(scrobbles[0].args, ('16390', 'unwatched'))
+        self.assertIsNone(kodimonitor._ACTIVE_UPNEXT_HANDOFF)
+
+    def test_explicit_unwatched_update_clears_expected_handoff_before_start(self):
+        kodimonitor, _, _, backgroundthread = load_kodimonitor()
+        state = {42: 1, 43: 1}
+        writes = install_onupdate_databases(
+            kodimonitor, state=state, resume=45.0)
+        kodimonitor.PF.scrobble = lambda plex_id, state: None
+        previous = SimpleNamespace(
+            kodi_id=8950,
+            kodi_type='episode',
+            plex_id='16390',
+            pkc_playback_generation=4,
+        )
+        kodimonitor.app.PLAYSTATE.item = previous
+        kodimonitor.app.PLAYSTATE.playback_generation = 4
+        kodimonitor.app.PLAYSTATE.expected_upnext_handoff = {
+            'token': 'verified-token',
+            'previous_kodi_id': 8950,
+            'previous_kodi_type': 'episode',
+            'previous_plex_id': '16390',
+            'previous_generation': 4,
+            'next_plex_id': '16391',
+            'created_at': 100.0,
+        }
+        kodimonitor.monotonic = lambda: 101.0
+
+        kodimonitor._videolibrary_onupdate({
+            'item': {'id': 8950, 'type': 'episode'},
+            'playcount': 0,
+        })
+
+        scrobbles = [
+            task for task in backgroundthread.BGThreader.tasks
+            if isinstance(task, backgroundthread.FunctionAsTask)
+            and task.function is kodimonitor.PF.scrobble
+        ]
+        self.assertEqual(state, {42: None, 43: None})
+        self.assertEqual([write[3] for write in writes], [0, 0])
+        self.assertEqual(len(scrobbles), 1)
+        self.assertEqual(scrobbles[0].args, ('16390', 'unwatched'))
+        self.assertIsNone(kodimonitor.app.PLAYSTATE.expected_upnext_handoff)
+        self.assertIsNone(kodimonitor.app.PLAYSTATE.started_upnext_handoff)
+
+    def test_explicit_unwatched_update_clears_active_handoff_before_start(self):
+        kodimonitor, _, _, backgroundthread = load_kodimonitor()
+        state = {42: 1, 43: 1}
+        writes = install_onupdate_databases(kodimonitor, state=state)
+        kodimonitor.PF.scrobble = lambda plex_id, state: None
+        kodimonitor.app.PLAYSTATE.item = None
+        kodimonitor._ACTIVE_UPNEXT_HANDOFF = {
+            'token': 'verified-token',
+            'previous_item': (8950, 'episode'),
+            'previous_plex_id': '16390',
+            'next_item': (8951, 'episode'),
+            'expires_at': 130.0,
+        }
+        kodimonitor.monotonic = lambda: 101.0
+
+        kodimonitor._videolibrary_onupdate({
+            'item': {'id': 8950, 'type': 'episode'},
+            'playcount': 0,
+        })
+
+        scrobbles = [
+            task for task in backgroundthread.BGThreader.tasks
+            if isinstance(task, backgroundthread.FunctionAsTask)
+            and task.function is kodimonitor.PF.scrobble
+        ]
+        self.assertEqual(state, {42: None, 43: None})
+        self.assertEqual([write[3] for write in writes], [0, 0])
+        self.assertEqual(len(scrobbles), 1)
+        self.assertEqual(scrobbles[0].args, ('16390', 'unwatched'))
+        self.assertIsNone(kodimonitor._ACTIVE_UPNEXT_HANDOFF)
+
+    def test_handoff_watched_repair_requires_matching_plex_mapping(self):
+        kodimonitor, _, _, backgroundthread = load_kodimonitor()
+        writes = install_onupdate_databases(
+            kodimonitor, plex_id='different-plex-item')
+        kodimonitor.PF.scrobble = lambda plex_id, state: None
+        kodimonitor.app.PLAYSTATE.item = None
+        kodimonitor._ACTIVE_UPNEXT_HANDOFF = {
+            'token': 'verified-token',
+            'previous_item': (8950, 'episode'),
+            'previous_plex_id': '16390',
+            'next_item': (8951, 'episode'),
+            'expires_at': 130.0,
+        }
+        kodimonitor.monotonic = lambda: 101.0
+
+        kodimonitor._videolibrary_onupdate({
+            'item': {'id': 8950, 'type': 'episode'},
+            'playcount': 1,
+        })
+
+        self.assertEqual(writes, [])
+        self.assertEqual(len([
+            task for task in backgroundthread.BGThreader.tasks
+            if isinstance(task, backgroundthread.FunctionAsTask)
+            and task.function is kodimonitor.PF.scrobble
+        ]), 1)
+
+    def test_restore_request_rejects_terminal_handoff(self):
+        kodimonitor, _, _, _ = load_kodimonitor()
+        handoff = {
+            'completion_seen': True,
+            'watched_queued': True,
+        }
+
+        self.assertFalse(kodimonitor._request_playback_restore(
+            8950, 'episode', 'verified-token', handoff))
+        self.assertEqual(kodimonitor._PENDING_PLAYBACK_RESTORES, {})
+
+    def test_upnext_completion_supersedes_restore_and_duplicate_callbacks(self):
+        kodimonitor, _, _, backgroundthread = load_kodimonitor()
+        writes = install_onupdate_databases(kodimonitor)
+        kodimonitor.PF.scrobble = lambda plex_id, state: None
+        kodimonitor.PF.GetPlexMetadata = lambda plex_id: [ET.Element('Video')]
+        kodimonitor.API = lambda xml: SimpleNamespace(
+            resume_point=lambda: 0.0,
+            runtime=lambda: 1434.0,
+            viewcount=lambda: 0,
+            lastplayed=lambda: None,
+        )
+        kodimonitor.app.PLAYSTATE.item = None
+        kodimonitor._ACTIVE_UPNEXT_HANDOFF = {
+            'token': 'verified-token',
+            'previous_item': (8950, 'episode'),
+            'previous_plex_id': '16390',
+            'expires_at': 130.0,
+        }
+        kodimonitor.monotonic = lambda: 101.0
+
+        kodimonitor._videolibrary_onupdate({
+            'item': {'id': 8950, 'type': 'episode'},
+        })
+        kodimonitor._videolibrary_onupdate({
+            'item': {'id': 8950, 'type': 'episode'},
+            'playcount': 1,
+        })
+        kodimonitor._videolibrary_onupdate({
+            'id': 8950,
+            'type': 'episode',
+        })
+
         restores = [
             task for task in backgroundthread.BGThreader.tasks
             if isinstance(task, kodimonitor.RestorePlexPlaystate)
         ]
-        self.assertEqual(len(restores), 1)
-
         restores[0].run()
+        scrobbles = [
+            task for task in backgroundthread.BGThreader.tasks
+            if isinstance(task, backgroundthread.FunctionAsTask)
+            and task.function is kodimonitor.PF.scrobble
+        ]
+        self.assertEqual(len(scrobbles), 1)
+        self.assertEqual(scrobbles[0].args, ('16390', 'watched'))
+        self.assertEqual([write[3] for write in writes], [1, 1, 1, 1])
+        self.assertEqual(kodimonitor._PENDING_PLAYBACK_RESTORES, {})
 
-        self.assertEqual(len(writes), 2)
-        self.assertEqual(writes[0][:4], (42, 0.0, 1434.0, 1))
-        self.assertEqual(writes[1][:4], (43, 0.0, 1434.0, 1))
+    def test_upnext_completion_cancels_restore_before_inflight_write(self):
+        kodimonitor, _, _, backgroundthread = load_kodimonitor()
+        writes = install_onupdate_databases(kodimonitor)
+        kodimonitor.PF.scrobble = lambda plex_id, state: None
+        kodimonitor.API = lambda xml: SimpleNamespace(
+            resume_point=lambda: 0.0,
+            runtime=lambda: 1434.0,
+            viewcount=lambda: 0,
+            lastplayed=lambda: None,
+        )
+        kodimonitor.app.PLAYSTATE.item = None
+        kodimonitor._ACTIVE_UPNEXT_HANDOFF = {
+            'token': 'verified-token',
+            'previous_item': (8950, 'episode'),
+            'previous_plex_id': '16390',
+            'expires_at': 130.0,
+        }
+        kodimonitor.monotonic = lambda: 101.0
+        kodimonitor._videolibrary_onupdate({
+            'item': {'id': 8950, 'type': 'episode'},
+        })
+
+        def metadata(_plex_id):
+            kodimonitor._videolibrary_onupdate({
+                'item': {'id': 8950, 'type': 'episode'},
+                'playcount': 1,
+            })
+            return [ET.Element('Video')]
+
+        kodimonitor.PF.GetPlexMetadata = metadata
+        restore = [
+            task for task in backgroundthread.BGThreader.tasks
+            if isinstance(task, kodimonitor.RestorePlexPlaystate)
+        ][0]
+        restore.run()
+
+        scrobbles = [
+            task for task in backgroundthread.BGThreader.tasks
+            if isinstance(task, backgroundthread.FunctionAsTask)
+            and task.function is kodimonitor.PF.scrobble
+        ]
+        self.assertEqual(len(scrobbles), 1)
+        self.assertEqual([write[3] for write in writes], [1, 1])
+        self.assertEqual(kodimonitor._PENDING_PLAYBACK_RESTORES, {})
+
+    def test_old_restore_cannot_write_new_handoff_state(self):
+        kodimonitor, _, _, _ = load_kodimonitor()
+        writes = install_onupdate_databases(kodimonitor)
+        kodimonitor.PF.GetPlexMetadata = lambda plex_id: [ET.Element('Video')]
+        kodimonitor.API = lambda xml: SimpleNamespace(
+            resume_point=lambda: 0.0,
+            runtime=lambda: 1434.0,
+            viewcount=lambda: 0,
+            lastplayed=lambda: None,
+        )
+        kodimonitor.app.PLAYSTATE.item = None
+        kodimonitor.monotonic = lambda: 101.0
+        self.assertTrue(kodimonitor._request_playback_restore(
+            8950, 'episode', 'new-handoff'))
+
+        kodimonitor.RestorePlexPlaystate(
+            8950, 'episode', 'old-handoff').run()
+
+        self.assertEqual(writes, [])
+        self.assertEqual(
+            kodimonitor._PENDING_PLAYBACK_RESTORES[(8950, 'episode')],
+            {'revision': 1, 'handoff_key': 'new-handoff'})
+
+    def test_invalidated_handoff_cancels_old_restore_before_manual_completion(self):
+        kodimonitor, _, _, backgroundthread = load_kodimonitor()
+        writes = install_onupdate_databases(kodimonitor)
+        kodimonitor.PF.scrobble = lambda plex_id, state: None
+        kodimonitor.app.PLAYSTATE.item = None
+        kodimonitor._ACTIVE_UPNEXT_HANDOFF = {
+            'token': 'old-handoff',
+            'previous_item': (8950, 'episode'),
+            'previous_plex_id': '16390',
+            'next_item': (8951, 'episode'),
+            'expires_at': 130.0,
+        }
+        self.assertTrue(kodimonitor._request_playback_restore(
+            8950, 'episode', 'old-handoff'))
+
+        unrelated = SimpleNamespace(
+            kodi_id=8999,
+            kodi_type='episode',
+            plex_id='16999',
+        )
+        self.assertFalse(kodimonitor._activate_upnext_handoff(
+            unrelated, now=101.0))
+        self.assertEqual(kodimonitor._PENDING_PLAYBACK_RESTORES, {})
+
+        self.assertTrue(kodimonitor._request_playback_restore(
+            8950, 'episode', 'orphaned-handoff'))
+        kodimonitor._videolibrary_onupdate({
+            'item': {'id': 8950, 'type': 'episode'},
+            'playcount': 1,
+        })
+        kodimonitor.RestorePlexPlaystate(
+            8950, 'episode', 'orphaned-handoff').run()
+
+        self.assertEqual([write[3] for write in writes], [1, 1])
+        self.assertEqual(kodimonitor._PENDING_PLAYBACK_RESTORES, {})
+        self.assertEqual(len([
+            task for task in backgroundthread.BGThreader.tasks
+            if isinstance(task, backgroundthread.FunctionAsTask)
+            and task.function is kodimonitor.PF.scrobble
+        ]), 1)
+
+    def test_upnext_watched_completion_blocks_late_reset_callback(self):
+        kodimonitor, _, _, backgroundthread = load_kodimonitor()
+        install_onupdate_databases(kodimonitor)
+        kodimonitor.PF.scrobble = lambda plex_id, state: None
+        kodimonitor.app.PLAYSTATE.item = None
+        kodimonitor._ACTIVE_UPNEXT_HANDOFF = {
+            'token': 'verified-token',
+            'previous_item': (8950, 'episode'),
+            'expires_at': 130.0,
+        }
+        kodimonitor.monotonic = lambda: 101.0
+
+        kodimonitor._videolibrary_onupdate({
+            'item': {'id': 8950, 'type': 'episode'},
+            'playcount': 1,
+        })
+        kodimonitor._videolibrary_onupdate({
+            'item': {'id': 8950, 'type': 'episode'},
+        })
+
+        restores = [
+            task for task in backgroundthread.BGThreader.tasks
+            if isinstance(task, kodimonitor.RestorePlexPlaystate)
+        ]
+        scrobbles = [
+            task for task in backgroundthread.BGThreader.tasks
+            if isinstance(task, backgroundthread.FunctionAsTask)
+            and task.function is kodimonitor.PF.scrobble
+        ]
+        self.assertEqual(restores, [])
+        self.assertEqual(len(scrobbles), 1)
+
+    def test_upnext_completion_repairs_late_reset_locally(self):
+        kodimonitor, _, _, backgroundthread = load_kodimonitor()
+        state = {42: 0, 43: 0}
+        writes = install_onupdate_databases(kodimonitor, state=state)
+        kodimonitor.PF.scrobble = lambda plex_id, state: None
+        kodimonitor.app.PLAYSTATE.item = None
+        kodimonitor._ACTIVE_UPNEXT_HANDOFF = {
+            'token': 'verified-token',
+            'previous_item': (8950, 'episode'),
+            'previous_plex_id': '16390',
+            'next_item': (8951, 'episode'),
+            'expires_at': 130.0,
+        }
+        kodimonitor.monotonic = lambda: 101.0
+
+        kodimonitor._videolibrary_onupdate({
+            'item': {'id': 8950, 'type': 'episode'},
+            'playcount': 1,
+        })
+        state[42] = 0
+        state[43] = 0
+        kodimonitor._videolibrary_onupdate({
+            'item': {'id': 8950, 'type': 'episode'},
+        })
+
+        self.assertEqual(state, {42: 1, 43: 1})
+        self.assertEqual([write[3] for write in writes], [1, 1, 1, 1])
+        self.assertEqual([
+            task for task in backgroundthread.BGThreader.tasks
+            if isinstance(task, backgroundthread.FunctionAsTask)
+            and task.function is kodimonitor.PF.scrobble
+            and task.args[1] == 'unwatched'
+        ], [])
+
+    def test_stale_expected_handoff_does_not_swallow_manual_completion(self):
+        kodimonitor, _, _, backgroundthread = load_kodimonitor()
+        install_onupdate_databases(kodimonitor)
+        kodimonitor.PF.scrobble = lambda plex_id, state: None
+        kodimonitor.app.PLAYSTATE.item = None
+        kodimonitor.app.PLAYSTATE.expected_upnext_handoff = {
+            'token': 'stale-token',
+            'previous_kodi_id': 8950,
+            'previous_kodi_type': 'episode',
+            'previous_plex_id': '16390',
+            'previous_generation': 4,
+            'next_plex_id': '16391',
+            'created_at': 100.0,
+        }
+        kodimonitor.monotonic = lambda: 101.0
+
+        kodimonitor._videolibrary_onupdate({
+            'item': {'id': 8950, 'type': 'episode'},
+            'playcount': 1,
+        })
+
+        scrobbles = [
+            task for task in backgroundthread.BGThreader.tasks
+            if isinstance(task, backgroundthread.FunctionAsTask)
+            and task.function is kodimonitor.PF.scrobble
+        ]
+        self.assertEqual(len(scrobbles), 1)
+        self.assertEqual(scrobbles[0].args, ('16390', 'watched'))
+
+    def test_duplicate_next_play_keeps_completed_handoff_protection(self):
+        kodimonitor, _, _, backgroundthread = load_kodimonitor()
+        state = {42: 0, 43: 0}
+        writes = install_onupdate_databases(kodimonitor, state=state)
+        kodimonitor.PF.scrobble = lambda plex_id, state: None
+        previous = SimpleNamespace(
+            kodi_id=8950,
+            kodi_type='episode',
+            plex_id='16390',
+            pkc_playback_generation=4,
+        )
+        next_item = SimpleNamespace(
+            kodi_id=8951,
+            kodi_type='episode',
+            plex_id='16391',
+        )
+        kodimonitor.app.PLAYSTATE.item = previous
+        kodimonitor.app.PLAYSTATE.playback_generation = 4
+        kodimonitor.app.PLAYSTATE.expected_upnext_handoff = {
+            'token': 'verified-token',
+            'previous_kodi_id': 8950,
+            'previous_kodi_type': 'episode',
+            'previous_plex_id': '16390',
+            'previous_generation': 4,
+            'next_plex_id': '16391',
+            'created_at': 100.0,
+        }
+        kodimonitor.app.PLAYSTATE.started_upnext_handoff = {
+            'token': 'verified-token',
+            'plex_id': '16391',
+            'previous_kodi_id': 8950,
+            'previous_kodi_type': 'episode',
+            'previous_plex_id': '16390',
+            'previous_generation': 4,
+            'created_at': 100.0,
+        }
+        kodimonitor.monotonic = lambda: 100.0
+        self.assertTrue(kodimonitor._activate_upnext_handoff(
+            next_item, now=100.0))
+        kodimonitor.app.PLAYSTATE.item = next_item
+        kodimonitor.app.PLAYSTATE.playback_generation = 5
+        self.assertTrue(kodimonitor._activate_upnext_handoff(
+            next_item, now=101.0))
+
+        kodimonitor._videolibrary_onupdate({
+            'item': {'id': 8950, 'type': 'episode'},
+            'playcount': 1,
+        })
+        state[42] = 0
+        state[43] = 0
+        kodimonitor._videolibrary_onupdate({
+            'item': {'id': 8950, 'type': 'episode'},
+        })
+
+        scrobbles = [
+            task for task in backgroundthread.BGThreader.tasks
+            if isinstance(task, backgroundthread.FunctionAsTask)
+            and task.function is kodimonitor.PF.scrobble
+        ]
+        self.assertEqual(len(scrobbles), 1)
+        self.assertEqual(scrobbles[0].args, ('16390', 'watched'))
+        self.assertEqual(writes[-2][3], 1)
+        self.assertEqual(writes[-1][3], 1)
+
+    def test_restore_retry_requeue_is_atomic_with_completion(self):
+        kodimonitor, _, _, backgroundthread = load_kodimonitor()
+        install_onupdate_databases(kodimonitor)
+        kodimonitor.PF.scrobble = lambda plex_id, state: None
+        kodimonitor.app.PLAYSTATE.item = None
+        kodimonitor._ACTIVE_UPNEXT_HANDOFF = {
+            'token': 'verified-token',
+            'previous_item': (8950, 'episode'),
+            'previous_plex_id': '16390',
+            'next_item': (8951, 'episode'),
+            'expires_at': 130.0,
+        }
+        self.assertTrue(kodimonitor._request_playback_restore(
+            8950, 'episode', 'verified-token'))
+        self.assertFalse(kodimonitor._request_playback_restore(
+            8950, 'episode', 'verified-token'))
+        self.assertTrue(kodimonitor._requeue_playback_restore_if_changed(
+            (8950, 'episode'), 'verified-token', 1))
+
+        kodimonitor.monotonic = lambda: 101.0
+        kodimonitor._videolibrary_onupdate({
+            'item': {'id': 8950, 'type': 'episode'},
+            'playcount': 1,
+        })
+
+        self.assertEqual(kodimonitor._PENDING_PLAYBACK_RESTORES, {})
+        self.assertEqual([
+            task for task in backgroundthread.BGThreader.tasks
+            if isinstance(task, backgroundthread.FunctionAsTask)
+            and task.function is kodimonitor.PF.scrobble
+        ][0].args, ('16390', 'watched'))
+
+    def test_unverified_active_completion_remains_suppressed(self):
+        kodimonitor, _, _, backgroundthread = load_kodimonitor()
+        install_onupdate_databases(kodimonitor)
+        kodimonitor.PF.scrobble = lambda plex_id, state: None
+        kodimonitor.app.PLAYSTATE.item = SimpleNamespace(
+            kodi_id=8950,
+            kodi_type='episode',
+        )
+        kodimonitor.app.PLAYSTATE.expected_upnext_handoff = {
+            'token': 'expected-token',
+            'previous_kodi_id': 8950,
+            'previous_kodi_type': 'episode',
+            'previous_plex_id': '16390',
+            'previous_generation': 4,
+            'next_plex_id': '16391',
+            'created_at': 100.0,
+        }
+        kodimonitor.app.PLAYSTATE.started_upnext_handoff = {
+            'token': 'started-token',
+            'plex_id': '16391',
+            'previous_kodi_id': 8950,
+            'previous_kodi_type': 'episode',
+            'previous_plex_id': '16390',
+            'previous_generation': 4,
+            'created_at': 100.0,
+        }
+        kodimonitor.monotonic = lambda: 100.0
+
+        kodimonitor._videolibrary_onupdate({
+            'item': {'id': 8950, 'type': 'episode'},
+            'playcount': 1,
+        })
+
+        scrobbles = [
+            task for task in backgroundthread.BGThreader.tasks
+            if isinstance(task, backgroundthread.FunctionAsTask)
+            and task.function is kodimonitor.PF.scrobble
+        ]
+        self.assertEqual(scrobbles, [])
 
     def test_rapid_return_does_not_reuse_stale_handoff(self):
         kodimonitor, _, _, backgroundthread = load_kodimonitor()
@@ -714,7 +1558,6 @@ class KodiMonitorTests(unittest.TestCase):
 
         update = {
             'item': {'id': 8950, 'type': 'episode'},
-            'playcount': 0,
         }
         kodimonitor._videolibrary_onupdate(update)
         first = backgroundthread.BGThreader.tasks[-1]
@@ -750,20 +1593,130 @@ class KodiMonitorTests(unittest.TestCase):
             if len(metadata_calls) == 1:
                 kodimonitor._videolibrary_onupdate({
                     'item': {'id': 8950, 'type': 'episode'},
-                    'playcount': 0,
                 })
             return [ET.Element('Video')]
 
         kodimonitor.PF.GetPlexMetadata = metadata
         kodimonitor._videolibrary_onupdate({
             'item': {'id': 8950, 'type': 'episode'},
-            'playcount': 0,
         })
         backgroundthread.BGThreader.tasks[-1].run()
 
         self.assertEqual(len(metadata_calls), 2)
-        self.assertEqual(len(writes), 4)
+        self.assertEqual(len(writes), 2)
         self.assertEqual(kodimonitor._PENDING_PLAYBACK_RESTORES, {})
+
+    def test_restore_final_write_is_fenced_by_completion_or_unwatch(self):
+        for callback, expected_playcount in ((1, 1), (0, 0)):
+            with self.subTest(callback=callback):
+                kodimonitor, _, _, backgroundthread = load_kodimonitor()
+                writes = install_onupdate_databases(kodimonitor)
+                kodimonitor.PF.scrobble = lambda plex_id, state: None
+                kodimonitor.API = lambda xml: SimpleNamespace(
+                    resume_point=lambda: 45.0,
+                    runtime=lambda: 1434.0,
+                    viewcount=lambda: 0,
+                    lastplayed=lambda: None,
+                )
+                kodimonitor.app.PLAYSTATE.item = None
+                kodimonitor._ACTIVE_UPNEXT_HANDOFF = {
+                    'token': 'verified-token',
+                    'previous_item': (8950, 'episode'),
+                    'previous_plex_id': '16390',
+                    'next_item': (8951, 'episode'),
+                    'expires_at': 130.0,
+                }
+                kodimonitor.monotonic = lambda: 101.0
+                kodimonitor._videolibrary_onupdate({
+                    'item': {'id': 8950, 'type': 'episode'},
+                })
+                restore = [
+                    task for task in backgroundthread.BGThreader.tasks
+                    if isinstance(task, kodimonitor.RestorePlexPlaystate)
+                ][0]
+                metadata_started = Event()
+                release_metadata = Event()
+                errors = []
+
+                def metadata(_plex_id):
+                    metadata_started.set()
+                    release_metadata.wait(2.0)
+                    return [ET.Element('Video')]
+
+                def run_restore():
+                    try:
+                        restore.run()
+                    except BaseException as exc:
+                        errors.append(exc)
+
+                kodimonitor.PF.GetPlexMetadata = metadata
+                restore_thread = Thread(target=run_restore)
+                restore_thread.start()
+                self.assertTrue(metadata_started.wait(2.0))
+                try:
+                    kodimonitor._videolibrary_onupdate({
+                        'item': {'id': 8950, 'type': 'episode'},
+                        'playcount': callback,
+                    })
+                finally:
+                    release_metadata.set()
+                    restore_thread.join(2.0)
+
+                self.assertFalse(restore_thread.is_alive())
+                self.assertEqual(errors, [])
+                self.assertEqual(
+                    [write[3] for write in writes],
+                    [expected_playcount, expected_playcount])
+                self.assertEqual(kodimonitor._PENDING_PLAYBACK_RESTORES, {})
+
+    def test_cancelled_restore_revision_is_not_reused(self):
+        kodimonitor, _, _, _ = load_kodimonitor()
+        writes = install_onupdate_databases(kodimonitor)
+        self.assertTrue(kodimonitor._request_playback_restore(
+            8950, 'episode', 'same-handoff'))
+        first_revision = kodimonitor._playback_restore_revision(
+            (8950, 'episode'), 'same-handoff')
+        restore = kodimonitor.RestorePlexPlaystate(
+            8950, 'episode', 'same-handoff')
+        kodimonitor._cancel_playback_restore(
+            (8950, 'episode'), 'same-handoff')
+        self.assertTrue(kodimonitor._request_playback_restore(
+            8950, 'episode', 'same-handoff'))
+        second_revision = kodimonitor._playback_restore_revision(
+            (8950, 'episode'), 'same-handoff')
+
+        self.assertGreater(second_revision, first_revision)
+        self.assertFalse(restore._restore_once(first_revision))
+        self.assertEqual(writes, [])
+
+    def test_pms_playstate_tasks_send_latest_state_last(self):
+        kodimonitor, _, _, _ = load_kodimonitor()
+        calls = []
+        watched_started = Event()
+        release_watched = Event()
+
+        def scrobble(plex_id, state):
+            calls.append(state)
+            if state == 'watched':
+                watched_started.set()
+                release_watched.wait(2.0)
+
+        kodimonitor.PF.scrobble = scrobble
+        watched = kodimonitor._queue_pms_playstate('16390', 'watched')
+        watched_thread = Thread(target=watched.run)
+        watched_thread.start()
+        self.assertTrue(watched_started.wait(2.0))
+
+        unwatched = kodimonitor._queue_pms_playstate('16390', 'unwatched')
+        unwatched_thread = Thread(target=unwatched.run)
+        unwatched_thread.start()
+        release_watched.set()
+        watched_thread.join(2.0)
+        unwatched_thread.join(2.0)
+
+        self.assertFalse(watched_thread.is_alive())
+        self.assertFalse(unwatched_thread.is_alive())
+        self.assertEqual(calls, ['watched', 'unwatched'])
 
     def test_transient_restore_metadata_failure_retries(self):
         kodimonitor, _, _, backgroundthread = load_kodimonitor()
@@ -786,7 +1739,6 @@ class KodiMonitorTests(unittest.TestCase):
 
         kodimonitor._videolibrary_onupdate({
             'item': {'id': 8950, 'type': 'episode'},
-            'playcount': 0,
         })
         backgroundthread.BGThreader.tasks[-1].run()
 

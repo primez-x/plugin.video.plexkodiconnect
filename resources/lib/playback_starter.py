@@ -53,6 +53,8 @@ class PlaybackTask(backgroundthread.Task):
                         str(outgoing.plex_id) == str(
                             expected.get('previous_plex_id')) and \
                         getattr(outgoing, 'pkc_playback_generation', None) == \
+                        expected.get('previous_generation') and \
+                        getattr(app.PLAYSTATE, 'playback_generation', None) == \
                         expected.get('previous_generation'):
                     app.PLAYSTATE.started_upnext_handoff = {
                         'token': upnext_token,

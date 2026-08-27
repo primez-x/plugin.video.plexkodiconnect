@@ -709,6 +709,18 @@ class KodiVideoDB(common.KodiDBBase):
                   1))
 
     @db.catch_operationalerrors
+    def set_watched(self, file_id, dateplayed):
+        """Mark a file watched while preserving an existing play count/date."""
+        self.cursor.execute('DELETE FROM bookmark WHERE idFile = ?', (file_id,))
+        self.cursor.execute('''
+        UPDATE files
+        SET playCount = CASE WHEN COALESCE(playCount, 0) < 1 THEN 1
+                             ELSE playCount END,
+            lastPlayed = COALESCE(lastPlayed, ?)
+        WHERE idFile = ?
+        ''', (dateplayed, file_id))
+
+    @db.catch_operationalerrors
     def create_tag(self, name):
         """
         Will create a new tag if needed and return the tag_id
