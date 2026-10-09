@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git push origin HEAD:python3-beta)",
+      "Bash(git push origin python3-beta)",
+      "Bash(git push -u origin python3-beta)",
+      "Bash(git push -u origin claude/*)",
+      "Bash(git push origin claude/*)"
+    ]
+  }
+}
