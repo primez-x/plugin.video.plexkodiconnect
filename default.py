@@ -140,10 +140,22 @@ def triage(mode, params, path, arguments, itemid):
         entrypoint.discover_detail(params.get("rating_key"))
         return
     elif mode == "watchlist_add_search":
-        transfer.plex_command("WATCHLIST_ADD_SEARCH?%s" % urlencode(params))
+        if params.get("tmdb_id"):
+            # Legacy callers pass an exact TMDb ID
+            transfer.plex_command("WATCHLIST_ADD_SEARCH?%s" % urlencode(params))
+        else:
+            _enqueue_watchlist_detail(
+                "WATCHLIST_DETAIL_SEARCH", watchlist.begin_search(params, "present")
+            )
         return
     elif mode == "watchlist_remove_search":
-        transfer.plex_command("WATCHLIST_REMOVE_SEARCH?%s" % urlencode(params))
+        if params.get("tmdb_id"):
+            # Legacy callers pass an exact TMDb ID
+            transfer.plex_command("WATCHLIST_REMOVE_SEARCH?%s" % urlencode(params))
+        else:
+            _enqueue_watchlist_detail(
+                "WATCHLIST_DETAIL_SEARCH", watchlist.begin_search(params, "absent")
+            )
         return
 
     from resources.lib import entrypoint

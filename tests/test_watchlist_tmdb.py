@@ -402,6 +402,43 @@ class TmdbWatchlistTests(unittest.TestCase):
         self.assertNotIn(watchlist.DETAIL_OPTIMISTIC_STATE, properties)
         self.assertEqual(notifications, [])
 
+    def test_detail_search_worker_uses_the_status_resolved_rating_key(self):
+        service_entry, _, notifications, properties = load_service_entry()
+        watchlist = service_entry.watchlist
+        identity = "search.movie.heat.1995"
+        properties[watchlist.DETAIL_IDENTITY] = identity
+        properties[watchlist.DETAIL_CONTEXT_LABEL] = "Heat"
+        properties[watchlist.DETAIL_CONTEXT_YEAR] = "1995"
+        # The title+year status probe already resolved and exposed the key
+        watchlist._remember_rating_key(identity, self.MOVIE_KEY)
+        self.assertEqual(properties[watchlist.DETAIL_RATING_KEY], self.MOVIE_KEY)
+        properties[watchlist.DETAIL_OPTIMISTIC_STATE] = "present"
+
+        request = watchlist.begin_search({"plex_type": "movie"}, "present")
+
+        self.assertEqual(request["watchlist_identity"], identity)
+        self.assertEqual(request["title"], "Heat")
+        self.assertEqual(properties[watchlist.DETAIL_PENDING], request["request_id"])
+
+        downloader = DownloadRecorder(
+            [
+                FakeResponse(self._watchlist_state_payload(self.MOVIE_KEY, False)),
+                FakeResponse(),
+                FakeResponse(self._watchlist_state_payload(self.MOVIE_KEY, True)),
+            ]
+        )
+        watchlist.downloadutils.DownloadUtils = lambda: downloader
+
+        self.assertTrue(
+            service_entry.Service.watchlist_detail_search(
+                service_proxy(service_entry), urlencode(request)
+            )
+        )
+        self.assertEqual(len(downloader.calls), 3)
+        self.assertEqual(properties[watchlist.DETAIL_STATE], "present")
+        self.assertNotIn(watchlist.DETAIL_PENDING, properties)
+        self.assertEqual(notifications, [])
+
     def test_detail_worker_commits_after_the_detail_dialog_closes(self):
         service_entry, _, notifications, properties = load_service_entry()
         watchlist = service_entry.watchlist

@@ -312,6 +312,15 @@ class Service(object):
     def watchlist_detail_tmdb(self, raw_params):
         return watchlist.complete_tmdb(dict(utils.parse_qsl(raw_params)))
 
+    def watchlist_detail_search(self, raw_params):
+        return watchlist.complete_search(dict(utils.parse_qsl(raw_params)))
+
+    def watchlist_add_search(self, raw_params):
+        return self.watchlist_modify_tmdb("addToWatchlist", raw_params)
+
+    def watchlist_remove_search(self, raw_params):
+        return self.watchlist_modify_tmdb("removeFromWatchlist", raw_params)
+
     def watchlist_remove(self, raw_params):
         return self.watchlist_modify("removeFromWatchlist", raw_params)
 
@@ -419,12 +428,6 @@ class Service(object):
         LOG.info("watchlist_modify_tmdb: %s verified", api_type)
         xbmc.executebuiltin("Container.Refresh")
         return True
-
-    def watchlist_add_search(self, raw_params):
-        return self.watchlist_modify_tmdb("addToWatchlist", raw_params)
-
-    def watchlist_remove_search(self, raw_params):
-        return self.watchlist_modify_tmdb("removeFromWatchlist", raw_params)
 
     def authenticate(self):
         """
@@ -923,6 +926,12 @@ class Service(object):
                         self.watchlist_remove_search,
                         None,
                         plex_command.replace("WATCHLIST_REMOVE_SEARCH?", ""),
+                    )
+                elif plex_command.startswith("WATCHLIST_DETAIL_SEARCH?"):
+                    task = backgroundthread.FunctionAsTask(
+                        self.watchlist_detail_search,
+                        None,
+                        plex_command.replace("WATCHLIST_DETAIL_SEARCH?", ""),
                     )
                 elif plex_command == "choose_pms_server":
                     task = backgroundthread.FunctionAsTask(self.choose_pms_server, None)

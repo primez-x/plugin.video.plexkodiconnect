@@ -763,6 +763,53 @@ def complete_tmdb(params):
     )
 
 
+def _search_params(params):
+    return {
+        "title": params.get("title") or utils.window(DETAIL_CONTEXT_LABEL),
+        "year": params.get("year") or utils.window(DETAIL_CONTEXT_YEAR) or "",
+        "plex_type": params.get("plex_type") or params.get("tmdb_type"),
+    }
+
+
+def _rating_key_for_search(params, identity):
+    rating_key = _cached_rating_key(identity)
+    if rating_key is not None:
+        return rating_key
+    rating_key = discover_cache.cached_tmdb_rating_key(identity)
+    if rating_key is None:
+        rating_key = discover_search_ratingkey(
+            params.get("title"), params.get("year"), params.get("plex_type")
+        )
+        if rating_key is not None:
+            discover_cache.record_tmdb_rating_key(identity, rating_key)
+    if rating_key is not None:
+        _remember_rating_key(identity, rating_key)
+    return rating_key
+
+
+def begin_search(params, desired):
+    """Project a title+year detail mutation without performing network I/O."""
+    search = _search_params(params)
+    identity = _identity_for_search(search)
+    if identity is None:
+        _clear_current_optimistic_projection()
+        notify_error()
+        return None
+    return _begin_detail_request(search, desired, identity)
+
+
+def complete_search(params):
+    """Resolve, verify, and finish a previously projected title+year mutation."""
+    identity = _identity_for_search(params)
+    if not _detail_worker_kick_is_valid(params, identity):
+        return False
+    return _reconcile_detail_intent(
+        identity,
+        lambda: _rating_key_for_search(params, identity),
+        "Plex could not match this title for Watchlist.",
+    )
+
+
 def _legacy_change(api_type, rating_key):
     """Keep non-detail callers on the prior verified synchronous contract."""
     success, _ = change(api_type, rating_key)
@@ -1099,6 +1146,8 @@ def status_search(params):
         rating_key = discover_search_ratingkey(title, year, plex_type)
     if rating_key is None:
         return False
+    # Expose the key so the detail Add/Remove action can target this item
+    _remember_rating_key(identity, rating_key)
     observed_state = state(rating_key)
     if not discover_cache.account_matches(account_hash):
         return False

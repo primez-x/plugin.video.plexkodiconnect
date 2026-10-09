@@ -72,6 +72,17 @@ def load_default_entrypoint():
         'request_id': 'request-id',
         'previous_state': 'absent',
     }
+    watchlist.begin_search = lambda params, desired: {
+        'title': params.get('title'),
+        'year': params.get('year'),
+        'plex_type': params.get('plex_type'),
+        'desired': desired,
+        'watchlist_identity': 'search.%s.%s.%s'
+        % (params.get('plex_type'), params.get('title', '').lower(),
+           params.get('year')),
+        'request_id': 'request-id',
+        'previous_state': 'absent',
+    }
     watchlist.status_tmdb = commands.append
     watchlist.status_key = commands.append
     watchlist.status_monitor = lambda: commands.append('watchlist_monitor')
@@ -154,6 +165,26 @@ class SkipMarkerEntrypointTests(unittest.TestCase):
         self.assertEqual(
             commands, ['WATCHLIST_ADD_SEARCH?tmdb_id=603&tmdb_type=movie']
         )
+
+    def test_search_watchlist_mode_without_tmdb_begins_a_detail_request(self):
+        default, commands = load_default_entrypoint()
+
+        default.triage(
+            'watchlist_add_search',
+            {'title': 'Heat', 'year': '1995', 'plex_type': 'movie'},
+            '',
+            '',
+            '',
+        )
+
+        self.assertEqual(len(commands), 1)
+        command, _, raw_params = commands[0].partition('?')
+        self.assertEqual(command, 'WATCHLIST_DETAIL_SEARCH')
+        params = dict(parse_qsl(raw_params))
+        self.assertEqual(params['watchlist_identity'], 'search.movie.heat.1995')
+        self.assertEqual(params['desired'], 'present')
+        self.assertEqual(params['title'], 'Heat')
+        self.assertEqual(params['year'], '1995')
 
     def test_watchlist_status_modes_enqueue_the_service_worker(self):
         default, commands = load_default_entrypoint()
