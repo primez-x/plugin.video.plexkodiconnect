@@ -33,6 +33,7 @@ from .library_sync.nodes import NODE_TYPES
 LOG = getLogger("PLEX.entrypoint")
 
 WATCHLIST_PAGE_SIZE = 100
+WATCHLIST_URL = "https://discover.provider.plex.tv/library/sections/watchlist/all"
 DISCOVER_REDIRECT_STATUS_CODES = (301, 302, 303, 307, 308)
 DISCOVER_DETAIL_TYPES = frozenset(("movie", "show"))
 DISCOVER_HTTP_TIMEOUT = (3.0, 10.0)
@@ -670,7 +671,7 @@ def watchlater():
 
 def _download_watchlist():
     """Download every page of the provider Watchlist without using PMS paging."""
-    url = "https://discover.provider.plex.tv/library/sections/watchlist/all"
+    url = WATCHLIST_URL
     headers = clientinfo.getXArgsDeviceInfo(
         {"X-Plex-Token": utils.window("plex_token")}, include_token=False
     )
@@ -716,8 +717,15 @@ def _download_watchlist():
 def watchlist(section_id=None):
     """
     Listing for plex.tv Watchlist section (if signed in to plex.tv)
+
+    Kodi reloads this widget after every library sync, so serve a recent
+    cached Watchlist and revalidate it in the PKC service (stale while
+    revalidate). Watchlist mutations drop the cache.
     """
-    _wait_for_auth()
+    url = WATCHLIST_URL
+    freshness, cached_xmls = discover_cache.read_xml(url, "watchlist")
+    if not cached_xmls:
+        _wait_for_auth()
     if utils.window("plex_token") == "":
         LOG.error("No watchlist - not signed in to plex.tv")
         raise ListingException
@@ -725,7 +733,17 @@ def watchlist(section_id=None):
         LOG.error("No watchlist - restricted user")
         raise ListingException
     app.init(entrypoint=True)
-    xml = _download_watchlist()
+    if cached_xmls:
+        xml = cached_xmls[0]
+        if freshness == discover_cache.CACHE_STALE:
+            discover_cache.enqueue_refresh(url, "watchlist")
+            LOG.debug("Using stale Plex Watchlist cache")
+        else:
+            LOG.debug("Using fresh Plex Watchlist cache")
+    else:
+        xml = _download_watchlist()
+        if xml is not None:
+            discover_cache.put_xml(url, [xml], "watchlist")
     try:
         xml.attrib
     except AttributeError:

@@ -365,6 +365,36 @@ class DiscoverCacheTests(unittest.TestCase):
                 * (cache.REFRESH_FINISH_ATTEMPTS - 1),
             )
 
+    def test_watchlist_cache_is_fresh_then_stale_then_missed(self):
+        with tempfile.TemporaryDirectory() as profile:
+            cache, _ = load_cache(profile)
+            url = cache.WATCHLIST_URL
+            cache.time = lambda: 100.0
+            self.assertTrue(cache.put_xml(url, [provider_xml()], "watchlist"))
+            self.assertEqual(cache.read_xml(url, "watchlist")[0], cache.CACHE_FRESH)
+
+            cache, _ = load_cache(profile)
+            cache.time = lambda: 100.0 + 61
+            self.assertEqual(cache.read_xml(url, "watchlist")[0], cache.CACHE_STALE)
+            self.assertTrue(cache.enqueue_refresh(url, "watchlist"))
+            self.assertEqual(cache.claim_refresh()["kind"], "watchlist")
+
+            cache, _ = load_cache(profile)
+            cache.time = lambda: 100.0 + cache.CACHE_POLICIES["watchlist"]["stale"] + 1
+            self.assertEqual(cache.read_xml(url, "watchlist"), (cache.CACHE_MISS, None))
+
+    def test_watchlist_invalidation_drops_window_and_durable_copies(self):
+        with tempfile.TemporaryDirectory() as profile:
+            cache, _ = load_cache(profile)
+            url = cache.WATCHLIST_URL
+            cache.time = lambda: 100.0
+            self.assertTrue(cache.put_xml(url, [provider_xml()], "watchlist"))
+
+            self.assertTrue(cache.invalidate_watchlist())
+
+            self.assertEqual(cache.read_xml(url, "watchlist"), (cache.CACHE_MISS, None))
+            self.assertFalse(os.path.exists(cache._source_path(url)))
+
     def test_claim_refresh_recovers_an_expired_lease_without_a_restart(self):
         with tempfile.TemporaryDirectory() as profile:
             cache, _ = load_cache(profile)

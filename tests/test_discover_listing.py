@@ -333,6 +333,53 @@ class DiscoverListingTests(unittest.TestCase):
         )
         self.assertFalse(kwargs["allow_redirects"])
 
+    def _watchlist_with_cache(self, freshness, cached):
+        entrypoint, _, _, _ = load_entrypoint()
+        calls = {"download": 0, "put": [], "enqueue": [], "listing": []}
+        entrypoint.discover_cache.read_xml = lambda url, kind: (freshness, cached)
+        entrypoint.discover_cache.put_xml = (
+            lambda url, xmls, kind: calls["put"].append((url, xmls, kind)) or True
+        )
+        entrypoint.discover_cache.enqueue_refresh = (
+            lambda url, kind: calls["enqueue"].append((url, kind)) or True
+        )
+        downloaded = provider_metadata("downloaded")
+
+        def download():
+            calls["download"] += 1
+            return downloaded
+
+        entrypoint._download_watchlist = download
+        entrypoint._wait_for_auth = lambda: None
+        entrypoint.show_listing = lambda xml, *args: calls["listing"].append(xml)
+        entrypoint.watchlist()
+        return entrypoint, calls, downloaded
+
+    def test_watchlist_fresh_cache_lists_without_network(self):
+        cached = provider_metadata("cached")
+        _, calls, _ = self._watchlist_with_cache("fresh", [cached])
+
+        self.assertEqual(calls["download"], 0)
+        self.assertEqual(calls["enqueue"], [])
+        self.assertEqual(calls["listing"], [cached])
+
+    def test_watchlist_stale_cache_lists_and_revalidates_in_background(self):
+        cached = provider_metadata("cached")
+        entrypoint, calls, _ = self._watchlist_with_cache("stale", [cached])
+
+        self.assertEqual(calls["download"], 0)
+        self.assertEqual(calls["enqueue"], [(entrypoint.WATCHLIST_URL, "watchlist")])
+        self.assertEqual(calls["listing"], [cached])
+
+    def test_watchlist_cache_miss_downloads_and_stores(self):
+        entrypoint, calls, downloaded = self._watchlist_with_cache("miss", None)
+
+        self.assertEqual(calls["download"], 1)
+        self.assertEqual(
+            calls["put"], [(entrypoint.WATCHLIST_URL, [downloaded], "watchlist")]
+        )
+        self.assertEqual(calls["listing"], [downloaded])
+
     def test_hub_items_use_bulk_database_lookup_and_direct_detail_routes(self):
         entrypoint, directory_calls, _, mass_api_calls = load_entrypoint()
         xml = provider_metadata()

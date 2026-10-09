@@ -81,7 +81,12 @@ CACHE_POLICIES = {
     "catalog": {"fresh": 6 * 60 * 60},
     "hub": {"fresh": 2 * 60 * 60},
     "detail": {"fresh": 24 * 60 * 60},
+    # The Watchlist widget reloads after every library sync. Serve it from
+    # cache briefly and revalidate in the background; a record older than
+    # "stale" is a miss so a long-idle Kodi never shows an old Watchlist.
+    "watchlist": {"fresh": 60, "stale": 60 * 60},
 }
+WATCHLIST_URL = "https://discover.provider.plex.tv/library/sections/watchlist/all"
 REFRESH_HOSTS = {
     "catalog": (
         getattr(plex_discover, "DISCOVER_PROVIDER_HOST", "discover.provider.plex.tv"),
@@ -91,6 +96,9 @@ REFRESH_HOSTS = {
     ),
     "detail": (
         getattr(plex_discover, "METADATA_PROVIDER_HOST", "metadata.provider.plex.tv"),
+    ),
+    "watchlist": (
+        getattr(plex_discover, "DISCOVER_PROVIDER_HOST", "discover.provider.plex.tv"),
     ),
 }
 
@@ -577,6 +585,13 @@ def read_xml(url, cache_kind, item_key=None):
         freshness = _record_freshness(filename, record, policy["fresh"])
         if freshness == CACHE_MISS:
             return CACHE_MISS, None
+        if (
+            freshness == CACHE_STALE
+            and policy.get("stale") is not None
+            and _freshness(record.get("stored_at"), policy["stale"], policy["stale"])
+            != CACHE_FRESH
+        ):
+            return CACHE_MISS, None
         xmls = _decode_xmls(record.get("payload"))
         if xmls is None:
             return CACHE_MISS, None
@@ -674,6 +689,32 @@ def put_xml(url, xmls, cache_kind=None, account_hash=None):
     except Exception as err:
         LOG.debug("Could not store Plex Discover cache for %s: %s", url, err)
         return False
+
+
+def drop_xml(url, account_hash=None):
+    """Forget one cached source (both the Kodi window copy and the record)."""
+    account_hash = active_account_hash() if account_hash is None else account_hash
+    if account_hash is None:
+        return False
+    _clear_l1(_l1_key(url, account_hash))
+    filename = _source_path(url, account_hash)
+    if filename is None:
+        return False
+    try:
+        with _static_lock() as locked:
+            if not locked:
+                return False
+            if os.path.exists(filename):
+                return _safe_remove(filename)
+            return True
+    except Exception as err:
+        LOG.debug("Could not drop Plex Discover cache for %s: %s", url, err)
+        return False
+
+
+def invalidate_watchlist(account_hash=None):
+    """Drop the cached Watchlist listing after a Watchlist mutation."""
+    return drop_xml(WATCHLIST_URL, account_hash)
 
 
 def _overlay_properties(rating_key, account_hash=None):
@@ -919,6 +960,8 @@ def _valid_refresh_url(url, cache_kind):
         return parsed.path == "/hubs/sections/home"
     if cache_kind == "hub":
         return parsed.path.startswith("/hubs/sections/home/")
+    if cache_kind == "watchlist":
+        return url == WATCHLIST_URL
     if cache_kind == "detail":
         rating_key = parsed.path.rsplit("/", 1)[-1]
         return parsed.path.startswith("/library/metadata/") and (

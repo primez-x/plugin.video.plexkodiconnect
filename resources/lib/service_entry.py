@@ -36,7 +36,12 @@ def _discover_tmdb_ratingkey(tmdb_id, tmdb_type):
 
 
 def _watchlist_change(api_type, rating_key):
-    return watchlist.change(api_type, rating_key)
+    try:
+        return watchlist.change(api_type, rating_key)
+    finally:
+        # Even an unverified mutation may have reached plex.tv; never serve
+        # the cached pre-change Watchlist listing afterwards.
+        discover_cache.invalidate_watchlist()
 
 
 def _watchlist_notification(message):
@@ -662,9 +667,14 @@ class Service(object):
                 return False
             from . import entrypoint
 
-            xmls = entrypoint._download_provider_xmls(
-                request["url"], discover_cache.refresh_hosts(request["kind"])
-            )
+            if request["kind"] == "watchlist":
+                # The Watchlist is paged; refresh every page as one source.
+                watchlist_xml = entrypoint._download_watchlist()
+                xmls = [watchlist_xml] if watchlist_xml is not None else []
+            else:
+                xmls = entrypoint._download_provider_xmls(
+                    request["url"], discover_cache.refresh_hosts(request["kind"])
+                )
             if not xmls or not discover_cache.account_matches(account_hash):
                 discover_cache.finish_refresh(request, False)
                 return False

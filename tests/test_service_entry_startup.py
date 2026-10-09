@@ -115,6 +115,67 @@ class ServiceEntryStartupTests(unittest.TestCase):
 
         self.assertEqual(completed, [False])
 
+    def test_watchlist_refresh_downloads_every_page_as_one_source(self):
+        service_entry = load_service_entry()
+        service = object.__new__(service_entry.Service)
+        completed = []
+        stored = []
+        watchlist_xml = object()
+        service_entry.app.ACCOUNT = types.SimpleNamespace(authenticated=True)
+        service_entry.discover_cache = types.SimpleNamespace(
+            account_matches=lambda account_hash: account_hash == "account-a",
+            refresh_hosts=lambda cache_kind: ("discover.provider.plex.tv",),
+            read_xml=lambda *args: ("stale", [object()]),
+            CACHE_FRESH="fresh",
+            put_xml=lambda *args, **kwargs: stored.append(args) or True,
+            finish_refresh=lambda request, success: completed.append(success) or True,
+        )
+        entrypoint = types.ModuleType('resources.lib.entrypoint')
+        entrypoint._download_watchlist = lambda: watchlist_xml
+
+        def unexpected(*args):
+            raise AssertionError("watchlist must use the paged downloader")
+
+        entrypoint._download_provider_xmls = unexpected
+        resources_lib = sys.modules['resources.lib']
+        previous_module = sys.modules.get('resources.lib.entrypoint')
+        previous_attribute = getattr(resources_lib, 'entrypoint', None)
+        sys.modules['resources.lib.entrypoint'] = entrypoint
+        resources_lib.entrypoint = entrypoint
+        url = 'https://discover.provider.plex.tv/library/sections/watchlist/all'
+        try:
+            self.assertTrue(
+                service._refresh_discover_cache(
+                    {'url': url, 'kind': 'watchlist', '_account_hash': 'account-a'}
+                )
+            )
+        finally:
+            if previous_module is None:
+                sys.modules.pop('resources.lib.entrypoint', None)
+            else:
+                sys.modules['resources.lib.entrypoint'] = previous_module
+            if previous_attribute is None:
+                delattr(resources_lib, 'entrypoint')
+            else:
+                resources_lib.entrypoint = previous_attribute
+
+        self.assertEqual(stored, [(url, [watchlist_xml], 'watchlist')])
+        self.assertEqual(completed, [True])
+
+    def test_watchlist_change_invalidates_the_cached_listing(self):
+        service_entry = load_service_entry()
+        calls = []
+        service_entry.watchlist = types.SimpleNamespace(
+            change=lambda api_type, rating_key: calls.append('change') or (True, True)
+        )
+        service_entry.discover_cache = types.SimpleNamespace(
+            invalidate_watchlist=lambda: calls.append('invalidate')
+        )
+
+        self.assertEqual(
+            service_entry._watchlist_change('addToWatchlist', 'abc'), (True, True))
+        self.assertEqual(calls, ['change', 'invalidate'])
+
     def test_fresh_prefetch_snapshot_is_acknowledged_without_cloud_io(self):
         service_entry = load_service_entry()
         service = object.__new__(service_entry.Service)
