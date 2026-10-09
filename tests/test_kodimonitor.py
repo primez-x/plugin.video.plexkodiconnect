@@ -514,6 +514,52 @@ class KodiMonitorTests(unittest.TestCase):
             'RecoverStrandedPlaybackWindow',
         )
 
+    def test_playback_cleanup_keeps_the_pending_upnext_outgoing_item(self):
+        kodimonitor, _, _, _ = load_kodimonitor()
+        outgoing = SimpleNamespace(
+            kodi_id=8950,
+            kodi_type='episode',
+            plex_id='16390',
+            pkc_playback_generation=4,
+        )
+        kodimonitor.app.PLAYSTATE.item = outgoing
+        kodimonitor.app.PLAYSTATE.expected_upnext_handoff = {
+            'token': 'verified-token',
+            'previous_kodi_id': 8950,
+            'previous_kodi_type': 'episode',
+            'previous_plex_id': '16390',
+            'previous_generation': 4,
+            'next_plex_id': '16391',
+        }
+        kodimonitor.monotonic = lambda: 50.0
+
+        kodimonitor._playback_cleanup(ended=True)
+
+        self.assertIsNone(kodimonitor.app.PLAYSTATE.item)
+        self.assertEqual(kodimonitor.app.PLAYSTATE.ended_upnext_outgoing,
+                         (outgoing, 50.0))
+        self.assertIs(
+            kodimonitor._upnext_outgoing_item(
+                60.0, kodimonitor.UPNEXT_HANDOFF_ENDED_SECONDS),
+            outgoing)
+        self.assertIsNone(
+            kodimonitor._upnext_outgoing_item(
+                200.0, kodimonitor.UPNEXT_HANDOFF_ENDED_SECONDS))
+
+    def test_playback_cleanup_forgets_items_without_a_pending_handoff(self):
+        kodimonitor, _, _, _ = load_kodimonitor()
+        kodimonitor.app.PLAYSTATE.item = SimpleNamespace(
+            kodi_id=8950,
+            kodi_type='episode',
+            plex_id='16390',
+            pkc_playback_generation=4,
+        )
+        kodimonitor.app.PLAYSTATE.expected_upnext_handoff = None
+
+        kodimonitor._playback_cleanup(ended=True)
+
+        self.assertIsNone(kodimonitor.app.PLAYSTATE.ended_upnext_outgoing)
+
     def test_manual_watch_update_propagates_during_unrelated_transition(self):
         kodimonitor, _, _, backgroundthread = load_kodimonitor()
         install_onupdate_databases(kodimonitor)

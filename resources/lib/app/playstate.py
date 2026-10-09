@@ -53,6 +53,11 @@ class PlayState(object):
 
         # Currently playing PKC item, a PlaylistItem()
         self.item = None
+        # (PlaylistItem, monotonic time) of the item whose playback just ended
+        # while an Up Next handoff for it was pending. Up Next may only invoke
+        # the next episode after Kodi stopped (e.g. rewatching a watched
+        # episode), when self.item has already been reset
+        self.ended_upnext_outgoing = None
 
         # Was the playback initiated by the user using the Kodi context menu?
         self.context_menu_play = False

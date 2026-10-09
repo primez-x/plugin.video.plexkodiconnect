@@ -34,6 +34,8 @@ ADDITIONAL_WAIT_BEFORE_INIT_STREAMS = 10
 UPNEXT_HANDOFF_TOKEN_SECONDS = 7200.0
 UPNEXT_HANDOFF_START_SECONDS = 120.0
 UPNEXT_HANDOFF_SUPPRESSION_SECONDS = 30.0
+# How long after the outgoing episode ended Up Next may still hand off from it
+UPNEXT_HANDOFF_ENDED_SECONDS = 60.0
 # Completed handoff fences outlive the transition (timeouts and unrelated
 # playback), but not forever: they expire with the handoff token lifetime,
 # are dropped when the same item is played again, and are bounded in number.
@@ -136,6 +138,21 @@ def _queue_pms_playstate(plex_id, state):
     return task
 
 
+def _upnext_outgoing_item(now, max_age):
+    """
+    The item an Up Next handoff hands off from: the playing item, or the one
+    that ended at most max_age seconds ago while a handoff was pending (Up
+    Next may start the next episode only after Kodi stopped)
+    """
+    item = getattr(app.PLAYSTATE, 'item', None)
+    if item is not None:
+        return item
+    ended = getattr(app.PLAYSTATE, 'ended_upnext_outgoing', None)
+    if ended and 0 <= now - ended[1] <= max_age:
+        return ended[0]
+    return None
+
+
 def _activate_upnext_handoff(next_item, now=None):
     """Arm delayed-update protection for a proven Up Next invocation."""
     global _ACTIVE_UPNEXT_HANDOFF
@@ -174,6 +191,7 @@ def _activate_upnext_handoff(next_item, now=None):
             _upnext_handoff_key(expected))
     app.PLAYSTATE.expected_upnext_handoff = None
     app.PLAYSTATE.started_upnext_handoff = None
+    app.PLAYSTATE.ended_upnext_outgoing = None
     # Every playback start invalidates protection from an older transition.
     _ACTIVE_UPNEXT_HANDOFF = None
     if not expected or not started or not next_item:
@@ -257,7 +275,8 @@ def _expected_upnext_handoff_for_update(kodi_id, kodi_type, now):
     # the resolver replacing PLAYSTATE.item.
     started = getattr(app.PLAYSTATE, 'started_upnext_handoff', None)
     if started is None:
-        outgoing = getattr(app.PLAYSTATE, 'item', None)
+        outgoing = _upnext_outgoing_item(
+            now, UPNEXT_HANDOFF_ENDED_SECONDS)
         if not outgoing or (outgoing.kodi_id, outgoing.kodi_type) != \
                 (expected.get('previous_kodi_id'),
                  expected.get('previous_kodi_type')) or \
@@ -958,6 +977,20 @@ def _playback_cleanup(ended=False):
         app.PLAYSTATE.player_states[playerid] = copy.deepcopy(app.PLAYSTATE.template)
     # As all playback has halted, reset the players that have been active
     app.PLAYSTATE.active_players = set()
+    item = app.PLAYSTATE.item
+    expected = getattr(app.PLAYSTATE, 'expected_upnext_handoff', None)
+    if item is not None and expected and \
+            (item.kodi_id, item.kodi_type) == (
+                expected.get('previous_kodi_id'),
+                expected.get('previous_kodi_type')) and \
+            str(item.plex_id) == str(expected.get('previous_plex_id')) and \
+            getattr(item, 'pkc_playback_generation', None) == \
+            expected.get('previous_generation'):
+        # Up Next may start the next episode only now (e.g. rewatching an
+        # already watched episode); keep the outgoing identity for its token
+        app.PLAYSTATE.ended_upnext_outgoing = (item, monotonic())
+    else:
+        app.PLAYSTATE.ended_upnext_outgoing = None
     app.PLAYSTATE.item = None
     utils.delete_temporary_subtitles()
     backgroundthread.BGThreader.addTask(RecoverStrandedPlaybackWindow())

@@ -9,8 +9,25 @@ from .contextmenu import menu
 ###############################################################################
 
 LOG = getLogger('PLEX.playback_starter')
+# Keep in sync with kodimonitor.UPNEXT_HANDOFF_ENDED_SECONDS
+UPNEXT_HANDOFF_ENDED_SECONDS = 60.0
 
 ###############################################################################
+
+
+def _upnext_outgoing_item(now, max_age):
+    """
+    The item an Up Next handoff hands off from: the playing item, or the one
+    that ended at most max_age seconds ago while a handoff was pending (Up
+    Next may start the next episode only after Kodi stopped)
+    """
+    item = getattr(app.PLAYSTATE, 'item', None)
+    if item is not None:
+        return item
+    ended = getattr(app.PLAYSTATE, 'ended_upnext_outgoing', None)
+    if ended and 0 <= now - ended[1] <= max_age:
+        return ended[0]
+    return None
 
 
 class PlaybackTask(backgroundthread.Task):
@@ -42,7 +59,9 @@ class PlaybackTask(backgroundthread.Task):
             with app.APP.lock_playqueues:
                 expected = getattr(
                     app.PLAYSTATE, 'expected_upnext_handoff', None)
-                outgoing = getattr(app.PLAYSTATE, 'item', None)
+                # Up Next may invoke us after the outgoing episode ended
+                outgoing = _upnext_outgoing_item(
+                    monotonic(), UPNEXT_HANDOFF_ENDED_SECONDS)
                 if upnext_token and expected and outgoing and \
                         upnext_token == expected.get('token') and \
                         str(params.get('plex_id')) == str(

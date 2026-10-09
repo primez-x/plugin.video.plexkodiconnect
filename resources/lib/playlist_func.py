@@ -5,6 +5,8 @@ Collection of functions associated with Kodi and Plex playlists and playqueues
 """
 from logging import getLogger
 
+import xbmc
+
 from .plex_api import API
 from .plex_db import PlexDB
 from . import plex_functions as PF
@@ -20,6 +22,12 @@ from .subtitles import accessible_plex_subtitles
 
 
 LOG = getLogger('PLEX.playlist_func')
+
+
+def smart_subtitles_enabled():
+    """Whether service.smartsubtitles owns the subtitle choice on start"""
+    return xbmc.getCondVisibility(
+        'System.AddonIsEnabled(service.smartsubtitles)')
 
 
 class PlaylistItem(object):
@@ -259,7 +267,13 @@ class PlaylistItem(object):
         if utils.settings('audioStreamPick') == '0':
             self.switch_to_plex_stream('audio')
         if utils.settings('subtitleStreamPick') == '0':
-            self.switch_to_plex_stream('subtitle')
+            if smart_subtitles_enabled():
+                # service.smartsubtitles picks subtitles on AV start; applying
+                # the PMS choice ~6s later would undo its selection
+                LOG.debug('Not switching to the Plex subtitle: '
+                          'service.smartsubtitles is enabled')
+            else:
+                self.switch_to_plex_stream('subtitle')
         self.streams_initialized = True
         LOG.debug('Successfully initialized streams')
 

@@ -124,6 +124,47 @@ class PlaybackStarterTests(unittest.TestCase):
             app.PLAYSTATE.started_upnext_handoff['created_at'], float)
         self.assertEqual(calls[0]['plex_id'], '16391')
 
+    def _ended_outgoing_case(self, ended_age):
+        playback_starter, app, _ = load_playback_starter()
+        outgoing = SimpleNamespace(
+            kodi_id=8950,
+            kodi_type='episode',
+            plex_id='16390',
+            pkc_playback_generation=4,
+        )
+        # Kodi already stopped: PKC's cleanup reset the playing item
+        app.PLAYSTATE.item = None
+        app.PLAYSTATE.ended_upnext_outgoing = (
+            outgoing, playback_starter.monotonic() - ended_age)
+        app.PLAYSTATE.playback_generation = 4
+        app.PLAYSTATE.expected_upnext_handoff = {
+            'token': 'verified-token',
+            'previous_kodi_id': 8950,
+            'previous_kodi_type': 'episode',
+            'previous_plex_id': '16390',
+            'previous_generation': 4,
+            'next_plex_id': '16391',
+        }
+        task = playback_starter.PlaybackTask(
+            'plugin://plugin.video.plexkodiconnect?'
+            'mode=play&plex_id=16391&plex_type=episode&handle=-1&'
+            'pkc_upnext=verified-token')
+        task.run()
+        return app
+
+    def test_upnext_invocation_after_the_outgoing_episode_ended(self):
+        app = self._ended_outgoing_case(ended_age=2)
+
+        self.assertEqual(
+            app.PLAYSTATE.started_upnext_handoff['previous_plex_id'], '16390')
+        self.assertEqual(app.PLAYSTATE.started_upnext_handoff['token'],
+                         'verified-token')
+
+    def test_upnext_invocation_long_after_the_end_is_not_a_handoff(self):
+        app = self._ended_outgoing_case(ended_age=600)
+
+        self.assertIsNone(app.PLAYSTATE.started_upnext_handoff)
+
     def test_upnext_invocation_rejects_changed_outgoing_playback(self):
         playback_starter, app, _ = load_playback_starter()
         app.PLAYSTATE.item = SimpleNamespace(
