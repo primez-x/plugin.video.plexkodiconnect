@@ -1811,6 +1811,24 @@ class KodiMonitorTests(unittest.TestCase):
         self.assertFalse(unwatched_thread.is_alive())
         self.assertEqual(calls, ['watched', 'unwatched'])
 
+    def test_pms_playstate_bookkeeping_is_dropped_after_latest_send(self):
+        kodimonitor, _, _, _ = load_kodimonitor()
+        calls = []
+        kodimonitor.PF.scrobble = lambda plex_id, state: calls.append(state)
+
+        stale = kodimonitor._queue_pms_playstate('16390', 'watched')
+        latest = kodimonitor._queue_pms_playstate('16390', 'unwatched')
+        latest.run()
+        self.assertEqual(kodimonitor._PMS_PLAYSTATE_REVISIONS, {})
+        self.assertEqual(kodimonitor._PMS_PLAYSTATE_ITEM_LOCKS, {})
+        requeued = kodimonitor._queue_pms_playstate('16390', 'watched')
+        # The superseded task must never match the requeued revision.
+        stale.run()
+        requeued.run()
+
+        self.assertEqual(calls, ['unwatched', 'watched'])
+        self.assertEqual(kodimonitor._PMS_PLAYSTATE_REVISIONS, {})
+
     def test_transient_restore_metadata_failure_retries(self):
         kodimonitor, _, _, backgroundthread = load_kodimonitor()
         writes = install_onupdate_databases(kodimonitor)

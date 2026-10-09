@@ -67,6 +67,9 @@ _COMPLETED_UPNEXT_HANDOFFS = {}
 _PMS_PLAYSTATE_LOCK = Lock()
 _PMS_PLAYSTATE_REVISIONS = {}
 _PMS_PLAYSTATE_ITEM_LOCKS = {}
+# Revisions are globally unique so per-item bookkeeping can be dropped once
+# the latest queued state was sent without an old task ever matching anew.
+_PMS_PLAYSTATE_NEXT_REVISION = 0
 
 
 class PMSPlaystateTask(backgroundthread.FunctionAsTask):
@@ -88,15 +91,24 @@ class PMSPlaystateTask(backgroundthread.FunctionAsTask):
             with _PMS_PLAYSTATE_LOCK:
                 if _PMS_PLAYSTATE_REVISIONS.get(key) != self.revision:
                     return
-            PF.scrobble(self.plex_id, self.state)
+            try:
+                PF.scrobble(self.plex_id, self.state)
+            finally:
+                with _PMS_PLAYSTATE_LOCK:
+                    if _PMS_PLAYSTATE_REVISIONS.get(key) == self.revision:
+                        # Nothing newer is queued for this item
+                        del _PMS_PLAYSTATE_REVISIONS[key]
+                        _PMS_PLAYSTATE_ITEM_LOCKS.pop(key, None)
 
 
 def _queue_pms_playstate(plex_id, state):
     if not plex_id:
         return None
+    global _PMS_PLAYSTATE_NEXT_REVISION
     key = str(plex_id)
     with _PMS_PLAYSTATE_LOCK:
-        revision = _PMS_PLAYSTATE_REVISIONS.get(key, 0) + 1
+        _PMS_PLAYSTATE_NEXT_REVISION += 1
+        revision = _PMS_PLAYSTATE_NEXT_REVISION
         _PMS_PLAYSTATE_REVISIONS[key] = revision
         _PMS_PLAYSTATE_ITEM_LOCKS.setdefault(key, Lock())
     task = PMSPlaystateTask(plex_id, state, revision)
