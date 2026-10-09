@@ -3,6 +3,8 @@
 """
 plex_api interfaces with all Plex Media Server (and plex.tv) xml responses
 """
+import copy
+
 from .base import Base
 from .artwork import Artwork
 from .file import File
@@ -31,10 +33,16 @@ def mass_api(xml, check_by_guid=False):
         # We extend the xml list with these ids
         new_apis = list()
         with PlexDB(lock=False) as plexdb:
-            for i, api in enumerate(apis):
+            for api in apis:
                 items = api.check_by_guid(plexdb=plexdb)
-                for item in items:
-                    new_api = apis[i]
+                # Keep a pristine copy so every additional match (e.g. movie
+                # editions) gets its own XML element and API instance instead
+                # of all entries pointing at the last match.
+                original_xml = copy.deepcopy(api.xml) if len(items) > 1 \
+                    else None
+                for index, item in enumerate(items):
+                    new_api = api if index == 0 else \
+                        API(copy.deepcopy(original_xml))
                     # Since we cannot simply set the plex_id and type.
                     # This will overwrite a weird "guid ratingKey" that
                     # plex set, originally looking e.g. like

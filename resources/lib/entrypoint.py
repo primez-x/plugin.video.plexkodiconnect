@@ -320,6 +320,34 @@ def show_section(section_index):
         directory_item(label, path)
 
 
+def _watchlist_apis(xml):
+    """
+    Keep every provider Watchlist item, substituting exact GUID library
+    matches (one entry per local match, e.g. movie editions) for items synced
+    to Kodi. Provider-only items keep their opaque provider ratingKey.
+    """
+    provider_items = list(xml)
+    local_apis_by_guid = {}
+    for local_api in mass_api(copy.deepcopy(provider_items), check_by_guid=True):
+        guid = local_api.xml.get("guid")
+        if guid:
+            local_apis_by_guid.setdefault(guid, []).append(local_api)
+    apis = []
+    seen_guids = set()
+    for provider_api in mass_api(provider_items):
+        guid = provider_api.xml.get("guid")
+        if guid:
+            if guid in seen_guids:
+                continue
+            seen_guids.add(guid)
+        local_apis = local_apis_by_guid.get(guid) if guid else None
+        if local_apis:
+            apis.extend(local_apis)
+        else:
+            apis.append(provider_api)
+    return apis
+
+
 def show_listing(xml, plex_type=None, section_id=None, synched=True, key=None):
     """
     Pass synched=False if the items have not been synched to the Kodi DB
@@ -385,7 +413,10 @@ def show_listing(xml, plex_type=None, section_id=None, synched=True, key=None):
         # Need to chain keys for navigation
         widgets.KEY = key
     # Process all items to show
-    all_apis = mass_api(xml, check_by_guid=key == "watchlist")
+    if key == "watchlist":
+        all_apis = _watchlist_apis(xml)
+    else:
+        all_apis = mass_api(xml)
 
     if key == "watchlist":
         # filter out items in the wrong section id when it's specified
@@ -405,6 +436,20 @@ def show_listing(xml, plex_type=None, section_id=None, synched=True, key=None):
             rk = api.xml.get("ratingKey")
             if rk:
                 item.setdefault("extraproperties", {})["ratingKey"] = rk
+            rating_key = plex_discover.normalize_rating_key(rk)
+            if rating_key is not None:
+                # Provider-only items cannot play through PKC; open their
+                # native details exactly like provider-only Discover tiles.
+                item["file"] = utils.extend_url(
+                    "plugin://%s" % v.ADDON_ID,
+                    {
+                        "mode": "discover_detail",
+                        "rating_key": rating_key,
+                        "plex_type": api.plex_type,
+                    },
+                )
+                item["isFolder"] = False
+                item["IsPlayable"] = "false"
         all_items.append(item)
     all_items = [widgets.prepare_listitem(item, key) for item in all_items]
     # fill that listing...
