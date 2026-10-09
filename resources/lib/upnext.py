@@ -19,6 +19,8 @@ from . import variables as v
 from . import plex_functions as PF
 from . import utils
 from .plex_api import API
+from .plex_db import PlexDB
+from .kodi_db import KodiVideoDB
 
 LOG = getLogger('PLEX.upnext')
 UPNEXT_ADDON_ID = 'service.upnext'
@@ -101,11 +103,158 @@ def _episode_info(api):
     }
 
 
-def _get_next_episode_api(current_api):
+# Sentinel: a targeted lookup could not answer reliably; try the next one.
+_UNKNOWN = object()
+# Sentinel: the plex_id order and the season/episode order of the show
+# disagree, so only the show's allLeaves response is authoritative.
+_AMBIGUOUS = object()
+
+
+def _as_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _strictly_increasing(values):
+    return all(earlier < later for earlier, later in zip(values, values[1:]))
+
+
+def _next_episode_from_local_db(current_api):
     """
-    Returns the API object for the next episode after the current one.
-    Returns None if something went wrong or there is no next episode.
+    Find the next episode with PKC's synced databases and fetch only that item.
+
+    PMS returns allLeaves in a single order we cannot observe locally, so only
+    answer when the plex_id order and the season/episode order of the synced
+    episodes agree on the successor. Anything ambiguous (including "no next
+    episode", which a not-yet-synced new episode could contradict) is left to
+    the network lookups.
     """
+    show_id = current_api.grandparent_id()
+    current_id = current_api.plex_id
+    if show_id is None or current_id is None:
+        return _UNKNOWN
+    with PlexDB(lock=False) as plexdb:
+        current = plexdb.episode(current_id)
+        if not current or current.get('grandparent_id') is None:
+            return _UNKNOWN
+        plex_by_kodi = {
+            episode['kodi_id']: episode['plex_id']
+            for episode in plexdb.episode_by_show(show_id)
+            if episode and episode['kodi_id'] is not None
+        }
+    with KodiVideoDB(lock=False) as kodidb:
+        rows = kodidb.episode_numbers_by_show(current['grandparent_id'])
+    if not rows or len(rows) != len(plex_by_kodi):
+        return _UNKNOWN
+    numbered = []
+    for kodi_id, season, episode in rows:
+        plex_id = plex_by_kodi.get(kodi_id)
+        season, episode = _as_int(season), _as_int(episode)
+        if plex_id is None or season is None or episode is None:
+            return _UNKNOWN
+        numbered.append(((season, episode), int(plex_id)))
+    by_number = sorted(numbered)
+    by_id = sorted(numbered, key=lambda entry: entry[1])
+    if not _strictly_increasing([entry[0] for entry in by_number]) or \
+            not _strictly_increasing([entry[1] for entry in by_id]):
+        return _UNKNOWN
+    current_number = (current_api.season_number(), current_api.index())
+    try:
+        number_pos = by_number.index((current_number, int(current_id)))
+        id_pos = by_id.index((current_number, int(current_id)))
+    except ValueError:
+        # Current item missing or its numbering changed since the last sync
+        return _UNKNOWN
+    if number_pos + 1 >= len(by_number) or id_pos + 1 >= len(by_id):
+        return _UNKNOWN
+    if by_number[number_pos + 1] != by_id[id_pos + 1]:
+        return _AMBIGUOUS
+    next_number, next_id = by_number[number_pos + 1]
+    api = _fetch_episode(next_id, show_id)
+    if api is _UNKNOWN or (api.season_number(), api.index()) != next_number:
+        return _UNKNOWN
+    return api
+
+
+def _ordered_children(plex_id, exclude_all_leaves=False, check_ids=True):
+    """
+    Download a Plex item's children and return them only if their order is
+    unambiguous (ascending by index and, with check_ids, by ratingKey alike),
+    else None.
+    """
+    xml = PF.metadata_children(plex_id, exclude_all_leaves)
+    try:
+        children = list(xml)
+    except TypeError:
+        return None
+    indices = [_as_int(child.get('index')) for child in children]
+    ids = [_as_int(child.get('ratingKey')) for child in children]
+    if None in indices or None in ids or \
+            not _strictly_increasing(indices) or \
+            (check_ids and not _strictly_increasing(ids)):
+        return None
+    return children
+
+
+def _fetch_episode(plex_id, show_id):
+    """Fetch one episode's full metadata, as allLeaves would have listed it."""
+    xml = PF.GetPlexMetadata(plex_id)
+    try:
+        api = API(xml[0])
+    except (TypeError, IndexError, AttributeError):
+        return _UNKNOWN
+    if api.plex_id != plex_id or api.grandparent_id() != show_id:
+        return _UNKNOWN
+    return api
+
+
+def _next_episode_from_seasons(current_api):
+    """
+    Find the next episode from the current season's children, then the
+    following seasons', instead of downloading the entire show.
+    """
+    season_id = current_api.season_id()
+    show_id = current_api.grandparent_id()
+    current_id = current_api.plex_id
+    if season_id is None or show_id is None or current_id is None:
+        return _UNKNOWN
+    episodes = _ordered_children(season_id)
+    if episodes is None:
+        return _UNKNOWN
+    ids = [_as_int(episode.get('ratingKey')) for episode in episodes]
+    try:
+        position = ids.index(current_id)
+    except ValueError:
+        return _UNKNOWN
+    if position + 1 < len(episodes):
+        return _fetch_episode(ids[position + 1], show_id)
+    seasons = _ordered_children(
+        show_id, exclude_all_leaves=True, check_ids=False)
+    if seasons is None:
+        return _UNKNOWN
+    season_ids = [_as_int(season.get('ratingKey')) for season in seasons]
+    try:
+        season_position = season_ids.index(season_id)
+    except ValueError:
+        return _UNKNOWN
+    for next_season_id in season_ids[season_position + 1:]:
+        next_episodes = _ordered_children(next_season_id)
+        if next_episodes is None:
+            return _UNKNOWN
+        if next_episodes:
+            next_id = _as_int(next_episodes[0].get('ratingKey'))
+            if next_id <= current_id:
+                # Season order and plex_id order disagree
+                return _UNKNOWN
+            return _fetch_episode(next_id, show_id)
+    LOG.debug('No next episode - this was the last one')
+    return None
+
+
+def _next_episode_from_all_leaves(current_api):
+    """Original lookup: download every episode of the show."""
     xml = PF.show_episodes(current_api.grandparent_id())
     if xml is None:
         return None
@@ -124,6 +273,27 @@ def _get_next_episode_api(current_api):
         # Was the last episode
         LOG.debug('No next episode - this was the last one')
         return None
+
+
+def _get_next_episode_api(current_api):
+    """
+    Returns the API object for the next episode after the current one.
+    Returns None if something went wrong or there is no next episode.
+
+    Tries the synced databases plus one metadata request first, then the
+    current/next season's children, and only then the show's allLeaves.
+    """
+    for lookup in (_next_episode_from_local_db, _next_episode_from_seasons):
+        try:
+            result = lookup(current_api)
+        except Exception:
+            LOG.exception('Up Next lookup %s failed', lookup.__name__)
+            continue
+        if result is _AMBIGUOUS:
+            break
+        if result is not _UNKNOWN:
+            return result
+    return _next_episode_from_all_leaves(current_api)
 
 
 def _upnext_signal(data):

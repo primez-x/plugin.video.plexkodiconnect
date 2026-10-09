@@ -1049,6 +1049,22 @@ def GetUserArtworkURL(username):
     return url
 
 
+def metadata_children(plex_id, exclude_all_leaves=False):
+    """
+    Returns the direct children of a Plex item (e.g. the episodes of a season
+    or the seasons of a show) without streams, extras or file checks - a far
+    smaller response than a show's allLeaves.
+    """
+    url = "{server}/library/metadata/%s/children" % plex_id
+    arguments = {
+        'checkFiles': 0,
+        'skipRefresh': 1,
+    }
+    if exclude_all_leaves:
+        arguments['excludeAllLeaves'] = 1
+    return DownloadChunks(utils.extend_url(url, arguments))
+
+
 def show_episodes(plex_id):
     """
     Returns all episodes for the tv show with plex_id

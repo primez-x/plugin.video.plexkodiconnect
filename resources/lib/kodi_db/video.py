@@ -923,6 +923,16 @@ class KodiVideoDB(common.KodiDBBase):
         self.cursor.execute('SELECT COALESCE(MAX(idEpisode), 0) FROM episode')
         return self.cursor.fetchone()[0] + 1
 
+    def episode_numbers_by_show(self, kodi_show_id):
+        """
+        Returns a list of (idEpisode, season number, episode number) tuples
+        for every episode of the Kodi TV show (raw c12/c13 values).
+        """
+        self.cursor.execute(
+            'SELECT idEpisode, c12, c13 FROM episode WHERE idShow = ?',
+            (kodi_show_id, ))
+        return self.cursor.fetchall()
+
     @db.catch_operationalerrors
     def add_episode(self, *args):
         self.cursor.execute(

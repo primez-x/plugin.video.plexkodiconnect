@@ -2,6 +2,7 @@ import importlib
 import sys
 import types
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
@@ -24,7 +25,9 @@ def load_upnext(pkc_enabled='true', system_enabled=True,
             'resources.lib.utils',
             'resources.lib.variables',
             'resources.lib.plex_functions',
-            'resources.lib.plex_api'):
+            'resources.lib.plex_api',
+            'resources.lib.plex_db',
+            'resources.lib.kodi_db'):
         sys.modules.pop(module_name, None)
 
     xbmc = types.ModuleType('xbmc')
@@ -68,6 +71,14 @@ def load_upnext(pkc_enabled='true', system_enabled=True,
     plex_api = types.ModuleType('resources.lib.plex_api')
     plex_api.API = object
     sys.modules['resources.lib.plex_api'] = plex_api
+
+    plex_db = types.ModuleType('resources.lib.plex_db')
+    plex_db.PlexDB = object
+    sys.modules['resources.lib.plex_db'] = plex_db
+
+    kodi_db = types.ModuleType('resources.lib.kodi_db')
+    kodi_db.KodiVideoDB = object
+    sys.modules['resources.lib.kodi_db'] = kodi_db
 
     return importlib.import_module('resources.lib.upnext')
 
@@ -234,6 +245,189 @@ class UpNextCreditTimingTests(unittest.TestCase):
         self.assertTrue(upnext.send_upnext_signal(current, None))
         self.assertNotIn('notification_time', captured[0])
         self.assertNotIn('notification_duration', captured[0])
+
+
+class FakeEpisodeAPI(object):
+    """Mirrors the plex_api.API accessors the next-episode lookup uses."""
+    def __init__(self, xml):
+        self.xml = xml
+
+    @staticmethod
+    def _int(value):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @property
+    def plex_id(self):
+        return self._int(self.xml.get('ratingKey'))
+
+    def grandparent_id(self):
+        return self._int(self.xml.get('grandparentRatingKey'))
+
+    def season_id(self):
+        return self._int(self.xml.get('parentRatingKey'))
+
+    def season_number(self):
+        return self._int(self.xml.get('parentIndex'))
+
+    def index(self):
+        return self._int(self.xml.get('index'))
+
+    def grandparent_title(self):
+        return 'Show'
+
+
+def episode_xml(plex_id, season_id, season, index, show_id=100):
+    return ET.Element('Video', ratingKey=str(plex_id),
+                      parentRatingKey=str(season_id),
+                      grandparentRatingKey=str(show_id),
+                      parentIndex=str(season), index=str(index))
+
+
+def container(*children):
+    root = ET.Element('MediaContainer')
+    root.extend(children)
+    return root
+
+
+# Show 100: specials season 10 (S0E1 = 1000), season 11 (S1E1-2 = 1001,
+# 1002), season 12 (S2E1 = 1003). Kodi show id 7, Kodi episode ids 50+.
+EPISODES = (
+    (1000, 10, 0, 1),
+    (1001, 11, 1, 1),
+    (1002, 11, 1, 2),
+    (1003, 12, 2, 1),
+)
+
+
+class NextEpisodeLookupTests(unittest.TestCase):
+    def load(self, episodes=EPISODES, kodi_numbers=None, synced=True):
+        upnext = load_upnext()
+        upnext.API = FakeEpisodeAPI
+        calls = {'metadata': [], 'children': [], 'all_leaves': 0}
+        by_id = {plex_id: (season_id, season, index)
+                 for plex_id, season_id, season, index in episodes}
+
+        def metadata(plex_id):
+            calls['metadata'].append(plex_id)
+            season_id, season, index = by_id[int(plex_id)]
+            return container(episode_xml(plex_id, season_id, season, index))
+
+        def children(plex_id, exclude_all_leaves=False):
+            calls['children'].append(plex_id)
+            if plex_id == 100:
+                seasons = sorted({(season, season_id) for _, season_id, season, _
+                                  in episodes})
+                return container(*[
+                    ET.Element('Directory', ratingKey=str(season_id),
+                               index=str(season))
+                    for season, season_id in seasons])
+            return container(*[
+                episode_xml(pid, sid, season, index)
+                for pid, sid, season, index in episodes if sid == plex_id])
+
+        def all_leaves(show_id):
+            calls['all_leaves'] += 1
+            return container(*[episode_xml(*episode) for episode in episodes])
+
+        upnext.PF.GetPlexMetadata = metadata
+        upnext.PF.metadata_children = children
+        upnext.PF.show_episodes = all_leaves
+
+        numbers = kodi_numbers or {
+            50 + offset: (season, index)
+            for offset, (_, _, season, index) in enumerate(episodes)}
+        kodi_ids = {plex_id: 50 + offset
+                    for offset, (plex_id, _, _, _) in enumerate(episodes)}
+
+        class FakePlexDB(object):
+            def __init__(self, lock=False):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def episode(self, plex_id):
+                if not synced or plex_id not in kodi_ids:
+                    return None
+                return {'plex_id': plex_id, 'grandparent_id': 7,
+                        'kodi_id': kodi_ids[plex_id]}
+
+            def episode_by_show(self, show_id):
+                return iter([{'plex_id': plex_id, 'kodi_id': kodi_id}
+                             for plex_id, kodi_id in kodi_ids.items()]
+                            if synced else [])
+
+        class FakeKodiVideoDB(FakePlexDB):
+            def episode_numbers_by_show(self, kodi_show_id):
+                return [(kodi_id, str(season), str(index))
+                        for kodi_id, (season, index) in numbers.items()]
+
+        upnext.PlexDB = FakePlexDB
+        upnext.KodiVideoDB = FakeKodiVideoDB
+        return upnext, calls
+
+    def current(self, plex_id):
+        for pid, season_id, season, index in EPISODES:
+            if pid == plex_id:
+                return FakeEpisodeAPI(episode_xml(pid, season_id, season, index))
+
+    def test_local_database_answers_with_a_single_metadata_request(self):
+        upnext, calls = self.load()
+
+        api = upnext._get_next_episode_api(self.current(1002))
+
+        self.assertEqual(api.plex_id, 1003)
+        self.assertEqual(calls['metadata'], [1003])
+        self.assertEqual(calls['children'], [])
+        self.assertEqual(calls['all_leaves'], 0)
+
+    def test_specials_lead_into_the_first_season(self):
+        upnext, calls = self.load()
+
+        api = upnext._get_next_episode_api(self.current(1000))
+
+        self.assertEqual(api.plex_id, 1001)
+        self.assertEqual(calls['all_leaves'], 0)
+
+    def test_unsynced_show_uses_season_children_not_all_leaves(self):
+        upnext, calls = self.load(synced=False)
+
+        within = upnext._get_next_episode_api(self.current(1001))
+        across = upnext._get_next_episode_api(self.current(1002))
+
+        self.assertEqual(within.plex_id, 1002)
+        self.assertEqual(across.plex_id, 1003)
+        self.assertEqual(calls['children'], [11, 11, 100, 12])
+        self.assertEqual(calls['all_leaves'], 0)
+
+    def test_last_episode_is_confirmed_on_the_server(self):
+        upnext, calls = self.load()
+
+        self.assertIsNone(upnext._get_next_episode_api(self.current(1003)))
+        self.assertEqual(calls['children'], [12, 100])
+        self.assertEqual(calls['all_leaves'], 0)
+
+    def test_disagreeing_orders_fall_back_to_all_leaves(self):
+        # S1E2 was added to the library after S2E1: plex_id order and
+        # season/episode order disagree, so only allLeaves is authoritative.
+        episodes = (
+            (1001, 11, 1, 1),
+            (1005, 11, 1, 2),
+            (1003, 12, 2, 1),
+        )
+        upnext, calls = self.load(episodes=episodes)
+        current = FakeEpisodeAPI(episode_xml(1001, 11, 1, 1))
+
+        api = upnext._get_next_episode_api(current)
+
+        self.assertEqual(calls['all_leaves'], 1)
+        self.assertEqual(api.plex_id, 1005)
 
 
 if __name__ == '__main__':
