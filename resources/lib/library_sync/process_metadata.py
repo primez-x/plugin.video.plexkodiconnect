@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 from logging import getLogger
+import queue
 
 from . import common, sections
 from ..plex_db import PlexDB
@@ -8,6 +9,15 @@ from .. import backgroundthread, app
 LOG = getLogger('PLEX.sync.process_metadata')
 
 COMMIT_TO_DB_EVERY_X_ITEMS = 500
+# Seconds to pause after releasing the DB locks at a full batch so threads
+# waiting for them (e.g. Kodi playstate callbacks) can get a turn
+DB_LOCK_YIELD_SECONDS = 0.01
+# Seconds to keep the DB locks while waiting for the next PMS metadata item.
+# Releasing on every momentarily empty queue would commit after every single
+# item whenever downloads are the bottleneck (e.g. an initial sync)
+QUEUE_WAIT_WITH_DB_LOCKS_SECONDS = 1.0
+# Returned by _get() when no item arrived within its timeout
+_TIMED_OUT = object()
 
 
 class ProcessMetadataThread(common.LibrarySyncMixin,
@@ -49,10 +59,13 @@ class ProcessMetadataThread(common.LibrarySyncMixin,
             LOG.warn('Sync not successful for section %s', self.last_section)
             self.successful = False
 
-    def _get(self):
+    def _get(self, timeout=None):
         item = {'xml': None}
         while item and item['xml'] is None:
-            item = self.processing_queue.get()
+            try:
+                item = self.processing_queue.get(timeout=timeout)
+            except queue.Empty:
+                return _TIMED_OUT
             self.processing_queue.task_done()
         return item
 
@@ -71,6 +84,11 @@ class ProcessMetadataThread(common.LibrarySyncMixin,
                 # We received an entirely new section
                 self.start_section(item['section'])
                 section = item['section']
+            batch_done = False
+            # Entering the context acquires the Plex and Kodi DB locks,
+            # leaving it commits and releases them. Never keep them for an
+            # entire section: other writers (e.g. Kodi playstate callbacks)
+            # would block for all of it
             with section.context(self.current_time) as context:
                 while not self.should_cancel():
                     if item is None or item['section'] != section:
@@ -84,8 +102,17 @@ class ProcessMetadataThread(common.LibrarySyncMixin,
                                        children=item['children'])
                     processed += 1
                     section.count += 1
-                    if processed == COMMIT_TO_DB_EVERY_X_ITEMS:
-                        processed = 0
-                        context.commit()
-                    item = self._get()
+                    if processed >= COMMIT_TO_DB_EVERY_X_ITEMS:
+                        batch_done = True
+                        break
+                    item = self._get(timeout=QUEUE_WAIT_WITH_DB_LOCKS_SECONDS)
+                    if item is _TIMED_OUT:
+                        # Don't wait for PMS metadata downloads while
+                        # holding the DB locks
+                        break
+            if batch_done or item is _TIMED_OUT:
+                if batch_done:
+                    self.sleep(DB_LOCK_YIELD_SECONDS)
+                processed = 0
+                item = self._get()
         self.finish_last_section()

@@ -19,8 +19,13 @@ CACHING_ENABLED = utils.settings('enableTextureCache') == "true"
 
 # Dict keyed by plex_id to avoid O(n) duplicate scans on every incoming message
 WEBSOCKET_MESSAGES = {}
-# Dict to save info for Plex items currently being played somewhere
+# Dict to save info for Plex items currently being played somewhere. Keyed by
+# (sessionKey, plex_id): PMS restarts its sessionKeys after a restart, so a
+# reused sessionKey must never inherit the Kodi ids of a different item
 PLAYSTATE_SESSIONS = {}
+# Sessions are dropped on 'stopped', but a missed stop message must not let
+# the dict grow forever. Least recently updated sessions are evicted first
+MAX_PLAYSTATE_SESSIONS = 50
 
 
 def store_websocket_message(message):
@@ -227,16 +232,46 @@ def store_activity_message(data):
             }
 
 
+def _forget_playstate_session(session_key, plex_id=None):
+    """
+    Drops the cached session(s) for session_key - only the one for plex_id if
+    plex_id is given
+    """
+    for key in [x for x in PLAYSTATE_SESSIONS if x[0] == session_key]:
+        if plex_id is None or key[1] == plex_id:
+            del PLAYSTATE_SESSIONS[key]
+
+
+def _store_playstate_session(session_id, session):
+    """
+    Caches session for session_id = (sessionKey, plex_id). Any other item
+    cached for the same sessionKey is stale (PMS reused the key, e.g. after a
+    PMS restart) and gets dropped. Evicts the least recently updated sessions
+    beyond MAX_PLAYSTATE_SESSIONS
+    """
+    _forget_playstate_session(session_id[0])
+    PLAYSTATE_SESSIONS[session_id] = session
+    while len(PLAYSTATE_SESSIONS) > MAX_PLAYSTATE_SESSIONS:
+        del PLAYSTATE_SESSIONS[next(iter(PLAYSTATE_SESSIONS))]
+
+
 def process_playing(data):
     """
     Someone (not necessarily the user signed in) is playing something some-
     where
     """
-    global PLAYSTATE_SESSIONS
     for message in data:
         status = message['state']
-        if status == 'buffering' or status == 'stopped':
-            # Drop buffering and stop messages immediately - no value
+        if status == 'stopped':
+            # The playstate was already applied with the last playing/paused
+            # message of this session - only forget the session
+            if 'sessionKey' in message:
+                _forget_playstate_session(
+                    message['sessionKey'],
+                    utils.cast(int, message.get('ratingKey')))
+            continue
+        if status == 'buffering':
+            # Drop buffering messages immediately - no value
             continue
         plex_id = utils.cast(int, message['ratingKey'])
         skip = False
@@ -250,8 +285,13 @@ def process_playing(data):
             LOG.warn('Received malformed message from the PMS: %s', message)
             continue
         session_key = message['sessionKey']
-        # Do we already have a sessionKey stored?
-        if session_key not in PLAYSTATE_SESSIONS:
+        session_id = (session_key, plex_id)
+        # Do we already have this session stored for this very item?
+        session = PLAYSTATE_SESSIONS.pop(session_id, None)
+        if session is not None:
+            # Re-insert to mark it as the most recently updated session
+            PLAYSTATE_SESSIONS[session_id] = session
+        else:
             with PlexDB(lock=False) as plexdb:
                 typus = plexdb.item_by_id(plex_id, plex_type=None)
             if not typus or 'kodi_fileid' not in typus:
@@ -260,7 +300,7 @@ def process_playing(data):
             if utils.settings('plex_serverowned') == 'false':
                 # Not our PMS, we are not authorized to get the sessions
                 # On the bright side, it must be us playing :-)
-                PLAYSTATE_SESSIONS[session_key] = {}
+                session = {}
             else:
                 # PMS is ours - get all current sessions
                 pms_sessions = PF.GetPMSStatus(app.ACCOUNT.plex_token)
@@ -268,18 +308,18 @@ def process_playing(data):
                     LOG.info('Session key %s still unknown! Skip '
                              'playstate update', session_key)
                     continue
-                PLAYSTATE_SESSIONS[session_key] = pms_sessions[session_key]
-                LOG.debug('Updated current sessions. They are: %s',
-                          PLAYSTATE_SESSIONS)
+                session = pms_sessions[session_key]
             # Attach Kodi info to the session
-            PLAYSTATE_SESSIONS[session_key]['kodi_fileid'] = typus['kodi_fileid']
+            session['kodi_fileid'] = typus['kodi_fileid']
             if typus['plex_type'] == v.PLEX_TYPE_EPISODE:
-                PLAYSTATE_SESSIONS[session_key]['kodi_fileid_2'] = typus['kodi_fileid_2']
+                session['kodi_fileid_2'] = typus['kodi_fileid_2']
             else:
-                PLAYSTATE_SESSIONS[session_key]['kodi_fileid_2'] = None
-            PLAYSTATE_SESSIONS[session_key]['kodi_id'] = typus['kodi_id']
-            PLAYSTATE_SESSIONS[session_key]['kodi_type'] = typus['kodi_type']
-        session = PLAYSTATE_SESSIONS[session_key]
+                session['kodi_fileid_2'] = None
+            session['kodi_id'] = typus['kodi_id']
+            session['kodi_type'] = typus['kodi_type']
+            _store_playstate_session(session_id, session)
+            LOG.debug('Updated current sessions. They are: %s',
+                      PLAYSTATE_SESSIONS)
         if utils.settings('plex_serverowned') != 'false':
             # Identify the user - same one as signed on with PKC? Skip
             # update if neither session's username nor userid match
@@ -337,7 +377,7 @@ def process_playing(data):
         LOG.debug('Update playstate for user %s for %s with plex id %s to '
                   'viewCount %s, resume %s, mark_played %s for item %s',
                   app.ACCOUNT.plex_username, session['kodi_type'], plex_id,
-                  session['viewCount'], resume, mark_played, PLAYSTATE_SESSIONS[session_key])
+                  session['viewCount'], resume, mark_played, session)
         func = itemtypes.ITEMTYPE_FROM_KODITYPE[session['kodi_type']]
         with func(None) as fkt:
             fkt.update_playstate(mark_played,
