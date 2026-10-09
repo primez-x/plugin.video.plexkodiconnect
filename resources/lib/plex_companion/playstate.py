@@ -262,68 +262,84 @@ class PlaystateMgr(backgroundthread.KillableThread):
         self._start_webserver()
         self.gdm.start()
         last_check = timing.unix_timestamp()
+        last_error, last_error_logged = None, 0
         while not self.should_cancel():
-            if self.should_suspend():
-                self.close_connections()
-                if self.wait_while_suspended():
-                    break
-            # Check for Kodi playlist changes first
-            with app.APP.lock_playqueues:
-                for playqueue in app.PLAYQUEUES:
-                    kodi_pl = js.playlist_get_items(playqueue.playlistid)
-                    if playqueue.old_kodi_pl != kodi_pl:
-                        if playqueue.id is None and (not app.SYNC.direct_paths or
-                                                     app.PLAYSTATE.context_menu_play):
-                            # Only initialize if directly fired up using direct
-                            # paths. Otherwise let default.py do its magic
-                            log.debug('Not yet initiating playback')
-                        else:
-                            # compare old and new playqueue
-                            compare_playqueues(playqueue, kodi_pl)
-                        playqueue.old_kodi_pl = list(kodi_pl)
-            # Make sure we are registered as a player
-            now = timing.unix_timestamp()
-            if now - last_check > GDM_COMPANION_CHECK:
-                self.gdm.check_client_registration()
-                last_check = now
-            # Then check for Kodi playback
-            players = js.get_players()
-            if not players and signaled_playback_stop:
-                self.sleep(1)
-                continue
-            elif not players:
-                # Playback has just stopped, need to tell Plex
-                self.send_stop()
-                signaled_playback_stop = True
-                self.sleep(1)
-                continue
-            elif not app.PLAYSTATE.item:
-                # Not a Plex item currently playing
-                self.sleep(1)
-                continue
-            else:
-                # Update the playstate info, such as playback progress
-                update_player_info(players)
-                try:
-                    message = timeline(players)
-                except (TypeError, IndexError):
-                    # We haven't had a chance to set the kodi_stream_index for
-                    # the currently playing item. Just skip for now
+            try:
+                if self.should_suspend():
+                    self.close_connections()
+                    if self.wait_while_suspended():
+                        break
+                # Check for Kodi playlist changes first
+                with app.APP.lock_playqueues:
+                    for playqueue in app.PLAYQUEUES:
+                        kodi_pl = js.playlist_get_items(playqueue.playlistid)
+                        if playqueue.old_kodi_pl != kodi_pl:
+                            if playqueue.id is None and (not app.SYNC.direct_paths or
+                                                         app.PLAYSTATE.context_menu_play):
+                                # Only initialize if directly fired up using
+                                # direct paths. Otherwise let default.py do its
+                                # magic
+                                log.debug('Not yet initiating playback')
+                            else:
+                                # compare old and new playqueue
+                                compare_playqueues(playqueue, kodi_pl)
+                            playqueue.old_kodi_pl = list(kodi_pl)
+                # Make sure we are registered as a player
+                now = timing.unix_timestamp()
+                if now - last_check > GDM_COMPANION_CHECK:
+                    self.gdm.check_client_registration()
+                    last_check = now
+                # Then check for Kodi playback
+                players = js.get_players()
+                if not players and signaled_playback_stop:
+                    self.sleep(1)
+                    continue
+                elif not players:
+                    # Playback has just stopped, need to tell Plex
+                    self.send_stop()
+                    signaled_playback_stop = True
+                    self.sleep(1)
+                    continue
+                elif not app.PLAYSTATE.item:
+                    # Not a Plex item currently playing
                     self.sleep(1)
                     continue
                 else:
-                    # Kodi will started with 'stopped' - make sure we're
-                    # waiting here until we got something playing or on pause.
-                    for entry in message:
-                        if entry.get('state') != 'stopped':
-                            break
-                    else:
-                        # Don't busy-spin JSON-RPC while Kodi is starting up
+                    # Update the playstate info, such as playback progress
+                    update_player_info(players)
+                    try:
+                        message = timeline(players)
+                    except (TypeError, IndexError):
+                        # We haven't had a chance to set the
+                        # kodi_stream_index for the currently playing item.
+                        # Just skip for now
                         self.sleep(1)
                         continue
-                    signaled_playback_stop = False
-            # Send the playback progress info to the PMS
-            self.pms_timeline(players, message)
-            # Send the info to all Companion devices via the PMS
-            self.companion_timeline(message)
-            self.sleep(1)
+                    else:
+                        # Kodi will started with 'stopped' - make sure we're
+                        # waiting here until we got something playing or on
+                        # pause.
+                        for entry in message:
+                            if entry.get('state') != 'stopped':
+                                break
+                        else:
+                            # Don't busy-spin JSON-RPC while Kodi is starting
+                            # up
+                            self.sleep(1)
+                            continue
+                        signaled_playback_stop = False
+                # Send the playback progress info to the PMS
+                self.pms_timeline(players, message)
+                # Send the info to all Companion devices via the PMS
+                self.companion_timeline(message)
+                self.sleep(1)
+            except Exception as err:
+                # E.g. the Kodi player vanished between JSON-RPC calls.
+                # Keep this thread alive; log identical errors at most
+                # once per minute
+                error = (type(err), str(err))
+                now = timing.unix_timestamp()
+                if error != last_error or now - last_error_logged > 60:
+                    log.exception('Error in playstate loop, continuing')
+                    last_error, last_error_logged = error, now
+                self.sleep(1)

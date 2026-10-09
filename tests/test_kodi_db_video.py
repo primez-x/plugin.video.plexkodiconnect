@@ -5,6 +5,7 @@ import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -74,7 +75,47 @@ def load_video_module():
     return importlib.import_module('resources.lib.kodi_db.video')
 
 
+def restore_attributes(module, attributes):
+    for name in list(vars(module)):
+        if name not in attributes:
+            delattr(module, name)
+    for name, value in attributes.items():
+        setattr(module, name, value)
+
+
 class KodiVideoDBTests(unittest.TestCase):
+    def setUp(self):
+        # load_video_module() imports e.g. the real variables module with an
+        # untranslated special:// profile. Restore all modules afterwards so
+        # later tests never write to a literal special:/ folder.
+        modules = patch.dict(sys.modules)
+        modules.start()
+        self.addCleanup(modules.stop)
+        package = sys.modules.get('resources.lib')
+        if package is not None:
+            self.addCleanup(restore_attributes, package, dict(vars(package)))
+
+    def test_failed_connect_releases_the_lock_and_closes_connections(self):
+        video = load_video_module()
+        common = sys.modules['resources.lib.kodi_db.common']
+        opened = []
+
+        def connect(kind):
+            if kind == 'texture':
+                raise sqlite3.OperationalError('database is locked')
+            conn = sqlite3.connect(':memory:')
+            opened.append(conn)
+            return conn
+
+        common.db.connect = connect
+        with self.assertRaises(sqlite3.OperationalError):
+            with video.KodiVideoDB(texture_db=True):
+                pass
+
+        self.assertFalse(common.KODIDB_LOCK.locked())
+        with self.assertRaises(sqlite3.ProgrammingError):
+            opened[0].execute('SELECT 1')
+
     def test_set_watched_removes_resume_and_preserves_existing_history(self):
         video = load_video_module()
         conn = sqlite3.connect(':memory:')

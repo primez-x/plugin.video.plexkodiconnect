@@ -965,6 +965,8 @@ def scrobble(ratingKey, state):
     """
     Tells the PMS to set an item's watched state to state="watched" or
     state="unwatched"
+
+    Returns True if the PMS acknowledged the change, False otherwise
     """
     args = {
         'key': ratingKey,
@@ -975,9 +977,20 @@ def scrobble(ratingKey, state):
     elif state == "unwatched":
         url = '{server}/:/unscrobble'
     else:
-        return
-    DU().downloadUrl(utils.extend_url(url, args), timeout=10)
+        LOG.error('Unknown watched state %s for Plex item %s',
+                  state, ratingKey)
+        return False
+    # downloadUrl returns True for unexpected HTTP status codes, so check the
+    # status code ourselves
+    answer = DU().downloadUrl(utils.extend_url(url, args), timeout=10,
+                              return_response=True)
+    if answer is None or not 200 <= answer.status_code < 300:
+        LOG.warning('Could not set Plex item %s to %s, PMS answer: %s',
+                    ratingKey, state,
+                    getattr(answer, 'status_code', answer))
+        return False
     LOG.info("Toggled watched state for Plex item %s", ratingKey)
+    return True
 
 
 def delete_item_from_pms(plexid):

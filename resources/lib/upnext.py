@@ -121,6 +121,20 @@ def _strictly_increasing(values):
     return all(earlier < later for earlier, later in zip(values, values[1:]))
 
 
+def _is_contiguous(current_number, next_number):
+    """
+    Whether next_number (season, episode) directly follows current_number,
+    i.e. no episode can be missing from PKC's synced databases in between.
+    Specials (season 0) are never considered contiguous.
+    """
+    season, episode = current_number
+    next_season, next_episode = next_number
+    if not season or episode is None:
+        return False
+    return (next_season == season and next_episode == episode + 1) or \
+        (next_season == season + 1 and next_episode == 1)
+
+
 def _next_episode_from_local_db(current_api):
     """
     Find the next episode with PKC's synced databases and fetch only that item.
@@ -129,7 +143,8 @@ def _next_episode_from_local_db(current_api):
     answer when the plex_id order and the season/episode order of the synced
     episodes agree on the successor. Anything ambiguous (including "no next
     episode", which a not-yet-synced new episode could contradict) is left to
-    the network lookups.
+    the network lookups. The same applies if the successor does not directly
+    follow the current episode, as an episode in between might not be synced.
     """
     show_id = current_api.grandparent_id()
     current_id = current_api.plex_id
@@ -172,6 +187,8 @@ def _next_episode_from_local_db(current_api):
     if by_number[number_pos + 1] != by_id[id_pos + 1]:
         return _AMBIGUOUS
     next_number, next_id = by_number[number_pos + 1]
+    if not _is_contiguous(current_number, next_number):
+        return _UNKNOWN
     api = _fetch_episode(next_id, show_id)
     if api is _UNKNOWN or (api.season_number(), api.index()) != next_number:
         return _UNKNOWN

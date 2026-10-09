@@ -234,38 +234,43 @@ def change(api_type, rating_key):
 
     with _bound_session(token, account_hash):
         with _lock(rating_key):
-            current_state = state(rating_key)
-            if not discover_cache.account_matches(account_hash):
-                return False, None
-            if current_state is desired_state:
-                discover_cache.record_watchlist_state(
-                    rating_key, current_state, account_hash
-                )
-                return True, current_state
-
-            action_acknowledged = _action(api_type, rating_key)
-            observed_state = None
-            for attempt in range(WATCHLIST_VERIFY_ATTEMPTS):
-                observed_state = state(rating_key)
+            try:
+                current_state = state(rating_key)
                 if not discover_cache.account_matches(account_hash):
                     return False, None
-                if observed_state is desired_state:
+                if current_state is desired_state:
                     discover_cache.record_watchlist_state(
-                        rating_key, observed_state, account_hash
+                        rating_key, current_state, account_hash
                     )
-                    return True, observed_state
-                if attempt + 1 < WATCHLIST_VERIFY_ATTEMPTS:
-                    xbmc.sleep(WATCHLIST_VERIFY_SLEEP_MS)
+                    return True, current_state
 
-            LOG.warning(
-                "Plex Watchlist %s was not verified for rating key %s "
-                "(HTTP acknowledged: %s, observed: %s)",
-                api_type,
-                rating_key,
-                action_acknowledged,
-                observed_state,
-            )
-            return False, observed_state
+                action_acknowledged = _action(api_type, rating_key)
+                observed_state = None
+                for attempt in range(WATCHLIST_VERIFY_ATTEMPTS):
+                    observed_state = state(rating_key)
+                    if not discover_cache.account_matches(account_hash):
+                        return False, None
+                    if observed_state is desired_state:
+                        discover_cache.record_watchlist_state(
+                            rating_key, observed_state, account_hash
+                        )
+                        return True, observed_state
+                    if attempt + 1 < WATCHLIST_VERIFY_ATTEMPTS:
+                        xbmc.sleep(WATCHLIST_VERIFY_SLEEP_MS)
+
+                LOG.warning(
+                    "Plex Watchlist %s was not verified for rating key %s "
+                    "(HTTP acknowledged: %s, observed: %s)",
+                    api_type,
+                    rating_key,
+                    action_acknowledged,
+                    observed_state,
+                )
+                return False, observed_state
+            finally:
+                # Even an unverified mutation may have reached plex.tv; never
+                # serve the cached pre-change Watchlist listing afterwards.
+                discover_cache.invalidate_watchlist(account_hash)
 
 
 def notify_error(message="Plex Watchlist could not be updated."):

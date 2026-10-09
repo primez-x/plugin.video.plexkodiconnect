@@ -337,8 +337,12 @@ class DiscoverListingTests(unittest.TestCase):
         entrypoint, _, _, _ = load_entrypoint()
         calls = {"download": 0, "put": [], "enqueue": [], "listing": []}
         entrypoint.discover_cache.read_xml = lambda url, kind: (freshness, cached)
+        entrypoint.discover_cache.watchlist_generation = lambda: "generation"
         entrypoint.discover_cache.put_xml = (
-            lambda url, xmls, kind: calls["put"].append((url, xmls, kind)) or True
+            lambda url, xmls, kind, generation=None: calls["put"].append(
+                (url, xmls, kind, generation)
+            )
+            or True
         )
         entrypoint.discover_cache.enqueue_refresh = (
             lambda url, kind: calls["enqueue"].append((url, kind)) or True
@@ -376,7 +380,8 @@ class DiscoverListingTests(unittest.TestCase):
 
         self.assertEqual(calls["download"], 1)
         self.assertEqual(
-            calls["put"], [(entrypoint.WATCHLIST_URL, [downloaded], "watchlist")]
+            calls["put"],
+            [(entrypoint.WATCHLIST_URL, [downloaded], "watchlist", "generation")],
         )
         self.assertEqual(calls["listing"], [downloaded])
 

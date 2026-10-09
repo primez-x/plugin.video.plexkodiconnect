@@ -39,6 +39,10 @@ CACHE_MAINTENANCE_REQUESTED = CACHE_PREFIX + "Maintenance.Requested"
 CACHE_MAINTENANCE_COMPLETED = CACHE_PREFIX + "Maintenance.Completed"
 CACHE_REFRESH_REQUESTED = CACHE_PREFIX + "Refresh.Requested"
 CACHE_PREFETCH_REQUEST = CACHE_PREFIX + "Prefetch.Request"
+# Changed by every Watchlist invalidation. Kodi window properties are shared
+# between the plugin and service processes, so a Watchlist download can tell
+# whether a mutation happened meanwhile.
+CACHE_WATCHLIST_GENERATION = CACHE_PREFIX + "Watchlist.Generation"
 CACHE_WRAPPER_TAG = "PKCDiscoverCache"
 
 DISCOVER_SIGNAL_SENDER = "plugin.video.plexkodiconnect.SIGNAL"
@@ -70,6 +74,9 @@ REFRESH_PRIORITY_FOREGROUND = 0
 REFRESH_PRIORITY_PREFETCH = 1
 PREFETCH_HUB_LIMIT = 3
 
+# Cache kinds whose uncacheable payload was already logged at info level
+_UNCACHEABLE_LOGGED = set()
+
 CACHE_FRESH = "fresh"
 CACHE_STALE = "stale"
 CACHE_MISS = "miss"
@@ -84,7 +91,12 @@ CACHE_POLICIES = {
     # The Watchlist widget reloads after every library sync. Serve it from
     # cache briefly and revalidate in the background; a record older than
     # "stale" is a miss so a long-idle Kodi never shows an old Watchlist.
-    "watchlist": {"fresh": 60, "stale": 60 * 60},
+    # Large Watchlists exceed the default payload cap.
+    "watchlist": {
+        "fresh": 60,
+        "stale": 60 * 60,
+        "max_raw_bytes": 4 * 1024 * 1024,
+    },
 }
 WATCHLIST_URL = "https://discover.provider.plex.tv/library/sections/watchlist/all"
 REFRESH_HOSTS = {
@@ -341,7 +353,15 @@ def _remember_l1_key(key):
     _window_set(CACHE_INDEX, "|".join(keys))
 
 
-def _encode_xmls(xmls):
+def _max_raw_bytes(cache_kind):
+    return (_policy(cache_kind) or {}).get("max_raw_bytes", CACHE_MAX_RAW_BYTES)
+
+
+def _max_encoded_bytes(max_raw_bytes):
+    return max_raw_bytes * CACHE_MAX_ENCODED_BYTES // CACHE_MAX_RAW_BYTES
+
+
+def _encode_xmls(xmls, max_raw_bytes=CACHE_MAX_RAW_BYTES):
     if not xmls:
         return None
     try:
@@ -351,32 +371,32 @@ def _encode_xmls(xmls):
         raw = etree.tostring(wrapper, encoding="utf-8")
     except (AttributeError, TypeError, ValueError):
         return None
-    if not raw or len(raw) > CACHE_MAX_RAW_BYTES:
+    if not raw or len(raw) > max_raw_bytes:
         return None
     encoded = b64encode(zlib.compress(raw)).decode("ascii")
-    return encoded if len(encoded) <= CACHE_MAX_ENCODED_BYTES else None
+    return encoded if len(encoded) <= _max_encoded_bytes(max_raw_bytes) else None
 
 
-def _decode_xmls(encoded):
+def _decode_xmls(encoded, max_raw_bytes=CACHE_MAX_RAW_BYTES):
     if (
         not isinstance(encoded, str)
         or not encoded
-        or len(encoded) > CACHE_MAX_ENCODED_BYTES
+        or len(encoded) > _max_encoded_bytes(max_raw_bytes)
     ):
         return None
     try:
         compressed = b64decode(encoded.encode("ascii"), validate=True)
         decompressor = zlib.decompressobj()
-        raw = decompressor.decompress(compressed, CACHE_MAX_RAW_BYTES + 1)
+        raw = decompressor.decompress(compressed, max_raw_bytes + 1)
         if (
-            len(raw) > CACHE_MAX_RAW_BYTES
+            len(raw) > max_raw_bytes
             or decompressor.unconsumed_tail
             or not decompressor.eof
             or decompressor.unused_data
         ):
             return None
         raw += decompressor.flush()
-        if len(raw) > CACHE_MAX_RAW_BYTES:
+        if len(raw) > max_raw_bytes:
             return None
         root = etree.fromstring(raw)
     except (BinasciiError, TypeError, ValueError, zlib.error, etree.ParseError):
@@ -592,7 +612,7 @@ def read_xml(url, cache_kind, item_key=None):
             != CACHE_FRESH
         ):
             return CACHE_MISS, None
-        xmls = _decode_xmls(record.get("payload"))
+        xmls = _decode_xmls(record.get("payload"), _max_raw_bytes(cache_kind))
         if xmls is None:
             return CACHE_MISS, None
         if not account_matches(account_hash):
@@ -661,14 +681,28 @@ def _payload_record(encoded, stored_at, cache_kind, account_hash):
     }
 
 
-def put_xml(url, xmls, cache_kind=None, account_hash=None):
-    """Persist one bounded source response without delaying card rendering."""
+def put_xml(url, xmls, cache_kind=None, account_hash=None, generation=None):
+    """Persist one bounded source response without delaying card rendering.
+
+    Pass the watchlist_generation() captured before downloading a Watchlist
+    to skip storing it if a Watchlist mutation happened meanwhile.
+    """
     policy = _policy(cache_kind)
     account_hash = active_account_hash() if account_hash is None else account_hash
     if policy is None or not account_matches(account_hash):
         return False
-    encoded = _encode_xmls(xmls)
+    max_raw_bytes = _max_raw_bytes(cache_kind)
+    encoded = _encode_xmls(xmls, max_raw_bytes)
     if encoded is None:
+        log = LOG.debug if cache_kind in _UNCACHEABLE_LOGGED else LOG.info
+        _UNCACHEABLE_LOGGED.add(cache_kind)
+        log(
+            "Not caching Plex Discover %s source %s: empty, invalid or "
+            "larger than %s bytes",
+            cache_kind,
+            url,
+            max_raw_bytes,
+        )
         return False
     stored_at = time()
     filename = _source_path(url, account_hash)
@@ -677,6 +711,10 @@ def put_xml(url, xmls, cache_kind=None, account_hash=None):
     try:
         with _static_lock() as locked:
             if not locked or not account_matches(account_hash):
+                return False
+            if generation is not None and generation != watchlist_generation():
+                # A mutation happened meanwhile; this download may predate it
+                LOG.debug("Watchlist changed during download, not caching %s", url)
                 return False
             stored = _write_json(
                 filename,
@@ -712,8 +750,15 @@ def drop_xml(url, account_hash=None):
         return False
 
 
+def watchlist_generation():
+    """Capture before downloading the Watchlist; see put_xml()."""
+    return _window_get(CACHE_WATCHLIST_GENERATION)
+
+
 def invalidate_watchlist(account_hash=None):
     """Drop the cached Watchlist listing after a Watchlist mutation."""
+    # Bump the generation first so an in-flight download is not stored
+    _window_set(CACHE_WATCHLIST_GENERATION, uuid4().hex)
     return drop_xml(WATCHLIST_URL, account_hash)
 
 

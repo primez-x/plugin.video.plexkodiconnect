@@ -89,6 +89,10 @@ class WatchlistListingTests(unittest.TestCase):
                 {"X-Plex-Container-Start": 100, "X-Plex-Container-Size": 100},
             ],
         )
+        self.assertEqual(
+            [call[2]["timeout"] for call in downloader.calls],
+            [entrypoint.DISCOVER_HTTP_TIMEOUT] * 2,
+        )
 
 
 class FakeAPI(object):

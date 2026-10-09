@@ -29,11 +29,23 @@ class KodiDBBase(object):
     def __enter__(self):
         if self.lock:
             KODIDB_LOCK.acquire()
-        self.kodiconn = db.connect(self.db_kind)
-        self.cursor = self.kodiconn.cursor()
-        self.artconn = db.connect('texture') if self._texture_db \
-            else None
-        self.artcursor = self.artconn.cursor() if self._texture_db else None
+        self.kodiconn = None
+        self.artconn = None
+        try:
+            self.kodiconn = db.connect(self.db_kind)
+            self.cursor = self.kodiconn.cursor()
+            self.artconn = db.connect('texture') if self._texture_db \
+                else None
+            self.artcursor = self.artconn.cursor() if self._texture_db \
+                else None
+        except BaseException:
+            # __exit__ will not run - close connections and release the lock
+            for conn in (self.kodiconn, self.artconn):
+                if conn:
+                    conn.close()
+            if self.lock:
+                KODIDB_LOCK.release()
+            raise
         return self
 
     def __exit__(self, e_typ, e_val, trcbak):

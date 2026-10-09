@@ -4,33 +4,16 @@ from logging import getLogger
 
 from .common import ItemBase
 from ..plex_api import API
-from ..plex_db import PlexDB, PLEXDB_LOCK
-from ..kodi_db import KodiMusicDB, KODIDB_LOCK
-from .. import plex_functions as PF, db, timing, app, variables as v
+from ..kodi_db import KodiMusicDB
+from .. import plex_functions as PF, timing, app, variables as v
 
 LOG = getLogger('PLEX.music')
 
 
 class MusicMixin(object):
-    def __enter__(self):
-        """
-        Overwrite to use the Kodi music DB instead of the video DB
-        """
-        if self.lock:
-            PLEXDB_LOCK.acquire()
-            KODIDB_LOCK.acquire()
-        self.plexconn = db.connect('plex')
-        self.plexcursor = self.plexconn.cursor()
-        self.kodiconn = db.connect('music')
-        self.kodicursor = self.kodiconn.cursor()
-        self.artconn = db.connect('texture')
-        self.artcursor = self.artconn.cursor()
-        self.plexdb = PlexDB(plexconn=self.plexconn, lock=False)
-        self.kodidb = KodiMusicDB(texture_db=True,
-                                  kodiconn=self.kodiconn,
-                                  artconn=self.artconn,
-                                  lock=False)
-        return self
+    # Use the Kodi music DB instead of the video DB, see ItemBase.__enter__
+    kodi_db_kind = 'music'
+    kodi_db_class = KodiMusicDB
 
     def update_userdata(self, xml_element, plex_type):
         """

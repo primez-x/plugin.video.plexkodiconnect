@@ -303,7 +303,8 @@ EPISODES = (
 
 
 class NextEpisodeLookupTests(unittest.TestCase):
-    def load(self, episodes=EPISODES, kodi_numbers=None, synced=True):
+    def load(self, episodes=EPISODES, kodi_numbers=None, synced=True,
+             local_episodes=None):
         upnext = load_upnext()
         upnext.API = FakeEpisodeAPI
         calls = {'metadata': [], 'children': [], 'all_leaves': 0}
@@ -336,11 +337,14 @@ class NextEpisodeLookupTests(unittest.TestCase):
         upnext.PF.metadata_children = children
         upnext.PF.show_episodes = all_leaves
 
+        # Episodes synced to PKC's databases; defaults to all PMS episodes
+        local_episodes = episodes if local_episodes is None else local_episodes
         numbers = kodi_numbers or {
             50 + offset: (season, index)
-            for offset, (_, _, season, index) in enumerate(episodes)}
+            for offset, (_, _, season, index) in enumerate(local_episodes)}
         kodi_ids = {plex_id: 50 + offset
-                    for offset, (plex_id, _, _, _) in enumerate(episodes)}
+                    for offset, (plex_id, _, _, _)
+                    in enumerate(local_episodes)}
 
         class FakePlexDB(object):
             def __init__(self, lock=False):
@@ -428,6 +432,60 @@ class NextEpisodeLookupTests(unittest.TestCase):
 
         self.assertEqual(calls['all_leaves'], 1)
         self.assertEqual(api.plex_id, 1005)
+
+    def test_unsynced_episode_within_season_is_not_skipped(self):
+        # S1E2 exists on the PMS but is not (yet) synced locally
+        episodes = (
+            (1001, 11, 1, 1),
+            (1002, 11, 1, 2),
+            (1003, 11, 1, 3),
+        )
+        upnext, calls = self.load(
+            episodes=episodes, local_episodes=(episodes[0], episodes[2]))
+        current = FakeEpisodeAPI(episode_xml(1001, 11, 1, 1))
+
+        api = upnext._get_next_episode_api(current)
+
+        self.assertEqual(api.plex_id, 1002)
+        self.assertEqual(calls['children'], [11])
+        self.assertEqual(calls['all_leaves'], 0)
+
+    def test_unsynced_first_episode_of_next_season_is_not_skipped(self):
+        # S2E1 exists on the PMS but is not (yet) synced locally
+        episodes = (
+            (1001, 11, 1, 1),
+            (1002, 12, 2, 1),
+            (1003, 12, 2, 2),
+        )
+        upnext, calls = self.load(
+            episodes=episodes, local_episodes=(episodes[0], episodes[2]))
+        current = FakeEpisodeAPI(episode_xml(1001, 11, 1, 1))
+
+        api = upnext._get_next_episode_api(current)
+
+        self.assertEqual(api.plex_id, 1002)
+        self.assertEqual(calls['children'], [11, 100, 12])
+        self.assertEqual(calls['all_leaves'], 0)
+
+    def test_specials_are_not_answered_from_the_local_database(self):
+        upnext, calls = self.load()
+
+        result = upnext._next_episode_from_local_db(self.current(1000))
+
+        self.assertIs(result, upnext._UNKNOWN)
+        self.assertEqual(calls['metadata'], [])
+
+    def test_contiguity_rule(self):
+        upnext = load_upnext()
+
+        self.assertTrue(upnext._is_contiguous((1, 4), (1, 5)))
+        self.assertTrue(upnext._is_contiguous((1, 9), (2, 1)))
+        self.assertFalse(upnext._is_contiguous((1, 4), (1, 6)))
+        self.assertFalse(upnext._is_contiguous((1, 9), (2, 2)))
+        self.assertFalse(upnext._is_contiguous((1, 9), (3, 1)))
+        self.assertFalse(upnext._is_contiguous((0, 1), (1, 1)))
+        self.assertFalse(upnext._is_contiguous((None, 1), (1, 2)))
+        self.assertFalse(upnext._is_contiguous((1, None), (1, 2)))
 
 
 if __name__ == '__main__':

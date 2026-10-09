@@ -1829,6 +1829,43 @@ class KodiMonitorTests(unittest.TestCase):
         self.assertEqual(calls, ['unwatched', 'watched'])
         self.assertEqual(kodimonitor._PMS_PLAYSTATE_REVISIONS, {})
 
+    def test_failed_pms_playstate_is_retried_with_backoff(self):
+        kodimonitor, _, _, _ = load_kodimonitor()
+        kodimonitor.app.APP.stop_pkc = False
+        waits = []
+        kodimonitor.app.APP.monitor.waitForAbort = \
+            lambda timeout: waits.append(timeout) or False
+        results = [False, False, True]
+        calls = []
+
+        def scrobble(plex_id, state):
+            calls.append(state)
+            return results.pop(0)
+
+        kodimonitor.PF.scrobble = scrobble
+        kodimonitor._queue_pms_playstate('16390', 'watched').run()
+
+        self.assertEqual(calls, ['watched'] * 3)
+        self.assertEqual(waits, list(kodimonitor.PMS_PLAYSTATE_RETRY_DELAYS))
+        self.assertEqual(kodimonitor._PMS_PLAYSTATE_REVISIONS, {})
+
+    def test_failed_pms_playstate_retry_stops_when_superseded(self):
+        kodimonitor, _, _, _ = load_kodimonitor()
+        kodimonitor.app.APP.stop_pkc = False
+        calls = []
+
+        def wait(timeout):
+            # A newer playstate is queued while we wait for the retry
+            kodimonitor._queue_pms_playstate('16390', 'unwatched')
+            return False
+
+        kodimonitor.app.APP.monitor.waitForAbort = wait
+        kodimonitor.PF.scrobble = \
+            lambda plex_id, state: calls.append(state) or False
+        kodimonitor._queue_pms_playstate('16390', 'watched').run()
+
+        self.assertEqual(calls, ['watched'])
+
     def test_transient_restore_metadata_failure_retries(self):
         kodimonitor, _, _, backgroundthread = load_kodimonitor()
         writes = install_onupdate_databases(kodimonitor)

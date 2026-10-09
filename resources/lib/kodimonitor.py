@@ -70,6 +70,8 @@ _PMS_PLAYSTATE_ITEM_LOCKS = {}
 # Revisions are globally unique so per-item bookkeeping can be dropped once
 # the latest queued state was sent without an old task ever matching anew.
 _PMS_PLAYSTATE_NEXT_REVISION = 0
+# Seconds to wait before retrying a failed PMS playstate update
+PMS_PLAYSTATE_RETRY_DELAYS = (2, 5)
 
 
 class PMSPlaystateTask(backgroundthread.FunctionAsTask):
@@ -92,13 +94,31 @@ class PMSPlaystateTask(backgroundthread.FunctionAsTask):
                 if _PMS_PLAYSTATE_REVISIONS.get(key) != self.revision:
                     return
             try:
-                PF.scrobble(self.plex_id, self.state)
+                self._scrobble_with_retries(key)
             finally:
                 with _PMS_PLAYSTATE_LOCK:
                     if _PMS_PLAYSTATE_REVISIONS.get(key) == self.revision:
                         # Nothing newer is queued for this item
                         del _PMS_PLAYSTATE_REVISIONS[key]
                         _PMS_PLAYSTATE_ITEM_LOCKS.pop(key, None)
+
+    def _scrobble_with_retries(self, key):
+        """Call with the item lock held. Retries while still the latest."""
+        for attempt, delay in enumerate(PMS_PLAYSTATE_RETRY_DELAYS + (None, )):
+            if PF.scrobble(self.plex_id, self.state) is not False:
+                return
+            if delay is None:
+                break
+            LOG.info('Retrying to set Plex item %s to %s in %ss',
+                     self.plex_id, self.state, delay)
+            if app.APP.monitor.waitForAbort(delay) or app.APP.stop_pkc:
+                return
+            with _PMS_PLAYSTATE_LOCK:
+                if _PMS_PLAYSTATE_REVISIONS.get(key) != self.revision:
+                    # A newer playstate for this item is queued
+                    return
+        LOG.error('Failed to set Plex item %s to %s after %s attempts',
+                  self.plex_id, self.state, attempt + 1)
 
 
 def _queue_pms_playstate(plex_id, state):

@@ -1142,6 +1142,27 @@ class TmdbWatchlistTests(unittest.TestCase):
         )
         self.assertEqual(updates, [(self.MOVIE_KEY, True)])
 
+    def test_every_watchlist_change_invalidates_the_cached_listing(self):
+        service_entry, _, _, _ = load_service_entry()
+        watchlist = service_entry.watchlist
+        invalidated = []
+        watchlist.discover_cache.invalidate_watchlist = (
+            lambda *args: invalidated.append(args)
+        )
+        watchlist.discover_cache.record_watchlist_state = lambda *args: None
+        watchlist._action = lambda api_type, rating_key: True
+        # Verified, then unverified (the PMS never reports the new state)
+        states = iter((False, True, False, False, False, False, False))
+        watchlist.state = lambda rating_key: next(states)
+
+        self.assertEqual(
+            watchlist.change("addToWatchlist", self.MOVIE_KEY), (True, True)
+        )
+        self.assertEqual(
+            watchlist.change("addToWatchlist", self.MOVIE_KEY), (False, False)
+        )
+        self.assertEqual(len(invalidated), 2)
+
     def test_watchlist_action_uses_the_mutation_initiating_token(self):
         service_entry, _, _, properties = load_service_entry()
         watchlist = service_entry.watchlist

@@ -688,6 +688,7 @@ def _download_watchlist():
             },
             authenticate=False,
             headerOptions=headers,
+            timeout=DISCOVER_HTTP_TIMEOUT,
         )
         try:
             page.attrib
@@ -741,9 +742,10 @@ def watchlist(section_id=None):
         else:
             LOG.debug("Using fresh Plex Watchlist cache")
     else:
+        generation = discover_cache.watchlist_generation()
         xml = _download_watchlist()
         if xml is not None:
-            discover_cache.put_xml(url, [xml], "watchlist")
+            discover_cache.put_xml(url, [xml], "watchlist", generation=generation)
     try:
         xml.attrib
     except AttributeError:

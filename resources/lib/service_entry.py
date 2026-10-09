@@ -35,15 +35,6 @@ def _discover_tmdb_ratingkey(tmdb_id, tmdb_type):
     return watchlist.discover_tmdb_ratingkey(tmdb_id, tmdb_type)
 
 
-def _watchlist_change(api_type, rating_key):
-    try:
-        return watchlist.change(api_type, rating_key)
-    finally:
-        # Even an unverified mutation may have reached plex.tv; never serve
-        # the cached pre-change Watchlist listing afterwards.
-        discover_cache.invalidate_watchlist()
-
-
 def _watchlist_notification(message):
     watchlist.notify_error(message)
 
@@ -359,7 +350,7 @@ class Service(object):
 
         # ratingKey accepts the last section in the Plex GUID.
         watchlist_rating_key = watchlist_plex_guid.split("/")[-1]
-        success, _ = _watchlist_change(api_type, watchlist_rating_key)
+        success, _ = watchlist.change(api_type, watchlist_rating_key)
         if not success:
             _watchlist_notification("Plex Watchlist could not be updated.")
             return False
@@ -389,7 +380,7 @@ class Service(object):
             )
             return False
         LOG.info("watchlist_modify_key %s %s", api_type, rating_key)
-        success, _ = _watchlist_change(api_type, rating_key)
+        success, _ = watchlist.change(api_type, rating_key)
         if not success:
             _watchlist_notification("Plex Watchlist could not be updated.")
             return False
@@ -421,7 +412,7 @@ class Service(object):
                 "Plex could not uniquely match this TMDb item for Watchlist."
             )
             return False
-        success, _ = _watchlist_change(api_type, rating_key)
+        success, _ = watchlist.change(api_type, rating_key)
         if not success:
             _watchlist_notification("Plex Watchlist could not be updated.")
             return False
@@ -667,7 +658,10 @@ class Service(object):
                 return False
             from . import entrypoint
 
+            generation = None
             if request["kind"] == "watchlist":
+                # Do not store a download that predates a Watchlist mutation
+                generation = discover_cache.watchlist_generation()
                 # The Watchlist is paged; refresh every page as one source.
                 watchlist_xml = entrypoint._download_watchlist()
                 xmls = [watchlist_xml] if watchlist_xml is not None else []
@@ -679,7 +673,11 @@ class Service(object):
                 discover_cache.finish_refresh(request, False)
                 return False
             if not discover_cache.put_xml(
-                request["url"], xmls, request["kind"], account_hash=account_hash
+                request["url"],
+                xmls,
+                request["kind"],
+                account_hash=account_hash,
+                generation=generation,
             ):
                 discover_cache.finish_refresh(request, False)
                 return False

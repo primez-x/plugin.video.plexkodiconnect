@@ -395,6 +395,44 @@ class DiscoverCacheTests(unittest.TestCase):
             self.assertEqual(cache.read_xml(url, "watchlist"), (cache.CACHE_MISS, None))
             self.assertFalse(os.path.exists(cache._source_path(url)))
 
+    def test_watchlist_download_predating_a_mutation_is_not_stored(self):
+        with tempfile.TemporaryDirectory() as profile:
+            cache, _ = load_cache(profile)
+            url = cache.WATCHLIST_URL
+            generation = cache.watchlist_generation()
+            # A Watchlist mutation lands while the download is in flight
+            self.assertTrue(cache.invalidate_watchlist())
+
+            self.assertFalse(
+                cache.put_xml(url, [provider_xml()], "watchlist", generation=generation)
+            )
+            self.assertEqual(cache.read_xml(url, "watchlist"), (cache.CACHE_MISS, None))
+            self.assertTrue(
+                cache.put_xml(
+                    url,
+                    [provider_xml()],
+                    "watchlist",
+                    generation=cache.watchlist_generation(),
+                )
+            )
+
+    def test_watchlist_payload_may_exceed_the_default_cap(self):
+        with tempfile.TemporaryDirectory() as profile:
+            cache, _ = load_cache(profile)
+            url = cache.WATCHLIST_URL
+            large = provider_xml(
+                *[("item%s" % index, "Title %s" % index) for index in range(8000)]
+            )
+            self.assertGreater(
+                len(ET.tostring(large)), cache.CACHE_MAX_RAW_BYTES
+            )
+
+            self.assertTrue(cache.put_xml(url, [large], "watchlist"))
+            cache, _ = load_cache(profile)
+            freshness, xmls = cache.read_xml(url, "watchlist")
+            self.assertEqual(freshness, cache.CACHE_FRESH)
+            self.assertEqual(len(xmls[0]), 8000)
+
     def test_claim_refresh_recovers_an_expired_lease_without_a_restart(self):
         with tempfile.TemporaryDirectory() as profile:
             cache, _ = load_cache(profile)

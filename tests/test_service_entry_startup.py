@@ -127,6 +127,7 @@ class ServiceEntryStartupTests(unittest.TestCase):
             refresh_hosts=lambda cache_kind: ("discover.provider.plex.tv",),
             read_xml=lambda *args: ("stale", [object()]),
             CACHE_FRESH="fresh",
+            watchlist_generation=lambda: "generation",
             put_xml=lambda *args, **kwargs: stored.append(args) or True,
             finish_refresh=lambda request, success: completed.append(success) or True,
         )
@@ -161,20 +162,6 @@ class ServiceEntryStartupTests(unittest.TestCase):
 
         self.assertEqual(stored, [(url, [watchlist_xml], 'watchlist')])
         self.assertEqual(completed, [True])
-
-    def test_watchlist_change_invalidates_the_cached_listing(self):
-        service_entry = load_service_entry()
-        calls = []
-        service_entry.watchlist = types.SimpleNamespace(
-            change=lambda api_type, rating_key: calls.append('change') or (True, True)
-        )
-        service_entry.discover_cache = types.SimpleNamespace(
-            invalidate_watchlist=lambda: calls.append('invalidate')
-        )
-
-        self.assertEqual(
-            service_entry._watchlist_change('addToWatchlist', 'abc'), (True, True))
-        self.assertEqual(calls, ['change', 'invalidate'])
 
     def test_fresh_prefetch_snapshot_is_acknowledged_without_cloud_io(self):
         service_entry = load_service_entry()

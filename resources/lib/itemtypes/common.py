@@ -37,6 +37,10 @@ class ItemBase(object):
     Input:
         kodiType:       optional argument; e.g. 'video' or 'music'
     """
+    # Kodi database kind and class to open in __enter__
+    kodi_db_kind = 'video'
+    kodi_db_class = KodiVideoDB
+
     def __init__(self, last_sync, plexdb=None, kodidb=None, lock=True):
         self.last_sync = last_sync
         self.lock = lock
@@ -56,17 +60,30 @@ class ItemBase(object):
         if self.lock:
             PLEXDB_LOCK.acquire()
             KODIDB_LOCK.acquire()
-        self.plexconn = db.connect('plex')
-        self.plexcursor = self.plexconn.cursor()
-        self.kodiconn = db.connect('video')
-        self.kodicursor = self.kodiconn.cursor()
-        self.artconn = db.connect('texture')
-        self.artcursor = self.artconn.cursor()
+        self.plexconn = None
+        self.kodiconn = None
+        self.artconn = None
+        try:
+            self.plexconn = db.connect('plex')
+            self.plexcursor = self.plexconn.cursor()
+            self.kodiconn = db.connect(self.kodi_db_kind)
+            self.kodicursor = self.kodiconn.cursor()
+            self.artconn = db.connect('texture')
+            self.artcursor = self.artconn.cursor()
+        except BaseException:
+            # __exit__ will not run - close connections and release the locks
+            for conn in (self.plexconn, self.kodiconn, self.artconn):
+                if conn:
+                    conn.close()
+            if self.lock:
+                PLEXDB_LOCK.release()
+                KODIDB_LOCK.release()
+            raise
         self.plexdb = PlexDB(plexconn=self.plexconn, lock=False)
-        self.kodidb = KodiVideoDB(texture_db=True,
-                                  kodiconn=self.kodiconn,
-                                  artconn=self.artconn,
-                                  lock=False)
+        self.kodidb = self.kodi_db_class(texture_db=True,
+                                         kodiconn=self.kodiconn,
+                                         artconn=self.artconn,
+                                         lock=False)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
