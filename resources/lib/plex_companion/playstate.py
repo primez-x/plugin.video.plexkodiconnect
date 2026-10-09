@@ -318,6 +318,8 @@ class PlaystateMgr(backgroundthread.KillableThread):
                         if entry.get('state') != 'stopped':
                             break
                     else:
+                        # Don't busy-spin JSON-RPC while Kodi is starting up
+                        self.sleep(1)
                         continue
                     signaled_playback_stop = False
             # Send the playback progress info to the PMS
