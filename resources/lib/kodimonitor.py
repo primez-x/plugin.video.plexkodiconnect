@@ -34,6 +34,11 @@ ADDITIONAL_WAIT_BEFORE_INIT_STREAMS = 10
 UPNEXT_HANDOFF_TOKEN_SECONDS = 7200.0
 UPNEXT_HANDOFF_START_SECONDS = 120.0
 UPNEXT_HANDOFF_SUPPRESSION_SECONDS = 30.0
+# Completed handoff fences outlive the transition (timeouts and unrelated
+# playback), but not forever: they expire with the handoff token lifetime,
+# are dropped when the same item is played again, and are bounded in number.
+UPNEXT_COMPLETED_HANDOFF_SECONDS = UPNEXT_HANDOFF_TOKEN_SECONDS
+UPNEXT_COMPLETED_HANDOFF_LIMIT = 32
 PLAYBACK_RESTORE_QUIET_SECONDS = 0.25
 PLAYBACK_RESTORE_RETRY_SECONDS = 0.5
 PLAYBACK_RESTORE_MAX_ATTEMPTS = 3
@@ -103,6 +108,10 @@ def _activate_upnext_handoff(next_item, now=None):
     """Arm delayed-update protection for a proven Up Next invocation."""
     global _ACTIVE_UPNEXT_HANDOFF
     now = monotonic() if now is None else now
+    if next_item is not None:
+        # Replaying an item is not unrelated playback: its new playstate must
+        # not be overwritten by the fence of an earlier Up Next completion.
+        _forget_upnext_completion(next_item.kodi_id, next_item.kodi_type)
     active = _ACTIVE_UPNEXT_HANDOFF
     current = getattr(app.PLAYSTATE, 'item', None)
     if active and next_item and current:
@@ -177,7 +186,7 @@ def _activate_upnext_handoff(next_item, now=None):
         'local_watched_repaired': False,
     }
     if completion_seen:
-        _remember_upnext_completion(_ACTIVE_UPNEXT_HANDOFF)
+        _remember_upnext_completion(_ACTIVE_UPNEXT_HANDOFF, now)
     if queue_watched:
         _queue_pms_playstate(expected['previous_plex_id'], 'watched')
     if _ACTIVE_UPNEXT_HANDOFF['reset_seen']:
@@ -255,7 +264,7 @@ def _upnext_handoff_for_update(kodi_id, kodi_type, now=None):
     expected = _expected_upnext_handoff_for_update(kodi_id, kodi_type, now)
     if expected is not None:
         return expected
-    return _completed_upnext_handoff_for_update(kodi_id, kodi_type)
+    return _completed_upnext_handoff_for_update(kodi_id, kodi_type, now)
 
 
 def _upnext_handoff_key(handoff):
@@ -271,14 +280,40 @@ def _upnext_previous_item(handoff):
         handoff.get('previous_kodi_id'), handoff.get('previous_kodi_type'))
 
 
-def _remember_upnext_completion(handoff):
+def _remember_upnext_completion(handoff, now=None):
     previous_item = _upnext_previous_item(handoff)
-    if previous_item[0] is not None and previous_item[1] is not None:
-        _COMPLETED_UPNEXT_HANDOFFS[previous_item] = copy.deepcopy(handoff)
+    if previous_item[0] is None or previous_item[1] is None:
+        return
+    now = monotonic() if now is None else now
+    record = copy.deepcopy(handoff)
+    # The record keeps previous_plex_id/previous_generation from the handoff;
+    # _force_kodi_watched re-validates the Plex mapping before any write.
+    record['completed_at'] = now
+    _COMPLETED_UPNEXT_HANDOFFS[previous_item] = record
+    while len(_COMPLETED_UPNEXT_HANDOFFS) > UPNEXT_COMPLETED_HANDOFF_LIMIT:
+        oldest = min(
+            _COMPLETED_UPNEXT_HANDOFFS,
+            key=lambda key: _COMPLETED_UPNEXT_HANDOFFS[key].get(
+                'completed_at', 0))
+        del _COMPLETED_UPNEXT_HANDOFFS[oldest]
 
 
-def _completed_upnext_handoff_for_update(kodi_id, kodi_type):
-    return _COMPLETED_UPNEXT_HANDOFFS.get((kodi_id, kodi_type))
+def _forget_upnext_completion(kodi_id, kodi_type):
+    return _COMPLETED_UPNEXT_HANDOFFS.pop((kodi_id, kodi_type), None)
+
+
+def _completed_upnext_handoff_for_update(kodi_id, kodi_type, now=None):
+    record = _COMPLETED_UPNEXT_HANDOFFS.get((kodi_id, kodi_type))
+    if record is None:
+        return None
+    now = monotonic() if now is None else now
+    completed_at = record.get('completed_at')
+    if completed_at is None or not 0 <= now - completed_at <= \
+            UPNEXT_COMPLETED_HANDOFF_SECONDS:
+        if _COMPLETED_UPNEXT_HANDOFFS.get((kodi_id, kodi_type)) is record:
+            del _COMPLETED_UPNEXT_HANDOFFS[(kodi_id, kodi_type)]
+        return None
+    return record
 
 
 def _upnext_watched_reported(handoff):
@@ -299,13 +334,13 @@ def _claim_upnext_watched(handoff, kodi_id, kodi_type, now=None):
                 return False
             handoff['completion_seen'] = True
             handoff['watched_queued'] = True
-            _remember_upnext_completion(handoff)
+            _remember_upnext_completion(handoff, now)
             return True
         if handoff.get('watched_queued'):
             return False
         handoff['completion_seen'] = True
         handoff['watched_queued'] = True
-        _remember_upnext_completion(handoff)
+        _remember_upnext_completion(handoff, now)
         return True
 
 
@@ -1286,7 +1321,7 @@ def _videolibrary_onupdate(data):
     if manual_unwatched_handoff:
         _cancel_playback_restore(
             (kodi_id, kodi_type), handoff_key)
-        _COMPLETED_UPNEXT_HANDOFFS.pop((kodi_id, kodi_type), None)
+        _forget_upnext_completion(kodi_id, kodi_type)
         if handoff is _ACTIVE_UPNEXT_HANDOFF:
             _ACTIVE_UPNEXT_HANDOFF = None
         expected = getattr(app.PLAYSTATE, 'expected_upnext_handoff', None)
@@ -1312,6 +1347,15 @@ def _videolibrary_onupdate(data):
             handoff, kodi_id, kodi_type, now)
         if completion is False:
             _force_kodi_watched(handoff, kodi_id, kodi_type, handoff_key)
+            if playcount_provided and handoff.get('previous_plex_id') and \
+                    handoff is not _ACTIVE_UPNEXT_HANDOFF and \
+                    handoff is not getattr(
+                        app.PLAYSTATE, 'expected_upnext_handoff', None):
+                # Only the lingering completion fence matched: an explicit
+                # mark-watched is a user action (e.g. after a Plex-side
+                # unwatch) and must still reach PMS.
+                _queue_pms_playstate(handoff['previous_plex_id'], 'watched')
+                return
             LOG.debug('Ignoring duplicate completed Up Next update for '
                       'Kodi item %s/%s', kodi_type, kodi_id)
             return

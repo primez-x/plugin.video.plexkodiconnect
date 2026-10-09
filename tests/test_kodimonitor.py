@@ -955,6 +955,99 @@ class KodiMonitorTests(unittest.TestCase):
         self.assertEqual(len(scrobbles), 1)
         self.assertEqual(scrobbles[0].args, ('16390', 'watched'))
 
+    def _complete_handoff_and_expire_active(self, kodimonitor, state):
+        kodimonitor.PF.scrobble = lambda plex_id, state: None
+        kodimonitor.app.PLAYSTATE.item = None
+        kodimonitor._ACTIVE_UPNEXT_HANDOFF = {
+            'token': 'verified-token',
+            'previous_item': (8950, 'episode'),
+            'previous_plex_id': '16390',
+            'next_item': (8951, 'episode'),
+            'expires_at': 130.0,
+        }
+        kodimonitor.monotonic = lambda: 101.0
+        kodimonitor._videolibrary_onupdate({
+            'item': {'id': 8950, 'type': 'episode'},
+            'playcount': 1,
+        })
+        kodimonitor._ACTIVE_UPNEXT_HANDOFF = None
+        state[42] = 0
+        state[43] = 0
+
+    def test_completed_handoff_fence_cleared_when_same_item_replays(self):
+        kodimonitor, _, _, backgroundthread = load_kodimonitor()
+        state = {42: 0, 43: 0}
+        writes = install_onupdate_databases(
+            kodimonitor, state=state, resume=1200.0)
+        self._complete_handoff_and_expire_active(kodimonitor, state)
+        self.assertIn((8950, 'episode'), kodimonitor._COMPLETED_UPNEXT_HANDOFFS)
+        kodimonitor.app.PLAYSTATE.expected_upnext_handoff = None
+        kodimonitor.app.PLAYSTATE.started_upnext_handoff = None
+        replay = SimpleNamespace(
+            kodi_id=8950, kodi_type='episode', plex_id='16390')
+
+        self.assertFalse(kodimonitor._activate_upnext_handoff(
+            replay, now=200.0))
+        kodimonitor.app.PLAYSTATE.item = None
+        writes_before = len(writes)
+        kodimonitor.monotonic = lambda: 1400.0
+        # Stopping the rewatch at 20 minutes leaves a resume point that must
+        # survive (no forced watched write).
+        kodimonitor._videolibrary_onupdate({'id': 8950, 'type': 'episode'})
+
+        self.assertNotIn(
+            (8950, 'episode'), kodimonitor._COMPLETED_UPNEXT_HANDOFFS)
+        self.assertEqual(writes[writes_before:], [])
+        self.assertEqual(state, {42: 0, 43: 0})
+
+    def test_completed_handoff_fence_expires_after_token_lifetime(self):
+        kodimonitor, _, _, _ = load_kodimonitor()
+        state = {42: 0, 43: 0}
+        writes = install_onupdate_databases(
+            kodimonitor, state=state, resume=45.0)
+        self._complete_handoff_and_expire_active(kodimonitor, state)
+        writes_before = len(writes)
+        kodimonitor.monotonic = lambda: (
+            101.0 + kodimonitor.UPNEXT_COMPLETED_HANDOFF_SECONDS + 1)
+
+        kodimonitor._videolibrary_onupdate({'id': 8950, 'type': 'episode'})
+
+        self.assertEqual(writes[writes_before:], [])
+        self.assertEqual(kodimonitor._COMPLETED_UPNEXT_HANDOFFS, {})
+
+    def test_completed_handoff_fence_forwards_manual_mark_watched(self):
+        kodimonitor, _, _, backgroundthread = load_kodimonitor()
+        state = {42: 0, 43: 0}
+        install_onupdate_databases(kodimonitor, state=state)
+        self._complete_handoff_and_expire_active(kodimonitor, state)
+        kodimonitor.monotonic = lambda: 500.0
+
+        kodimonitor._videolibrary_onupdate({
+            'item': {'id': 8950, 'type': 'episode'},
+            'playcount': 1,
+        })
+
+        scrobbles = [
+            task.args for task in backgroundthread.BGThreader.tasks
+            if isinstance(task, backgroundthread.FunctionAsTask)
+            and task.function is kodimonitor.PF.scrobble
+        ]
+        self.assertEqual(scrobbles, [('16390', 'watched')] * 2)
+
+    def test_completed_handoff_records_are_bounded(self):
+        kodimonitor, _, _, _ = load_kodimonitor()
+        limit = kodimonitor.UPNEXT_COMPLETED_HANDOFF_LIMIT
+        for index in range(limit + 5):
+            kodimonitor._remember_upnext_completion({
+                'previous_item': (index, 'episode'),
+                'previous_plex_id': str(index),
+            }, now=float(index))
+
+        self.assertEqual(len(kodimonitor._COMPLETED_UPNEXT_HANDOFFS), limit)
+        self.assertNotIn((0, 'episode'), kodimonitor._COMPLETED_UPNEXT_HANDOFFS)
+        self.assertIn((limit + 4, 'episode'),
+                      kodimonitor._COMPLETED_UPNEXT_HANDOFFS)
+
     def test_explicit_unwatched_update_is_not_swallowed_by_completed_handoff(self):
         kodimonitor, _, _, backgroundthread = load_kodimonitor()
         writes = install_onupdate_databases(kodimonitor, playcount=1)
