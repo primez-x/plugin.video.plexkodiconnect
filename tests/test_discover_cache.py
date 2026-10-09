@@ -298,6 +298,73 @@ class DiscoverCacheTests(unittest.TestCase):
             self.assertIsNotNone(retry)
             self.assertTrue(cache.finish_refresh(retry, True))
 
+    def test_permanently_failing_refresh_is_dropped_after_bounded_attempts(self):
+        with tempfile.TemporaryDirectory() as profile:
+            cache, _ = load_cache(profile)
+            now = [100.0]
+            cache.time = lambda: now[0]
+            self.assertTrue(cache.enqueue_refresh(self.URL, "hub"))
+            queue = cache._refresh_path(self.URL, "hub")
+            failures = 0
+            while True:
+                request = cache.claim_refresh()
+                if request is None:
+                    break
+                failures += 1
+                self.assertTrue(cache.finish_refresh(request, False))
+                if not os.path.exists(queue):
+                    break
+                now[0] = cache._read_json(queue)["not_before"]
+
+            self.assertEqual(failures, cache.REFRESH_MAX_FAILED_ATTEMPTS)
+            self.assertFalse(os.path.exists(queue))
+            self.assertIsNone(cache.claim_refresh())
+
+    def test_immediate_refresh_wake_is_not_deferred_by_a_retry_backoff(self):
+        other_url = self.URL.replace("new-for-you", "trending")
+        with tempfile.TemporaryDirectory() as profile:
+            cache, _ = load_cache(profile)
+            cache.time = lambda: 100.0
+            self.assertTrue(cache.enqueue_refresh(self.URL, "hub"))
+            self.assertTrue(cache.finish_refresh(cache.claim_refresh(), False))
+            retry_at = cache._read_json(cache._refresh_path(self.URL, "hub"))[
+                "not_before"]
+            self.assertEqual(cache.refresh_requested_at(), retry_at)
+
+            cache.time = lambda: 101.0
+            self.assertTrue(cache.enqueue_refresh(other_url, "hub"))
+            self.assertEqual(cache.refresh_requested_at(), 101.0)
+
+            request = cache.claim_refresh()
+            self.assertEqual(request["url"], other_url)
+            # The pending retry deadline is re-armed for the scheduler.
+            self.assertEqual(cache.refresh_requested_at(), retry_at)
+
+    def test_finish_refresh_backs_off_between_contended_lock_attempts(self):
+        with tempfile.TemporaryDirectory() as profile:
+            cache, _ = load_cache(profile)
+            cache.time = lambda: 100.0
+            self.assertTrue(cache.enqueue_refresh(self.URL, "hub"))
+            request = cache.claim_refresh()
+            sleeps = []
+            cache.sleep = sleeps.append
+
+            class Contended(object):
+                def __enter__(self):
+                    return False
+
+                def __exit__(self, *args):
+                    return False
+
+            cache._refresh_lock = lambda account_hash: Contended()
+
+            self.assertFalse(cache.finish_refresh(request, True))
+            self.assertEqual(
+                sleeps,
+                [cache.REFRESH_FINISH_RETRY_SECONDS]
+                * (cache.REFRESH_FINISH_ATTEMPTS - 1),
+            )
+
     def test_claim_refresh_recovers_an_expired_lease_without_a_restart(self):
         with tempfile.TemporaryDirectory() as profile:
             cache, _ = load_cache(profile)

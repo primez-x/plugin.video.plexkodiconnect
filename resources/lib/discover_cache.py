@@ -62,6 +62,9 @@ REFRESH_RETRY_LIMIT_SECONDS = 10 * 60
 REFRESH_REQUEST_LIMIT = 32
 REFRESH_LEASE_SECONDS = 60
 REFRESH_FINISH_ATTEMPTS = 3
+# A refresh that keeps failing (e.g. a permanently broken provider URL) is
+# dropped; the next stale foreground read simply enqueues a fresh request.
+REFRESH_MAX_FAILED_ATTEMPTS = 5
 REFRESH_FINISH_RETRY_SECONDS = 0.05
 REFRESH_PRIORITY_FOREGROUND = 0
 REFRESH_PRIORITY_PREFETCH = 1
@@ -876,9 +879,13 @@ def _request_refresh(due_at=None):
         requested_at = max(now, float(due_at)) if due_at is not None else now
     except (TypeError, ValueError):
         requested_at = now
-    # A future retry deadline must not be overwritten by a newer request that
-    # would otherwise make the retry invisible to the fallback scheduler.
-    requested_at = max(requested_at, _window_timestamp(CACHE_REFRESH_REQUESTED))
+    # The wake signal tracks the earliest pending deadline: an immediate
+    # request must not wait behind a retry backoff. claim_refresh() re-arms the
+    # wake for any later retry deadline still in the queue, so an earlier wake
+    # never makes a pending retry invisible to the scheduler.
+    current = _window_timestamp(CACHE_REFRESH_REQUESTED)
+    if current > now:
+        requested_at = min(requested_at, current)
     stored = _window_set(CACHE_REFRESH_REQUESTED, str(requested_at))
     if stored:
         _notify_service(DISCOVER_REFRESH_MESSAGE)
@@ -1154,6 +1161,7 @@ def claim_refresh():
                 if name.endswith(".json")
             ]
             candidates = []
+            next_deadline = None
             now = time()
             for queue in queues[:REFRESH_REQUEST_LIMIT]:
                 request = _valid_refresh_record(_read_json(queue), account_hash)
@@ -1164,6 +1172,8 @@ def claim_refresh():
                     _safe_remove(queue)
                     continue
                 if request["not_before"] > now:
+                    if next_deadline is None or request["not_before"] < next_deadline:
+                        next_deadline = request["not_before"]
                     continue
                 candidates.append(
                     (
@@ -1173,6 +1183,10 @@ def claim_refresh():
                         request,
                     )
                 )
+            if next_deadline is not None:
+                # Keep a deferred retry visible after an earlier wake consumed
+                # the signal.
+                _request_refresh(next_deadline)
             for _, _, queue, request in sorted(candidates):
                 claim = _claim_path(queue, now)
                 try:
@@ -1218,6 +1232,9 @@ def finish_refresh(request, success):
     if account_hash is None:
         return False
     for lock_attempt in range(REFRESH_FINISH_ATTEMPTS):
+        if lock_attempt:
+            # Back off between attempts, including after a contended lock.
+            sleep(REFRESH_FINISH_RETRY_SECONDS)
         try:
             with _refresh_lock(account_hash) as locked:
                 if not locked:
@@ -1235,7 +1252,14 @@ def finish_refresh(request, success):
                     attempt = int(retry.get("attempt", 0))
                 except (TypeError, ValueError):
                     attempt = 0
-                retry["attempt"] = min(max(attempt, 0) + 1, 8)
+                attempt = max(attempt, 0) + 1
+                if attempt >= REFRESH_MAX_FAILED_ATTEMPTS:
+                    LOG.debug(
+                        "Dropping Plex Discover refresh after %s failed attempts",
+                        attempt,
+                    )
+                    return _safe_remove(claim)
+                retry["attempt"] = min(attempt, 8)
                 retry["not_before"] = time() + min(
                     2 ** retry["attempt"], REFRESH_RETRY_LIMIT_SECONDS
                 )
@@ -1249,8 +1273,6 @@ def finish_refresh(request, success):
         except Exception as err:
             LOG.debug("Could not finish Plex Discover refresh: %s", err)
             return False
-        if lock_attempt + 1 < REFRESH_FINISH_ATTEMPTS:
-            sleep(REFRESH_FINISH_RETRY_SECONDS)
     return False
 
 
