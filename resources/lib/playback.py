@@ -4,7 +4,9 @@
 Used to kick off Kodi playback
 """
 from logging import getLogger
-from threading import Thread
+from threading import Lock, Thread
+from time import monotonic
+import copy
 import datetime
 
 import xbmc
@@ -27,7 +29,43 @@ LOG = getLogger('PLEX.playback')
 RESOLVE = True
 TRY_TO_SEEK_FOR = 300  # =300 seconds
 IGNORE_SECONDS_AT_START = 15
+# The second playback pass reuses the library metadata of the first pass if it
+# is at most this old [seconds] instead of downloading it again
+PLAYBACK_METADATA_REUSE_SECONDS = 10.0
+_RECENT_PLAYBACK_METADATA = {}
+_RECENT_PLAYBACK_METADATA_LOCK = Lock()
 ###############################################################################
+
+
+def _remember_playback_metadata(plex_id, xml):
+    """
+    Keep the PMS library metadata the first playback pass just downloaded so
+    that _refresh_playback_metadata() can skip an identical request ~1s later.
+    Only the latest item is kept.
+    """
+    try:
+        snapshot = copy.deepcopy(xml)
+    except Exception:
+        return
+    with _RECENT_PLAYBACK_METADATA_LOCK:
+        _RECENT_PLAYBACK_METADATA.clear()
+        _RECENT_PLAYBACK_METADATA[str(plex_id)] = (monotonic(), snapshot)
+
+
+def _take_recent_playback_metadata(plex_id):
+    """
+    Returns (and forgets) the remembered metadata xml for plex_id if it is
+    fresh enough, otherwise None
+    """
+    with _RECENT_PLAYBACK_METADATA_LOCK:
+        entry = _RECENT_PLAYBACK_METADATA.pop(str(plex_id), None)
+    if entry is None:
+        return None
+    age = monotonic() - entry[0]
+    if age > PLAYBACK_METADATA_REUSE_SECONDS:
+        return None
+    LOG.debug('Reusing %.1fs old PMS metadata for plex_id %s', age, plex_id)
+    return entry[1]
 
 
 def playback_triage(plex_id=None, plex_type=None, path=None, resolve=True,
@@ -160,6 +198,7 @@ def _playlist_playback(plex_id):
     if xml in (None, 401):
         _ensure_resolve(abort=True)
         return
+    _remember_playback_metadata(plex_id, xml)
     # Kodi bug: playqueue will ALWAYS be audio playqueue UNTIL playback
     # has actually started. Need to tell Kodimonitor
     playqueue = app.PLAYQUEUES.audio
@@ -185,6 +224,7 @@ def _playback_init(plex_id, plex_type, playqueue, pos, resume):
         LOG.error('Could not get a PMS xml for plex id %s', plex_id)
         _ensure_resolve(abort=True)
         return
+    _remember_playback_metadata(plex_id, xml)
     if (xbmc.getCondVisibility('Window.IsVisible(Home.xml)') and
             plex_type in v.PLEX_VIDEOTYPES and
             playqueue.kodi_pl.size() > 1):
@@ -314,12 +354,15 @@ def _refresh_playback_metadata(item):
 
     Plex playQueue XML can lag just after a file replacement and still contain
     stale Part keys. The library metadata endpoint is the source of truth for
-    the currently playable media parts.
+    the currently playable media parts. Library metadata the first playback
+    pass fetched moments ago is just as current and is reused.
     """
     if item.plex_type not in (v.PLEX_TYPE_MOVIE, v.PLEX_TYPE_EPISODE,
                               v.PLEX_TYPE_VIDEO):
         return
-    xml = PF.GetPlexMetadata(item.plex_id)
+    xml = _take_recent_playback_metadata(item.plex_id)
+    if xml is None:
+        xml = PF.GetPlexMetadata(item.plex_id)
     try:
         api = API(xml[0])
         api.xml[0].attrib
@@ -358,17 +401,15 @@ def _sync_kodi_resume_from_api(plex_id, plex_type, api):
     playcount = api.viewcount()
     lastplayed = api.lastplayed()
     with KodiVideoDB(lock=False) as kodidb:
-        kodidb.set_resume(db_item['kodi_fileid'],
-                          resume,
-                          total,
-                          playcount,
-                          lastplayed)
-        if db_item.get('kodi_fileid_2'):
-            kodidb.set_resume(db_item['kodi_fileid_2'],
-                              resume,
-                              total,
-                              playcount,
-                              lastplayed)
+        for file_id in (db_item['kodi_fileid'], db_item.get('kodi_fileid_2')):
+            if not file_id:
+                continue
+            # Both playback passes sync the same playstate; skip the write
+            # (and the DB commit) if Kodi already has it
+            if kodidb.playstate_matches(file_id, resume, total, playcount,
+                                        lastplayed):
+                continue
+            kodidb.set_resume(file_id, resume, total, playcount, lastplayed)
     if resume:
         LOG.info('Synced Plex resume point %.3f to Kodi for %s %s',
                  resume, plex_type, plex_id)

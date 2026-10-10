@@ -3,6 +3,7 @@
 from logging import getLogger
 import requests
 from threading import Thread
+from time import monotonic
 
 from .common import communicate, log_error, UUIDStr, Subscriber, timeline, \
     stopped_timeline, create_requests_session, proxy_params
@@ -16,7 +17,8 @@ from .. import backgroundthread
 from .. import app
 from .. import timing
 from .. import utils
-from .timeline_policy import PauseTimelineState
+from .timeline_policy import PauseTimelineState, PlayingTimelineThrottle, \
+    playlist_poll_due
 
 
 # Disable annoying requests warnings
@@ -73,6 +75,18 @@ class PlaystateMgr(backgroundthread.KillableThread):
             1: PauseTimelineState(),
             2: PauseTimelineState(),
         }
+        # Steady playback is reported to the PMS every few seconds only,
+        # unless Companion subscribers need the 1s cadence
+        self.playing_timeline_throttle = {
+            0: PlayingTimelineThrottle(),
+            1: PlayingTimelineThrottle(),
+            2: PlayingTimelineThrottle(),
+        }
+        # Latest timeline params per player, sent or held back. The final
+        # 'stopped' report carries this position so the PMS resume point
+        # stays as accurate as with 1s reporting.
+        self.last_observed_pms_msg = {}
+        self.last_playlist_poll = None
         super().__init__()
 
     def _start_webserver(self):
@@ -200,12 +214,23 @@ class PlaystateMgr(backgroundthread.KillableThread):
                 log.info('Observed %s timeline for player %s item %s; '
                          're-armed pause reporting',
                          current_state, playerid, rearmed_paused_item)
+        throttle = self.playing_timeline_throttle.setdefault(
+            playerid, PlayingTimelineThrottle()
+        )
+        now = monotonic()
         if current_state != 'stopped':
             params = proxy_params()
             params.update(current)
+            self.last_observed_pms_msg[playerid] = params
+            if (rearmed_paused_item is None and
+                    not throttle.due(params, now,
+                                     frequent=bool(self.subscribers))):
+                return
         else:
-            params = dict(self.last_pms_msg[playerid])
+            params = dict(self.last_observed_pms_msg.pop(playerid, None) or
+                          self.last_pms_msg[playerid])
             params['state'] = 'stopped'
+            throttle.reset()
         # Tell the PMS about our playstate progress
         try:
             req = communicate(self.s.get,
@@ -221,6 +246,8 @@ class PlaystateMgr(backgroundthread.KillableThread):
             log_error(log.error, 'Failed reporting playback progress', req)
             return
         self.last_pms_msg[playerid] = params
+        if current_state != 'stopped':
+            throttle.record_success(params, now)
         if current_state == 'paused':
             pause_state.record_success(current)
             log.info('Reported paused playback once for player %s item %s; '
@@ -231,7 +258,7 @@ class PlaystateMgr(backgroundthread.KillableThread):
                      playerid, rearmed_paused_item)
 
     def pms_timeline(self, players, message):
-        if utils.settings('enablePMSTimeline') == 'false':
+        if utils.cached_setting('enablePMSTimeline') == 'false':
             return
         players = players if players else \
             {0: {'playerid': 0}, 1: {'playerid': 1}, 2: {'playerid': 2}}
@@ -257,6 +284,29 @@ class PlaystateMgr(backgroundthread.KillableThread):
             app.APP.deregister_thread(self)
             log.info("----===## PlaystateMgr stopped ##===----")
 
+    def _should_poll_playlists(self, idle):
+        return playlist_poll_due(getattr(app.APP, 'kodi_playlists_changed', None),
+                                 idle,
+                                 self.last_playlist_poll,
+                                 monotonic())
+
+    def _poll_playlists(self):
+        self.last_playlist_poll = monotonic()
+        with app.APP.lock_playqueues:
+            for playqueue in app.PLAYQUEUES:
+                kodi_pl = js.playlist_get_items(playqueue.playlistid)
+                if playqueue.old_kodi_pl != kodi_pl:
+                    if playqueue.id is None and (not app.SYNC.direct_paths or
+                                                 app.PLAYSTATE.context_menu_play):
+                        # Only initialize if directly fired up using
+                        # direct paths. Otherwise let default.py do its
+                        # magic
+                        log.debug('Not yet initiating playback')
+                    else:
+                        # compare old and new playqueue
+                        compare_playqueues(playqueue, kodi_pl)
+                    playqueue.old_kodi_pl = list(kodi_pl)
+
     def _run(self):
         signaled_playback_stop = True
         self._start_webserver()
@@ -270,20 +320,8 @@ class PlaystateMgr(backgroundthread.KillableThread):
                     if self.wait_while_suspended():
                         break
                 # Check for Kodi playlist changes first
-                with app.APP.lock_playqueues:
-                    for playqueue in app.PLAYQUEUES:
-                        kodi_pl = js.playlist_get_items(playqueue.playlistid)
-                        if playqueue.old_kodi_pl != kodi_pl:
-                            if playqueue.id is None and (not app.SYNC.direct_paths or
-                                                         app.PLAYSTATE.context_menu_play):
-                                # Only initialize if directly fired up using
-                                # direct paths. Otherwise let default.py do its
-                                # magic
-                                log.debug('Not yet initiating playback')
-                            else:
-                                # compare old and new playqueue
-                                compare_playqueues(playqueue, kodi_pl)
-                            playqueue.old_kodi_pl = list(kodi_pl)
+                if self._should_poll_playlists(idle=signaled_playback_stop):
+                    self._poll_playlists()
                 # Make sure we are registered as a player
                 now = timing.unix_timestamp()
                 if now - last_check > GDM_COMPANION_CHECK:

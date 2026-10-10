@@ -73,6 +73,75 @@ class ServiceEntryStartupTests(unittest.TestCase):
             service_entry.service_loop_sleep_ms(skip_marker_countdown_visible=False),
             200)
 
+    def test_command_wake_ends_the_idle_service_sleep_early(self):
+        service_entry = load_service_entry()
+        wake = Event()
+        sleeps = []
+
+        def sleep(ms):
+            sleeps.append(ms)
+            if len(sleeps) == 2:
+                # KodiMonitor.onNotification runs between xbmc.sleep slices
+                wake.set()
+
+        self.assertTrue(service_entry.service_loop_wait(200, wake, sleep=sleep))
+        self.assertEqual(sleeps, [40, 40])
+        self.assertFalse(wake.is_set())
+
+    def test_service_sleep_without_wake_keeps_its_full_duration(self):
+        service_entry = load_service_entry()
+        sleeps = []
+
+        self.assertFalse(
+            service_entry.service_loop_wait(200, Event(), sleep=sleeps.append))
+        self.assertEqual(sum(sleeps), 200)
+        self.assertTrue(all(ms <= 40 for ms in sleeps))
+
+    def test_skip_marker_countdown_keeps_a_single_33ms_sleep(self):
+        service_entry = load_service_entry()
+        sleeps = []
+        wake = Event()
+        wake.set()
+
+        self.assertTrue(service_entry.service_loop_wait(
+            service_entry.service_loop_sleep_ms(True), wake, sleep=sleeps.append))
+        self.assertEqual(sleeps, [33])
+
+    def test_artwork_normalization_runs_in_background_once_per_server(self):
+        service_entry = load_service_entry()
+        service = object.__new__(service_entry.Service)
+        service.artwork_normalized_server = None
+        tasks = []
+
+        class FunctionAsTask(object):
+            def __init__(self, function, callback, *args):
+                self.function = function
+                self.args = args
+
+        service_entry.backgroundthread.FunctionAsTask = FunctionAsTask
+        service_entry.backgroundthread.BGThreader = types.SimpleNamespace(
+            addTask=tasks.append)
+        normalized = []
+        service_entry.kodi_db.normalize_artwork_urls = normalized.append
+        service_entry.app.CONN = types.SimpleNamespace(server=None)
+
+        service._schedule_artwork_normalization()
+        self.assertEqual(tasks, [])
+
+        service_entry.app.CONN.server = 'https://192.168.0.10:32400'
+        service._schedule_artwork_normalization()
+        service._schedule_artwork_normalization()
+        self.assertEqual(len(tasks), 1)
+        # Mid-session PMS address change: normalize again for the new server
+        service_entry.app.CONN.server = 'https://10.0.0.5:32400'
+        service._schedule_artwork_normalization()
+        self.assertEqual(len(tasks), 2)
+
+        for task in tasks:
+            task.function(*task.args)
+        self.assertEqual(normalized, [
+            'https://192.168.0.10:32400', 'https://10.0.0.5:32400'])
+
     def test_failed_discover_cache_write_requeues_the_background_refresh(self):
         service_entry = load_service_entry()
         service = object.__new__(service_entry.Service)

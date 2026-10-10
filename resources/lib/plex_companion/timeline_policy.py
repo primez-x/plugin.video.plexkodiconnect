@@ -55,3 +55,84 @@ def should_suppress_paused_timeline(paused_rating_key, current):
         and rating_key is not None
         and rating_key == paused_rating_key
     )
+
+
+# Without Companion subscribers, report steady playback to the PMS this often
+# [seconds] - the cadence of Plex's own clients. Play/pause/stop, item
+# changes and seeks are still reported on the next 1s tick.
+PMS_PLAYING_TIMELINE_INTERVAL = 10.0
+# Player time drifting this far [ms] from the wall-clock expectation since
+# the last report is treated as a seek
+PMS_TIMELINE_SEEK_TOLERANCE_MS = 3000
+# Timeline fields identifying what is playing; any change is reported
+PMS_TIMELINE_IDENTITY_FIELDS = (
+    'ratingKey', 'key', 'containerKey', 'playQueueID', 'playQueueItemID',
+)
+
+
+class PlayingTimelineThrottle(object):
+    """Rate-limit steady 'playing' PMS timelines for one player."""
+
+    def __init__(self, interval=PMS_PLAYING_TIMELINE_INTERVAL,
+                 seek_tolerance_ms=PMS_TIMELINE_SEEK_TOLERANCE_MS):
+        self.interval = interval
+        self.seek_tolerance_ms = seek_tolerance_ms
+        self.last_sent_at = None
+        self.last_sent = None
+
+    def due(self, current, now, frequent=False):
+        """
+        Return True if this timeline must be sent now. Only an unchanged,
+        steadily progressing 'playing' timeline within the interval since the
+        last successful report is held back. frequent=True (Companion
+        subscribers are listening) never holds anything back.
+        """
+        if frequent or current.get('state') != 'playing':
+            return True
+        previous = self.last_sent
+        if previous is None or previous.get('state') != 'playing':
+            return True
+        for field in PMS_TIMELINE_IDENTITY_FIELDS:
+            if previous.get(field) != current.get(field):
+                return True
+        elapsed = now - self.last_sent_at
+        if elapsed < 0 or elapsed >= self.interval:
+            return True
+        try:
+            expected = int(previous['time']) + elapsed * 1000
+            actual = int(current['time'])
+        except (KeyError, TypeError, ValueError):
+            return True
+        return abs(actual - expected) > self.seek_tolerance_ms
+
+    def record_success(self, current, now):
+        self.last_sent_at = now
+        self.last_sent = dict(current)
+
+    def reset(self):
+        self.last_sent_at = None
+        self.last_sent = None
+
+
+# While nothing is playing, re-read the Kodi playlists only this often
+# [seconds] unless KodiMonitor saw a playlist change (Playlist.OnAdd etc.)
+IDLE_PLAYLIST_POLL_INTERVAL = 5.0
+
+
+def playlist_poll_due(changed, idle, last_poll, now,
+                      idle_interval=IDLE_PLAYLIST_POLL_INTERVAL):
+    """
+    Whether the Companion PlaystateMgr should compare Kodi's playlists now.
+
+    changed is the threading.Event KodiMonitor sets on playlist and player
+    notifications (None if unavailable). During playback the playlists are
+    compared on every tick as before; while idle only after a notification,
+    with a slow fallback in case one was missed. A set event is cleared here,
+    before the playlists are read, so a change during the read is not lost.
+    """
+    if changed is not None and changed.is_set():
+        changed.clear()
+        return True
+    if not idle or changed is None or last_poll is None:
+        return True
+    return now - last_poll >= idle_interval

@@ -158,6 +158,47 @@ class KodiVideoDBTests(unittest.TestCase):
         )
         conn.close()
 
+    def test_playstate_matches_only_what_set_resume_would_write(self):
+        video = load_video_module()
+        conn = sqlite3.connect(':memory:')
+        conn.executescript('''
+            CREATE TABLE files (
+                idFile INTEGER PRIMARY KEY,
+                playCount INTEGER,
+                lastPlayed TEXT
+            );
+            CREATE TABLE bookmark (
+                idBookmark INTEGER PRIMARY KEY,
+                idFile INTEGER,
+                timeInSeconds REAL,
+                totalTimeInSeconds REAL,
+                thumbNailImage TEXT,
+                player TEXT,
+                playerState TEXT,
+                type INTEGER
+            );
+            INSERT INTO files VALUES (1, NULL, NULL);
+            INSERT INTO files VALUES (2, 3, '2026-08-01 12:00:00');
+        ''')
+        database = object.__new__(video.KodiVideoDB)
+        database.cursor = conn.cursor()
+        # A file without bookmarks and no playstate already matches
+        self.assertTrue(database.playstate_matches(1, 0, 8178, 0, None))
+        self.assertFalse(database.playstate_matches(1, 5653.428, 8178, 0, None))
+
+        database.set_resume(1, 5653.428, 8178, 0, None)
+        self.assertTrue(database.playstate_matches(1, 5653.428, 8178, 0, None))
+        self.assertFalse(database.playstate_matches(1, 5700.0, 8178, 0, None))
+        self.assertFalse(database.playstate_matches(1, 5653.428, 8178, 1, None))
+
+        self.assertTrue(database.playstate_matches(
+            2, None, 8178, 3, '2026-08-01 12:00:00'))
+        self.assertFalse(database.playstate_matches(
+            2, None, 8178, 3, '2026-08-02 12:00:00'))
+        # Unknown Kodi file: never claim a match
+        self.assertFalse(database.playstate_matches(3, None, 8178, 0, None))
+        conn.close()
+
 
 if __name__ == '__main__':
     unittest.main()

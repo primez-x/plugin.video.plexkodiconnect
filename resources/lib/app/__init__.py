@@ -10,6 +10,7 @@ from .connection import Connection
 from .libsync import Sync
 from .playstate import PlayState
 from .playqueues import Playqueues
+from .. import utils
 
 ACCOUNT = None
 APP = None
@@ -25,10 +26,12 @@ def init(entrypoint=False):
     instances
     """
     global ACCOUNT, APP, CONN, SYNC, PLAYSTATE, PLAYQUEUES
-    APP = App(entrypoint)
-    CONN = Connection(entrypoint)
-    ACCOUNT = Account(entrypoint)
-    SYNC = Sync(entrypoint)
+    # One xbmcaddon.Addon for the ~30 settings reads below instead of one each
+    with utils.settings_batch():
+        APP = App(entrypoint)
+        CONN = Connection(entrypoint)
+        ACCOUNT = Account(entrypoint)
+        SYNC = Sync(entrypoint)
     if not entrypoint:
         PLAYSTATE = PlayState()
         PLAYQUEUES = Playqueues()
@@ -39,5 +42,6 @@ def reload():
     Reload PKC settings from xml file, e.g. on user-switch
     """
     global APP, SYNC
-    APP.reload()
-    SYNC.reload()
+    with utils.settings_batch():
+        APP.reload()
+        SYNC.reload()

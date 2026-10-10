@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+from concurrent.futures import ThreadPoolExecutor
 from logging import getLogger
 import re
 
@@ -12,6 +13,8 @@ LOG = getLogger('PLEX.api')
 
 
 REGEX_VIDEO_FILENAME = re.compile(r'''\/file\.[a-zA-Z0-9]{1,5}$''')
+# Upper bound of concurrent external subtitle downloads at playback start
+MAX_PARALLEL_SUBTITLE_DOWNLOADS = 4
 
 
 class Media(object):
@@ -361,29 +364,51 @@ class Media(object):
         """
         Downloads external subtitles temporarily to Kodi and returns a list
         of their paths
+
+        Kodi (and e.g. Smart Subtitles) only know about external subtitles
+        passed via ListItem.setSubtitles(), so all of them are fetched - in
+        parallel, so playback start waits for the slowest one, not the sum.
         """
         externalsubs = []
         try:
             mediastreams = self.xml[0][self.part]
         except (TypeError, KeyError, IndexError):
             return externalsubs
+        subtitles = []
         for stream in mediastreams:
             # Since plex returns all possible tracks together, have to pull
             # only external subtitles - only for these a 'key' exists
             if int(stream.get('streamType')) != 3 or 'key' not in stream.attrib:
                 # Not a subtitle or not not an external subtitle
                 continue
+            subtitles.append(stream)
+        if not subtitles:
+            LOG.info('Found external subs: %s', externalsubs)
+            return externalsubs
+        urls = ['{server}%s' % stream.get('key') for stream in subtitles]
+        if len(urls) == 1:
+            contents = [self._fetch_external_subtitle(urls[0])]
+        else:
+            workers = min(MAX_PARALLEL_SUBTITLE_DOWNLOADS, len(urls))
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                contents = list(executor.map(self._fetch_external_subtitle,
+                                             urls))
+        # Write sequentially and in PMS order: create_unique_path() is not
+        # safe to race and Kodi lists the subtitles in the order given
+        for stream, url, content in zip(subtitles, urls, contents):
+            if content is None:
+                continue
             try:
-                path = self.download_external_subtitles(
-                    '{server}%s' % stream.get('key'),
+                path = self._write_external_subtitle(
+                    content,
                     stream.get('displayTitle'),
                     stream.get('codec'))
             except IOError:
                 # Catch "IOError: [Errno 22] invalid mode ('wb') or filename"
                 # Due to stream.get('displayTitle') returning chars that our
                 # OS is not supporting, e.g. "српски језик (SRT External)"
-                path = self.download_external_subtitles(
-                    '{server}%s' % stream.get('key'),
+                path = self._write_external_subtitle(
+                    content,
                     stream.get('languageCode', 'Unknown'),
                     stream.get('codec'))
             if path:
@@ -392,26 +417,48 @@ class Media(object):
         return externalsubs
 
     @staticmethod
-    def download_external_subtitles(url, filename, extension):
+    def _fetch_external_subtitle(url):
+        """
+        Returns the subtitle file's content [bytes] at url or None
+        """
+        try:
+            response = DU().downloadUrl(url, return_response=True)
+        except Exception as err:
+            LOG.error('Could not temporarily download subtitle %s: %s',
+                      url, err)
+            return None
+        if response is None or not hasattr(response, 'ok'):
+            LOG.error('Could not temporarily download subtitle %s', url)
+            return None
+        if not response.ok:
+            LOG.error('Could not temporarily download subtitle %s', url)
+            LOG.error('HTTP status: %s, message: %s',
+                      response.status_code, response.text)
+            return None
+        return response.content
+
+    @staticmethod
+    def _write_external_subtitle(content, filename, extension):
+        path = path_ops.create_unique_path(v.EXTERNAL_SUBTITLE_TEMP_PATH,
+                                           filename,
+                                           extension)
+        LOG.debug('Writing temp subtitle to %s', path)
+        with open(path, 'wb') as f:
+            f.write(content)
+        return path
+
+    @classmethod
+    def download_external_subtitles(cls, url, filename, extension):
         """
         One cannot pass the subtitle language for ListItems. Workaround; will
         download the subtitle at url to the Kodi PKC directory in a temp dir
 
         Returns the path to the downloaded subtitle or None
         """
-        path = path_ops.create_unique_path(v.EXTERNAL_SUBTITLE_TEMP_PATH,
-                                           filename,
-                                           extension)
-        response = DU().downloadUrl(url, return_response=True)
-        if not response.ok:
-            LOG.error('Could not temporarily download subtitle %s', url)
-            LOG.error('HTTP status: %s, message: %s',
-                      response.status_code, response.text)
+        content = cls._fetch_external_subtitle(url)
+        if content is None:
             return
-        LOG.debug('Writing temp subtitle to %s', path)
-        with open(path, 'wb') as f:
-            f.write(response.content)
-        return path
+        return cls._write_external_subtitle(content, filename, extension)
 
     def validate_playurl(self, path, typus, force_check=False, folder=False,
                          omit_check=False):

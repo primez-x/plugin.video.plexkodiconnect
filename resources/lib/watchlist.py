@@ -10,9 +10,25 @@ from uuid import uuid4
 
 import xbmc
 
-from . import app, clientinfo, discover_cache, downloadutils, plex_discover, utils
+from . import app, clientinfo, discover_cache, plex_discover, utils
 
 LOG = getLogger("PLEX.watchlist")
+
+
+class _LazyDownloadUtils(object):
+    """
+    Stand-in for the downloadutils module that imports it (and with it
+    requests) on first use. Watchlist status bootstraps in default.py only
+    read cached state and never need an HTTP stack.
+    """
+
+    def __getattr__(self, name):
+        from . import downloadutils as module
+
+        return getattr(module, name)
+
+
+downloadutils = _LazyDownloadUtils()
 
 WATCHLIST_USER_STATE_URL = (
     "https://metadata.provider.plex.tv/library/metadata/%s/userState"

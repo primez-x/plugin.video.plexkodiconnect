@@ -1,5 +1,6 @@
 import importlib.util
 import unittest
+from threading import Event
 from pathlib import Path
 
 
@@ -77,6 +78,77 @@ class TimelinePolicyTests(unittest.TestCase):
         self.assertFalse(state.suppresses(paused))
         state.record_success(paused)
         self.assertTrue(state.suppresses(paused))
+
+
+
+def playing(time_ms, rating_key='100', **extra):
+    timeline = {'state': 'playing', 'ratingKey': rating_key,
+                'key': '/library/metadata/%s' % rating_key,
+                'time': str(time_ms)}
+    timeline.update(extra)
+    return timeline
+
+
+class PlayingTimelineThrottleTests(unittest.TestCase):
+    def setUp(self):
+        self.throttle = timeline_policy.PlayingTimelineThrottle()
+        self.throttle.record_success(playing(60000), now=1000.0)
+
+    def test_steady_playback_is_reported_every_interval(self):
+        for second in range(1, 10):
+            self.assertFalse(self.throttle.due(
+                playing(60000 + second * 1000), now=1000.0 + second))
+        self.assertTrue(self.throttle.due(playing(70000), now=1010.0))
+
+    def test_companion_subscribers_keep_the_one_second_cadence(self):
+        self.assertTrue(self.throttle.due(
+            playing(61000), now=1001.0, frequent=True))
+
+    def test_seek_item_change_and_state_change_are_reported_at_once(self):
+        self.assertTrue(self.throttle.due(playing(300000), now=1002.0))
+        self.assertTrue(self.throttle.due(playing(10000), now=1002.0))
+        self.assertTrue(self.throttle.due(
+            playing(62000, rating_key='101'), now=1002.0))
+        self.assertTrue(self.throttle.due(
+            playing(62000, playQueueItemID='7'), now=1002.0))
+        paused = dict(playing(62000), state='paused')
+        self.assertTrue(self.throttle.due(paused, now=1002.0))
+        stopped = dict(playing(62000), state='stopped')
+        self.assertTrue(self.throttle.due(stopped, now=1002.0))
+
+    def test_nothing_reported_yet_or_after_reset_is_sent(self):
+        self.throttle.reset()
+        self.assertTrue(self.throttle.due(playing(61000), now=1001.0))
+        fresh = timeline_policy.PlayingTimelineThrottle()
+        self.assertTrue(fresh.due(playing(0), now=5.0))
+
+
+class PlaylistPollTests(unittest.TestCase):
+    def test_playback_polls_every_tick(self):
+        changed = Event()
+        self.assertTrue(timeline_policy.playlist_poll_due(
+            changed, idle=False, last_poll=99.5, now=100.0))
+
+    def test_idle_polls_only_after_a_change_or_the_slow_fallback(self):
+        changed = Event()
+        self.assertFalse(timeline_policy.playlist_poll_due(
+            changed, idle=True, last_poll=99.0, now=100.0))
+        changed.set()
+        self.assertTrue(timeline_policy.playlist_poll_due(
+            changed, idle=True, last_poll=99.0, now=100.0))
+        # Consumed before reading the playlists
+        self.assertFalse(changed.is_set())
+        self.assertFalse(timeline_policy.playlist_poll_due(
+            changed, idle=True, last_poll=99.0, now=103.0))
+        self.assertTrue(timeline_policy.playlist_poll_due(
+            changed, idle=True, last_poll=99.0,
+            now=99.0 + timeline_policy.IDLE_PLAYLIST_POLL_INTERVAL))
+
+    def test_first_poll_and_missing_signal_fall_back_to_polling(self):
+        self.assertTrue(timeline_policy.playlist_poll_due(
+            Event(), idle=True, last_poll=None, now=100.0))
+        self.assertTrue(timeline_policy.playlist_poll_due(
+            None, idle=True, last_poll=99.9, now=100.0))
 
 
 if __name__ == '__main__':

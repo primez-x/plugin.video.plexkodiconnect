@@ -83,6 +83,9 @@ def load_kodimonitor():
     utils = types.ModuleType('resources.lib.utils')
     utils.setGlobalProperty = lambda *args, **kwargs: None
     utils.delete_temporary_subtitles = lambda: None
+    utils.settings_invalidations = []
+    utils.invalidate_cached_settings = \
+        lambda: utils.settings_invalidations.append(True)
 
     timing = types.ModuleType('resources.lib.timing')
     timing.kodi_time_to_millis = lambda value: (
@@ -152,6 +155,7 @@ def load_kodimonitor():
         lock_playqueues=DummyLock(),
         discover_refresh_event=Event(),
         discover_maintenance_event=Event(),
+        command_event=Event(),
         monitor=SimpleNamespace(
             abortRequested=lambda: False,
             waitForAbort=lambda timeout: False,
@@ -489,6 +493,38 @@ class KodiMonitorTests(unittest.TestCase):
             'discover_cache_maintenance',
             '')
         self.assertTrue(kodimonitor.app.APP.discover_maintenance_event.is_set())
+
+    def test_kodi_notifyall_method_prefix_still_wakes_discover(self):
+        kodimonitor, _, _, _ = load_kodimonitor()
+        monitor = kodimonitor.KodiMonitor()
+
+        # Kodi delivers JSONRPC.NotifyAll messages as "Other.<message>"
+        monitor.onNotification(
+            'plugin.video.plexkodiconnect.SIGNAL',
+            'Other.discover_cache_refresh',
+            '[]')
+
+        self.assertTrue(kodimonitor.app.APP.discover_refresh_event.is_set())
+        self.assertFalse(kodimonitor.app.APP.command_event.is_set())
+
+    def test_command_notification_wakes_the_service_loop(self):
+        kodimonitor, _, _, _ = load_kodimonitor()
+        monitor = kodimonitor.KodiMonitor()
+
+        monitor.onNotification('another.addon', 'Other.pkc_command', '[]')
+        self.assertFalse(kodimonitor.app.APP.command_event.is_set())
+
+        monitor.onNotification(
+            'plugin.video.plexkodiconnect.SIGNAL', 'Other.pkc_command', '[]')
+        self.assertTrue(kodimonitor.app.APP.command_event.is_set())
+        self.assertFalse(kodimonitor.app.APP.discover_refresh_event.is_set())
+
+    def test_settings_change_invalidates_cached_service_settings(self):
+        kodimonitor, _, _, _ = load_kodimonitor()
+
+        kodimonitor.KodiMonitor().onSettingsChanged()
+
+        self.assertEqual(kodimonitor.utils.settings_invalidations, [True])
 
     def test_playback_and_settings_transitions_invalidate_marker_schedule(self):
         kodimonitor, _, _, _ = load_kodimonitor()

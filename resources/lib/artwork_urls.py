@@ -3,10 +3,14 @@
 """
 Helpers for keeping PMS-hosted artwork URLs aligned with the active connection.
 """
+import os
 from urllib.parse import urlsplit, urlunsplit
 
 
 PLEX_PHOTO_TRANSCODE_PATH = '/photo/:/transcode'
+# Records which (Kodi video DB, PMS base URL) the Kodi art table was last
+# normalized for, so unchanged startups skip the full-table scan
+NORMALIZED_MARKER_FILENAME = 'artwork_urls_normalized.txt'
 
 
 def _configured_server():
@@ -73,3 +77,49 @@ def normalize_artwork_table_urls(cursor, server=None):
             updates,
         )
     return len(updates)
+
+
+def normalization_marker(db_path, server):
+    """
+    Identity of a completed table normalization: the Kodi video DB file plus
+    the scheme://host:port of the PMS that every rewritten URL now points to.
+    Returns None if server is not a usable base URL.
+    """
+    if not server:
+        return None
+    parts = urlsplit(server)
+    if not parts.scheme or not parts.netloc:
+        return None
+    return '%s\n%s://%s' % (db_path or '', parts.scheme, parts.netloc.lower())
+
+
+def read_normalization_marker(directory):
+    try:
+        with open(os.path.join(directory, NORMALIZED_MARKER_FILENAME),
+                  'r', encoding='utf-8') as marker:
+            return marker.read()
+    except (OSError, IOError, ValueError, TypeError):
+        return None
+
+
+def write_normalization_marker(directory, marker):
+    try:
+        os.makedirs(directory, exist_ok=True)
+        path = os.path.join(directory, NORMALIZED_MARKER_FILENAME)
+        tmp_path = path + '.tmp'
+        with open(tmp_path, 'w', encoding='utf-8') as marker_file:
+            marker_file.write(marker)
+        os.replace(tmp_path, path)
+        return True
+    except (OSError, IOError, ValueError, TypeError):
+        return False
+
+
+def clear_normalization_marker(directory):
+    try:
+        os.remove(os.path.join(directory, NORMALIZED_MARKER_FILENAME))
+    except FileNotFoundError:
+        pass
+    except (OSError, IOError, ValueError, TypeError):
+        return False
+    return True

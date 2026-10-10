@@ -7,7 +7,7 @@ import xbmc
 import xbmcgui
 import xbmcplugin
 
-from resources.lib import utils, transfer, variables as v, watchlist, loghandler
+from resources.lib import utils, transfer, variables as v, loghandler
 
 loghandler.config()
 LOG = logging.getLogger("PLEX.default")
@@ -27,6 +27,13 @@ WATCHLIST_ACTION_MODES = frozenset(
         "watchlist_remove_search",
     )
 )
+
+
+def _watchlist():
+    """Imported per mode - most modes (e.g. play, widgets) never need it."""
+    from resources.lib import watchlist
+
+    return watchlist
 
 
 def _enqueue_watchlist_detail(command, request):
@@ -101,37 +108,37 @@ def triage(mode, params, path, arguments, itemid):
         return
     elif mode == "watchlist_add_key":
         _enqueue_watchlist_detail(
-            "WATCHLIST_DETAIL_KEY", watchlist.begin_key(params, "present")
+            "WATCHLIST_DETAIL_KEY", _watchlist().begin_key(params, "present")
         )
         return
     elif mode == "watchlist_remove_key":
         _enqueue_watchlist_detail(
-            "WATCHLIST_DETAIL_KEY", watchlist.begin_key(params, "absent")
+            "WATCHLIST_DETAIL_KEY", _watchlist().begin_key(params, "absent")
         )
         return
     elif mode == "watchlist_add_tmdb":
         _enqueue_watchlist_detail(
-            "WATCHLIST_DETAIL_TMDB", watchlist.begin_tmdb(params, "present")
+            "WATCHLIST_DETAIL_TMDB", _watchlist().begin_tmdb(params, "present")
         )
         return
     elif mode == "watchlist_remove_tmdb":
         _enqueue_watchlist_detail(
-            "WATCHLIST_DETAIL_TMDB", watchlist.begin_tmdb(params, "absent")
+            "WATCHLIST_DETAIL_TMDB", _watchlist().begin_tmdb(params, "absent")
         )
         return
     elif mode == "watchlist_status_key":
-        watchlist.bootstrap_status_key(params)
+        _watchlist().bootstrap_status_key(params)
         transfer.plex_command("WATCHLIST_STATUS_KEY?%s" % urlencode(params))
         return
     elif mode == "watchlist_status_tmdb":
-        watchlist.bootstrap_status_tmdb(params)
+        _watchlist().bootstrap_status_tmdb(params)
         transfer.plex_command("WATCHLIST_STATUS_TMDB?%s" % urlencode(params))
         return
     elif mode == "watchlist_status_monitor":
         transfer.plex_command("WATCHLIST_STATUS_MONITOR")
         return
     elif mode == "watchlist_status_search":
-        watchlist.bootstrap_status_search(params)
+        _watchlist().bootstrap_status_search(params)
         transfer.plex_command("WATCHLIST_STATUS_SEARCH?%s" % urlencode(params))
         return
     elif mode == "discover_detail":
@@ -145,7 +152,7 @@ def triage(mode, params, path, arguments, itemid):
             transfer.plex_command("WATCHLIST_ADD_SEARCH?%s" % urlencode(params))
         else:
             _enqueue_watchlist_detail(
-                "WATCHLIST_DETAIL_SEARCH", watchlist.begin_search(params, "present")
+                "WATCHLIST_DETAIL_SEARCH", _watchlist().begin_search(params, "present")
             )
         return
     elif mode == "watchlist_remove_search":
@@ -154,7 +161,7 @@ def triage(mode, params, path, arguments, itemid):
             transfer.plex_command("WATCHLIST_REMOVE_SEARCH?%s" % urlencode(params))
         else:
             _enqueue_watchlist_detail(
-                "WATCHLIST_DETAIL_SEARCH", watchlist.begin_search(params, "absent")
+                "WATCHLIST_DETAIL_SEARCH", _watchlist().begin_search(params, "absent")
             )
         return
 

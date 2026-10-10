@@ -136,6 +136,9 @@ class PlaybackTests(unittest.TestCase):
             def __exit__(self, *args):
                 pass
 
+            def playstate_matches(self, *args):
+                return False
+
             def set_resume(self, *args):
                 calls.append(('resume', args))
 
@@ -155,6 +158,129 @@ class PlaybackTests(unittest.TestCase):
             ('resume', (32, 5653.428, 8178, 0, None)),
             ('resume', (33, 5653.428, 8178, 0, None)),
         ])
+
+    def test_sync_kodi_resume_skips_files_that_already_match(self):
+        playback, _, _ = load_playback()
+        calls = []
+
+        class FakePlexDB(object):
+            def __init__(self, lock=True):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def item_by_id(self, plex_id, plex_type):
+                return {'kodi_fileid': 32, 'kodi_fileid_2': 33}
+
+        class FakeKodiVideoDB(object):
+            def __init__(self, lock=True):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def playstate_matches(self, file_id, *args):
+                calls.append(('check', file_id))
+                return file_id == 32
+
+            def set_resume(self, *args):
+                calls.append(('resume', args))
+
+        playback.PlexDB = FakePlexDB
+        playback.KodiVideoDB = FakeKodiVideoDB
+        api = SimpleNamespace(
+            resume_point=lambda: 5653.428,
+            runtime=lambda: 8178,
+            viewcount=lambda: 0,
+            lastplayed=lambda: None,
+        )
+
+        playback._sync_kodi_resume_from_api(6347, playback.v.PLEX_TYPE_MOVIE, api)
+
+        self.assertEqual(calls, [
+            ('check', 32),
+            ('check', 33),
+            ('resume', (33, 5653.428, 8178, 0, None)),
+        ])
+
+    def _metadata_xml(self, rating_key='6347'):
+        import xml.etree.ElementTree as etree
+        return etree.fromstring(
+            '<MediaContainer><Video ratingKey="%s" guid="plex://movie/1">'
+            '<Media><Part key="/library/parts/1/file.mkv"/></Media>'
+            '</Video></MediaContainer>' % rating_key)
+
+    def _install_fake_api(self, playback, downloads):
+        class FakeAPI(object):
+            def __init__(self, xml):
+                self.xml = xml
+
+            def guid_html_escaped(self):
+                return self.xml.get('guid')
+
+            def viewcount(self):
+                return 0
+
+            def resume_point(self):
+                return 12.0
+
+        playback.API = FakeAPI
+
+        def get_metadata(plex_id, **kwargs):
+            downloads.append(plex_id)
+            return self._metadata_xml(str(plex_id))
+
+        playback.PF.GetPlexMetadata = get_metadata
+
+    def _playlist_item(self):
+        return SimpleNamespace(plex_id=6347,
+                               plex_type='movie',
+                               part=0,
+                               api=None)
+
+    def test_second_pass_reuses_fresh_first_pass_metadata(self):
+        playback, _, _ = load_playback()
+        downloads = []
+        self._install_fake_api(playback, downloads)
+        first_pass_xml = self._metadata_xml()
+        playback._remember_playback_metadata(6347, first_pass_xml)
+        item = self._playlist_item()
+
+        playback._refresh_playback_metadata(item)
+
+        self.assertEqual(downloads, [])
+        self.assertEqual(item.api.xml.get('ratingKey'), '6347')
+        # A snapshot is reused, never the first pass' own (mutable) tree
+        self.assertIsNot(item.api.xml, first_pass_xml[0])
+        self.assertEqual(item.offset, 12.0)
+        self.assertFalse(item._streams_have_been_processed)
+
+        # Reuse is one-shot: a later playback start downloads again
+        playback._refresh_playback_metadata(self._playlist_item())
+        self.assertEqual(downloads, [6347])
+
+    def test_second_pass_refreshes_stale_or_foreign_metadata(self):
+        playback, _, _ = load_playback()
+        downloads = []
+        self._install_fake_api(playback, downloads)
+        clock = [100.0]
+        playback.monotonic = lambda: clock[0]
+
+        playback._remember_playback_metadata(6347, self._metadata_xml())
+        clock[0] += playback.PLAYBACK_METADATA_REUSE_SECONDS + 0.1
+        playback._refresh_playback_metadata(self._playlist_item())
+        self.assertEqual(downloads, [6347])
+
+        playback._remember_playback_metadata(1, self._metadata_xml('1'))
+        playback._refresh_playback_metadata(self._playlist_item())
+        self.assertEqual(downloads, [6347, 6347])
 
     def test_use_kodi_db_offset_falls_back_to_plex_resume(self):
         playback, _, _ = load_playback()

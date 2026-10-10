@@ -28,7 +28,6 @@ from . import variables as v
 
 # Be careful - your using app in another Python instance!
 from . import app, widgets
-from .library_sync.nodes import NODE_TYPES
 
 LOG = getLogger("PLEX.entrypoint")
 
@@ -37,6 +36,9 @@ WATCHLIST_URL = "https://discover.provider.plex.tv/library/sections/watchlist/al
 DISCOVER_REDIRECT_STATUS_CODES = (301, 302, 303, 307, 308)
 DISCOVER_DETAIL_TYPES = frozenset(("movie", "show"))
 DISCOVER_HTTP_TIMEOUT = (3.0, 10.0)
+# browse_plex keys backing "latest/next" style widgets (On Deck, Recently
+# Added, Plex home hubs); their PMS answers are capped for widgets
+WIDGET_KEY_SUFFIXES = ("/onDeck", "/recentlyAdded", "/recentlyViewed")
 
 
 class ListingException(Exception):
@@ -315,6 +317,10 @@ def show_section(section_index):
     plex_type = (
         v.PLEX_TYPE_MOVIE if content == v.CONTENT_TYPE_MOVIE else v.PLEX_TYPE_SHOW
     )
+    # Imported here: importing the library_sync package pulls in the whole
+    # sync machinery (full sync, websocket, playlists, TMDb scraper add-on)
+    from .library_sync.nodes import NODE_TYPES
+
     for node_type, *_ in NODE_TYPES[plex_type]:
         label = utils.window("%s.%s.title" % (node, node_type))
         path = utils.window("%s.%s.index" % (node, node_type))
@@ -1003,6 +1009,31 @@ def discover_detail(rating_key):
     return True
 
 
+def _is_widget_key(key):
+    path = (key or "").split("?", 1)[0].split("&", 1)[0]
+    if path.startswith("/hubs/"):
+        return not path.startswith("/hubs/search")
+    return path.endswith(WIDGET_KEY_SUFFIXES)
+
+
+def _widget_container_size(key):
+    """
+    Returns the X-Plex-Container-Size to request for key, or None for an
+    uncapped listing.
+
+    Only widget-type endpoints are capped, and only when Kodi is not showing
+    a media window (i.e. the listing feeds a Home/skin widget). Browsing in
+    the Videos/Music windows - where the user pages through everything - is
+    never truncated.
+    """
+    if not _is_widget_key(key) or xbmc.getCondVisibility("Window.IsMedia"):
+        return None
+    size = utils.cast(int, app.APP.fetch_pms_item_number) or 0
+    # Never show fewer items than the user's widget limit for Kodi nodes
+    size = max(size, utils.cast(int, utils.settings("widgetLimit")) or 0)
+    return size or None
+
+
 def browse_plex(
     key=None,
     plex_type=None,
@@ -1040,6 +1071,10 @@ def browse_plex(
             raise ListingException
         prompt = prompt.strip()
         args["query"] = prompt
+    container_size = _widget_container_size(key)
+    if container_size:
+        args.setdefault("X-Plex-Container-Start", 0)
+        args.setdefault("X-Plex-Container-Size", container_size)
     xml = DU().downloadUrl(utils.extend_url("{server}%s" % key, args))
     try:
         xml.attrib

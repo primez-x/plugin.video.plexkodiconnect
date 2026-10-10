@@ -675,6 +675,27 @@ class KodiVideoDB(common.KodiDBBase):
         except TypeError:
             pass
 
+    def playstate_matches(self, file_id, resume_seconds, total_seconds,
+                          playcount, dateplayed):
+        """
+        Returns True if set_resume() with these values would leave the Kodi DB
+        unchanged for file_id, so the write (and its commit) can be skipped
+        """
+        self.cursor.execute(
+            'SELECT playCount, lastPlayed FROM files WHERE idFile = ? LIMIT 1',
+            (file_id, ))
+        row = self.cursor.fetchone()
+        if row is None or row[0] != (playcount or None) or row[1] != dateplayed:
+            return False
+        self.cursor.execute(
+            'SELECT timeInSeconds, totalTimeInSeconds, type FROM bookmark '
+            'WHERE idFile = ?',
+            (file_id, ))
+        bookmarks = self.cursor.fetchall()
+        if not resume_seconds:
+            return not bookmarks
+        return bookmarks == [(resume_seconds, total_seconds, 1)]
+
     @db.catch_operationalerrors
     def set_resume(self, file_id, resume_seconds, total_seconds, playcount,
                    dateplayed):

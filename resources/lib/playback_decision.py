@@ -49,8 +49,22 @@ def _resolve_plex_direct_url(url):
     return resolved
 
 
+def _preflight_enabled():
+    """
+    The DirectPlay preflight only logs whether PMS serves the media part; it
+    neither changes nor blocks the playback decision (a failed DirectPlay
+    startup falls back to PMS transcode on its own). Spend the extra
+    round-trip (up to 10s) only when Kodi debug logging is on.
+    """
+    try:
+        import xbmc
+        return bool(xbmc.getCondVisibility('System.GetBool(debug.showloginfo)'))
+    except Exception:
+        return False
+
+
 def _preflight_directplay_url(url):
-    if url is None:
+    if url is None or not _preflight_enabled():
         return
     lower_url = url.lower()
     if (not lower_url.startswith(('http://', 'https://')) or

@@ -28,6 +28,17 @@ LOG = getLogger('PLEX.kodimonitor')
 DISCOVER_SIGNAL_SENDER = 'plugin.video.plexkodiconnect.SIGNAL'
 DISCOVER_REFRESH_MESSAGE = 'discover_cache_refresh'
 DISCOVER_MAINTENANCE_MESSAGE = 'discover_cache_maintenance'
+# transfer.plex_command() posted a command for the service main loop
+PKC_COMMAND_MESSAGE = 'pkc_command'
+# Kodi notifications after which the Companion PlaystateMgr re-reads playlists
+KODI_PLAYLIST_CHANGE_METHODS = frozenset((
+    'Playlist.OnAdd',
+    'Playlist.OnRemove',
+    'Playlist.OnClear',
+    'Player.OnPlay',
+    'Player.OnAVStart',
+    'Player.OnStop',
+))
 
 WAIT_BEFORE_INIT_STREAMS = 6
 ADDITIONAL_WAIT_BEFORE_INIT_STREAMS = 10
@@ -74,6 +85,20 @@ _PMS_PLAYSTATE_ITEM_LOCKS = {}
 _PMS_PLAYSTATE_NEXT_REVISION = 0
 # Seconds to wait before retrying a failed PMS playstate update
 PMS_PLAYSTATE_RETRY_DELAYS = (2, 5)
+
+
+def _pkc_signal_message(sender, method):
+    """
+    Returns the message of a PKC JSONRPC.NotifyAll signal, else None.
+
+    Kodi hands NotifyAll messages to Python monitors as "Other.<message>";
+    the bare message is accepted as well.
+    """
+    if sender != DISCOVER_SIGNAL_SENDER or not method:
+        return None
+    if method.startswith('Other.'):
+        return method[len('Other.'):]
+    return method
 
 
 class PMSPlaystateTask(backgroundthread.FunctionAsTask):
@@ -585,6 +610,8 @@ class KodiMonitor(xbmc.Monitor):
         Monitor the PKC settings for changes made by the user
         """
         LOG.debug('PKC settings change detected')
+        # Service hot loops re-read their settings (utils.cached_setting)
+        utils.invalidate_cached_settings()
         skip_plex_markers.reset_runtime()
 
     def onNotification(self, sender, method, data):
@@ -594,8 +621,17 @@ class KodiMonitor(xbmc.Monitor):
         if data:
             data = loads(data)
             LOG.debug("Method: %s Data: %s", method, data)
+        signal = _pkc_signal_message(sender, method)
+        if method in KODI_PLAYLIST_CHANGE_METHODS:
+            changed = getattr(app.APP, 'kodi_playlists_changed', None)
+            if changed is not None:
+                changed.set()
 
-        if method == "Player.OnPlay":
+        if signal == PKC_COMMAND_MESSAGE:
+            event = getattr(app.APP, 'command_event', None)
+            if event is not None:
+                event.set()
+        elif method == "Player.OnPlay":
             with app.APP.lock_playqueues:
                 self.PlayBackStart(data)
         elif method == 'Player.OnAVChange':
@@ -609,11 +645,11 @@ class KodiMonitor(xbmc.Monitor):
             # deadline. The next service tick must re-read player time once,
             # then can return to deadline-driven scheduling.
             skip_plex_markers.reset_runtime()
-        elif sender == DISCOVER_SIGNAL_SENDER and method == DISCOVER_REFRESH_MESSAGE:
+        elif signal == DISCOVER_REFRESH_MESSAGE:
             event = getattr(app.APP, 'discover_refresh_event', None)
             if event is not None:
                 event.set()
-        elif sender == DISCOVER_SIGNAL_SENDER and method == DISCOVER_MAINTENANCE_MESSAGE:
+        elif signal == DISCOVER_MAINTENANCE_MESSAGE:
             event = getattr(app.APP, 'discover_maintenance_event', None)
             if event is not None:
                 event.set()

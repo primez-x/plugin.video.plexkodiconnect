@@ -82,6 +82,7 @@ class PlaybackDecisionTests(unittest.TestCase):
                 return FakeResponse()
 
         playback_decision.DU = FakeDownloadUtils
+        playback_decision._preflight_enabled = lambda: True
         playback_decision._pms_playback_decision = lambda api, item: None
         api = SimpleNamespace(
             transcode_video_path=lambda playmethod, quality=None: playurl,
@@ -101,6 +102,35 @@ class PlaybackDecisionTests(unittest.TestCase):
         self.assertTrue(calls[0][1]['return_response'])
         self.assertEqual(calls[0][1]['timeout'], 10)
         self.assertEqual(closed, [True])
+
+    def test_set_playurl_skips_preflight_without_debug_logging(self):
+        playback_decision = load_playback_decision()
+        playurl = (
+            'https://192-168-0-10.plex.direct:32400/library/parts/23630/'
+            '1779159316/?X-Plex-Token=token'
+        )
+        calls = []
+
+        class FakeDownloadUtils(object):
+            def downloadUrl(self, *args, **kwargs):
+                calls.append((args, kwargs))
+
+        playback_decision.DU = FakeDownloadUtils
+        playback_decision._preflight_enabled = lambda: False
+        playback_decision._pms_playback_decision = lambda api, item: None
+        api = SimpleNamespace(
+            transcode_video_path=lambda playmethod, quality=None: playurl,
+        )
+        item = SimpleNamespace(
+            file=None,
+            playmethod=playback_decision.v.PLAYBACK_METHOD_DIRECT_PLAY,
+            quality=None,
+        )
+
+        playback_decision.set_playurl(api, item)
+
+        self.assertEqual(item.file, playurl)
+        self.assertEqual(calls, [])
 
 
 if __name__ == '__main__':

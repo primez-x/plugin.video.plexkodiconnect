@@ -7,7 +7,8 @@ from logging import getLogger
 from sqlite3 import OperationalError
 from datetime import datetime
 from unicodedata import normalize
-from threading import Lock
+from threading import Lock, local
+from contextlib import contextmanager
 import urllib
 # even with the above import urllib, Python3 sometimes runs into this issue
 # AttributeError: module 'urllib' has no attribute 'parse'
@@ -36,6 +37,11 @@ ADDON = xbmcaddon.Addon(id='plugin.video.plexkodiconnect')
 # If several threads access  the settings.xml file concurrently, it gets
 # corrupted
 SETTINGS_LOCK = Lock()
+# Per-thread xbmcaddon.Addon shared by settings() inside settings_batch()
+_SETTINGS_BATCH = local()
+# Service hot-loop settings, see cached_setting()
+_CACHED_SETTINGS = {}
+_CACHED_SETTINGS_GENERATION = 0
 
 # Grab Plex id from '...plex_id=XXXX....'
 REGEX_PLEX_ID = re.compile(r'''plex_id=(\d+)''')
@@ -114,14 +120,77 @@ def settings(setting, value=None):
     setting and value can either be unicode or string
     """
     # We need to instantiate every single time to read changed variables!
+    # (unless the caller batches reads with settings_batch())
     with SETTINGS_LOCK:
-        addon = xbmcaddon.Addon('plugin.video.plexkodiconnect')
+        addon = getattr(_SETTINGS_BATCH, 'addon', None)
+        if addon is None:
+            addon = xbmcaddon.Addon('plugin.video.plexkodiconnect')
         if value is not None:
             # Takes string or unicode by default!
             addon.setSetting(setting, value)
+            _invalidate_cached_settings_locked()
         else:
             # Should return unicode by default, but just in case
             return addon.getSetting(setting)
+
+
+@contextmanager
+def settings_batch():
+    """
+    Share a single xbmcaddon.Addon for all settings() calls made by the
+    current thread inside this block, instead of instantiating (and having
+    Kodi load settings.xml) once per call.
+
+    The shared instance sees its own writes but not changes made elsewhere
+    after the block started. Use it only around short bursts of reads, e.g.
+    app.init(); never hold it across waits.
+    """
+    if getattr(_SETTINGS_BATCH, 'addon', None) is not None:
+        # Nested batch - keep using the outer instance
+        yield
+        return
+    _SETTINGS_BATCH.addon = xbmcaddon.Addon('plugin.video.plexkodiconnect')
+    try:
+        yield
+    finally:
+        _SETTINGS_BATCH.addon = None
+
+
+def _invalidate_cached_settings_locked():
+    global _CACHED_SETTINGS_GENERATION
+    _CACHED_SETTINGS_GENERATION += 1
+    _CACHED_SETTINGS.clear()
+
+
+def invalidate_cached_settings():
+    """
+    Forget all values returned by cached_setting(). The PKC service calls
+    this from KodiMonitor.onSettingsChanged().
+    """
+    with SETTINGS_LOCK:
+        _invalidate_cached_settings_locked()
+
+
+def cached_setting(setting):
+    """
+    settings(setting) for hot loops in the long-lived PKC service: the value
+    is read once and kept until the PKC settings change (onSettingsChanged)
+    or PKC writes any setting itself.
+
+    Do not use in plugin/context-menu Python instances - they never receive
+    onSettingsChanged and would keep stale values.
+    """
+    with SETTINGS_LOCK:
+        try:
+            return _CACHED_SETTINGS[setting]
+        except KeyError:
+            generation = _CACHED_SETTINGS_GENERATION
+    value = settings(setting)
+    with SETTINGS_LOCK:
+        # Do not store a value read before a concurrent invalidation
+        if generation == _CACHED_SETTINGS_GENERATION:
+            _CACHED_SETTINGS[setting] = value
+    return value
 
 
 def lang(stringid):

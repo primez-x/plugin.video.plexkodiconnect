@@ -55,6 +55,13 @@ class App(object):
             # Kodi notifications and consumed by the PKC service loop.
             self.discover_refresh_event = Event()
             self.discover_maintenance_event = Event()
+            # Set when another PKC Python instance posted a command via
+            # transfer.plex_command(); wakes the service main loop early
+            self.command_event = Event()
+            # Set by KodiMonitor on Kodi playlist/player changes; lets the
+            # idle Companion PlaystateMgr skip polling unchanged playlists
+            self.kodi_playlists_changed = Event()
+            self.kodi_playlists_changed.set()
 
     @property
     def is_playing(self):

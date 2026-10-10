@@ -79,9 +79,29 @@ def reset_cached_images():
     LOG.info('Done resetting cached artwork')
 
 
-def normalize_artwork_urls():
+def normalize_artwork_urls(server=None):
+    """
+    Rewrite stale PMS artwork hosts in the Kodi art table to the active PMS.
+
+    The full-table scan only runs when the (Kodi video DB, PMS base URL) pair
+    differs from the one recorded after the last completed normalization.
+    PKC writes new art rows through the active connection, so an unchanged
+    pair cannot have produced stale rows. Returns the number of changed rows.
+    """
+    server = server or artwork_urls._configured_server()
+    marker = artwork_urls.normalization_marker(v.DB_VIDEO_PATH, server)
+    if marker is None:
+        return 0
+    if artwork_urls.read_normalization_marker(v.ADDON_PROFILE) == marker:
+        LOG.debug('Kodi artwork URLs already normalized for the active server')
+        return 0
+    # Drop the outdated marker first: if PKC dies mid-scan, the next start
+    # must scan again instead of trusting a marker for another server
+    artwork_urls.clear_normalization_marker(v.ADDON_PROFILE)
     with KodiVideoDB() as kodidb:
-        changed = artwork_urls.normalize_artwork_table_urls(kodidb.cursor)
+        changed = artwork_urls.normalize_artwork_table_urls(kodidb.cursor,
+                                                            server=server)
+    artwork_urls.write_normalization_marker(v.ADDON_PROFILE, marker)
     if changed:
         LOG.info('Normalized %s PMS artwork URLs to the active server', changed)
     return changed

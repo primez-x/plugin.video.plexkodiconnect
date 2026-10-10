@@ -15,6 +15,11 @@ WINDOW = xbmcgui.Window(10000)
 WINDOW_UPSTREAM = 'plexkodiconnect.result.upstream'
 WINDOW_DOWNSTREAM = 'plexkodiconnect.result.downstream'
 WINDOW_COMMAND = 'plexkodiconnect.command'
+# JSONRPC.NotifyAll wake-up for the PKC service, see kodimonitor
+SIGNAL_SENDER = 'plugin.video.plexkodiconnect.SIGNAL'
+COMMAND_MESSAGE = 'pkc_command'
+# Polling cadence for window-property hand-offs between Python instances
+POLL_INTERVAL_MS = 20
 KODIVERSION = int(xbmc.getInfoLabel("System.BuildVersion")[:2])
 
 
@@ -81,8 +86,31 @@ def plex_command(value):
     safe - let's hope the Kodi user can't click fast enough
     """
     while kodi_window(WINDOW_COMMAND):
-        xbmc.sleep(50)
+        xbmc.sleep(POLL_INTERVAL_MS)
     kodi_window(WINDOW_COMMAND, value=value)
+    notify_service()
+
+
+def notify_service():
+    """
+    Wake the PKC service main loop right away instead of letting it find the
+    command on its next poll. The window property stays the source of truth;
+    a lost notification only costs the service's regular polling delay.
+    """
+    try:
+        xbmc.executeJSONRPC(json.dumps({
+            'jsonrpc': '2.0',
+            'id': 'pkc-command-wake',
+            'method': 'JSONRPC.NotifyAll',
+            'params': {
+                'sender': SIGNAL_SENDER,
+                'message': COMMAND_MESSAGE,
+                'data': [],
+            },
+        }))
+        return True
+    except Exception:
+        return False
 
 
 def serialize(obj):
@@ -137,7 +165,7 @@ def wait_for_transfer(source='main'):
             LOG.debug('Received')
             result = json.loads(result)
             return de_serialize(result)
-        xbmc.sleep(50)
+        xbmc.sleep(POLL_INTERVAL_MS)
 
 
 def convert_pkc_to_listitem(pkc_listitem):

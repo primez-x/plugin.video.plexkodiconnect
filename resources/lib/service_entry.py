@@ -41,6 +41,9 @@ def _watchlist_notification(message):
 
 SERVICE_LOOP_SLEEP_MS = 200
 SKIP_MARKER_COUNTDOWN_SLEEP_MS = 33
+# Kodi runs this thread's Monitor callbacks (and thus the command wake
+# notification) only between xbmc.sleep() calls, so idle sleeps are sliced
+SERVICE_LOOP_WAKE_SLICE_MS = 40
 DISCOVER_WAKE_FALLBACK_SECONDS = 60.0
 
 WINDOW_PROPERTIES = (
@@ -58,6 +61,33 @@ def service_loop_sleep_ms(skip_marker_countdown_visible=False):
     if skip_marker_countdown_visible:
         return SKIP_MARKER_COUNTDOWN_SLEEP_MS
     return SERVICE_LOOP_SLEEP_MS
+
+
+def service_loop_wait(sleep_ms, wake_event=None, sleep=None):
+    """
+    Sleep for sleep_ms like xbmc.sleep(), but return early once wake_event is
+    set (another PKC Python instance posted a command). Returns True if woken.
+
+    Kodi delivers the wake notification to KodiMonitor.onNotification on this
+    very thread, and only while it is inside xbmc.sleep(); hence sleep in
+    short slices instead of waiting on the event itself. Short sleeps such as
+    the 33 ms skip marker countdown cadence are a single xbmc.sleep().
+    """
+    sleep = sleep or xbmc.sleep
+    if wake_event is None or sleep_ms <= SERVICE_LOOP_WAKE_SLICE_MS:
+        sleep(sleep_ms)
+    else:
+        remaining = sleep_ms
+        while remaining > 0 and not wake_event.is_set():
+            step = min(SERVICE_LOOP_WAKE_SLICE_MS, remaining)
+            sleep(step)
+            remaining -= step
+    if wake_event is not None and wake_event.is_set():
+        # Cleared before the loop reads the command window property; a
+        # command posted after that read sets the event again
+        wake_event.clear()
+        return True
+    return False
 
 
 class Service(object):
@@ -149,6 +179,7 @@ class Service(object):
         self.last_discover_refresh_wake = -1.0
         self.discover_maintenance_threader = None
         self.next_discover_maintenance_fallback = 0.0
+        self.artwork_normalized_server = None
         self._init_done = True
 
     def should_cancel(self):
@@ -780,6 +811,30 @@ class Service(object):
             backgroundthread.FunctionAsTask(self._maintain_discover_cache, None)
         )
 
+    def _schedule_artwork_normalization(self):
+        """
+        Normalize Kodi's PMS artwork URLs once per active PMS base URL, off
+        the main thread. Runs again whenever the connection switches servers
+        mid-session (e.g. a PMS IP change), so rows synced meanwhile are
+        rewritten and the persisted marker follows the active server.
+        """
+        server = app.CONN.server
+        if not server or server == self.artwork_normalized_server:
+            return
+        self.artwork_normalized_server = server
+        backgroundthread.BGThreader.addTask(
+            backgroundthread.FunctionAsTask(
+                self._normalize_artwork_urls, None, server
+            )
+        )
+
+    @staticmethod
+    def _normalize_artwork_urls(server):
+        try:
+            kodi_db.normalize_artwork_urls(server)
+        except Exception:
+            LOG.exception("Could not normalize Kodi artwork URLs")
+
     def ServiceEntryPoint(self):
         if not self._init_done:
             return
@@ -804,7 +859,9 @@ class Service(object):
         # Server auto-detect
         self.setup = initialsetup.InitialSetup()
         self.setup.setup()
-        kodi_db.normalize_artwork_urls()
+        # Kodi art table normalization runs as a background task scheduled
+        # from the main loop (see _schedule_artwork_normalization) so that it
+        # never delays PMS authentication and widgets waiting for it
 
         # Initialize important threads
         self.pms_ws = websocket_client.get_pms_websocketapp()
@@ -979,8 +1036,10 @@ class Service(object):
                 continue
 
             if app.APP.suspend:
-                xbmc.sleep(100)
+                service_loop_wait(100, getattr(app.APP, "command_event", None))
                 continue
+
+            self._schedule_artwork_normalization()
 
             if app.APP.update_widgets and not xbmc.getCondVisibility("Window.IsMedia"):
                 """
@@ -1038,7 +1097,11 @@ class Service(object):
                 self._schedule_discover_maintenance()
                 self._schedule_discover_refresh()
 
-            xbmc.sleep(service_loop_sleep_ms(skip_marker_countdown_visible))
+            service_loop_wait(
+                service_loop_sleep_ms(skip_marker_countdown_visible),
+                # Set by KodiMonitor when another PKC instance posts a command
+                getattr(app.APP, "command_event", None),
+            )
 
         # EXITING PKC
         # Tell all threads to terminate (e.g. several lib sync threads)
