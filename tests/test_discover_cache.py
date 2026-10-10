@@ -221,6 +221,48 @@ class DiscoverCacheTests(unittest.TestCase):
             self.assertEqual(cache.watchlist_hint("item", "absent"), "absent")
             self.assertEqual(cache.read_xml(self.DETAIL_URL, "detail")[0], cache.CACHE_FRESH)
 
+    def test_cached_watchlist_listing_answers_membership_hints(self):
+        with tempfile.TemporaryDirectory() as profile:
+            cache, _ = load_cache(profile)
+            cache.time = lambda: 100.0
+            self.assertTrue(cache.put_xml(
+                cache.WATCHLIST_URL,
+                [provider_xml(("odyssey", "The Odyssey"))],
+                "watchlist",
+            ))
+
+            # No verified overlay for these items: the listing decides
+            self.assertEqual(cache.watchlist_hint("odyssey", "absent"), "present")
+            self.assertEqual(cache.watchlist_hint("other", "present"), "absent")
+
+    def test_membership_hint_is_dropped_with_the_watchlist(self):
+        with tempfile.TemporaryDirectory() as profile:
+            cache, _ = load_cache(profile)
+            cache.time = lambda: 100.0
+            self.assertTrue(cache.put_xml(
+                cache.WATCHLIST_URL,
+                [provider_xml(("odyssey", "The Odyssey"))],
+                "watchlist",
+            ))
+            self.assertEqual(cache.watchlist_hint("odyssey"), "present")
+
+            cache.invalidate_watchlist()
+
+            self.assertIsNone(cache.watchlist_hint("odyssey"))
+
+    def test_verified_overlay_wins_over_the_cached_listing(self):
+        with tempfile.TemporaryDirectory() as profile:
+            cache, _ = load_cache(profile)
+            cache.time = lambda: 100.0
+            self.assertTrue(cache.put_xml(
+                cache.WATCHLIST_URL,
+                [provider_xml(("odyssey", "The Odyssey"))],
+                "watchlist",
+            ))
+            self.assertTrue(cache.record_watchlist_state("odyssey", False))
+
+            self.assertEqual(cache.watchlist_hint("odyssey"), "absent")
+
     def test_watchlist_overlay_is_not_shared_when_the_plex_account_changes(self):
         with tempfile.TemporaryDirectory() as profile:
             cache, properties = load_cache(profile)

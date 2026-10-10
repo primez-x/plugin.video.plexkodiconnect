@@ -380,15 +380,21 @@ def provider_state_hint(value):
     return {
         "1": "present",
         "true": "present",
+        "present": "present",
         "0": "absent",
         "false": "absent",
+        "absent": "absent",
     }.get(str(value).strip().lower())
 
 
 def seed_key_status_hint(params):
     """Seed an unknown direct-item state without displacing a live mutation."""
     identity = params.get("watchlist_identity") or _identity_for_key(params)
-    hint = provider_state_hint(params.get("watchlist_hint"))
+    # Discover listings publish "present"/"absent" (see entrypoint); without
+    # one, fall back to a recent verified state or the cached Watchlist.
+    hint = provider_state_hint(params.get("watchlist_hint")) or provider_state_hint(
+        discover_cache.watchlist_hint(params.get("rating_key"))
+    )
     if (
         identity is None
         or hint is None

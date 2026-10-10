@@ -1114,6 +1114,42 @@ class TmdbWatchlistTests(unittest.TestCase):
         self.assertEqual(watchlist.provider_state_hint(0), "absent")
         self.assertIsNone(watchlist.provider_state_hint("unrecognized"))
 
+    def test_discover_listing_hint_format_bootstraps_a_direct_detail(self):
+        # Discover tiles publish PlexWatchlistHint as "present"/"absent"
+        service_entry, _, _, properties = load_service_entry()
+        watchlist = service_entry.watchlist
+        identity = "plex.%s" % self.MOVIE_KEY
+        properties[watchlist.DETAIL_IDENTITY] = identity
+
+        self.assertTrue(
+            watchlist.bootstrap_status_key(
+                {
+                    "rating_key": self.MOVIE_KEY,
+                    "plex_type": "movie",
+                    "watchlist_hint": "present",
+                }
+            )
+        )
+        self.assertEqual(properties[watchlist.DETAIL_STATE], "present")
+        self.assertEqual(watchlist.provider_state_hint("absent"), "absent")
+
+    def test_cached_watchlist_bootstraps_a_detail_without_a_tile_hint(self):
+        service_entry, _, _, properties = load_service_entry()
+        watchlist = service_entry.watchlist
+        identity = "plex.%s" % self.MOVIE_KEY
+        properties[watchlist.DETAIL_IDENTITY] = identity
+        watchlist.discover_cache.watchlist_hint = (
+            lambda rating_key, fallback=None:
+            "present" if rating_key == self.MOVIE_KEY else fallback
+        )
+
+        self.assertTrue(
+            watchlist.bootstrap_status_key(
+                {"rating_key": self.MOVIE_KEY, "plex_type": "movie"}
+            )
+        )
+        self.assertEqual(properties[watchlist.DETAIL_STATE], "present")
+
     def test_provider_user_state_hint_cannot_replace_a_pending_mutation(self):
         service_entry, _, _, properties = load_service_entry()
         watchlist = service_entry.watchlist

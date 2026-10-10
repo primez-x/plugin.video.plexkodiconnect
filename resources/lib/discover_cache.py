@@ -61,6 +61,9 @@ CACHE_LOCK_STALE_SECONDS = 60
 CACHE_TEMP_RETENTION_SECONDS = 60 * 60
 CACHE_MAINTENANCE_INTERVAL_SECONDS = 30 * 60
 WATCHLIST_OVERLAY_SECONDS = 5 * 60
+# How long a process reuses its decoded copy of the cached Watchlist listing
+WATCHLIST_MEMBERSHIP_SECONDS = 30
+_WATCHLIST_MEMBERSHIP = {}
 REFRESH_REQUEST_RETENTION_SECONDS = 24 * 60 * 60
 REFRESH_RETRY_LIMIT_SECONDS = 10 * 60
 REFRESH_REQUEST_LIMIT = 32
@@ -817,12 +820,70 @@ def record_watchlist_state(rating_key, present, account_hash=None):
         return state_property is not None
 
 
+def watchlist_membership(account_hash=None):
+    """Rating keys of the cached (fresh or stale) Watchlist listing, or None.
+
+    Decoded at most once per WATCHLIST_MEMBERSHIP_SECONDS per process, so a
+    Discover listing can look up every tile cheaply.
+    """
+    account_hash = active_account_hash() if account_hash is None else account_hash
+    if account_hash is None:
+        return None
+    memo = _WATCHLIST_MEMBERSHIP
+    if (
+        memo.get("account") == account_hash
+        and memo.get("generation") == watchlist_generation()
+        and 0 <= time() - memo.get("loaded_at", 0) <= WATCHLIST_MEMBERSHIP_SECONDS
+    ):
+        return memo.get("keys")
+    keys = None
+    _freshness_state, xmls = read_xml(WATCHLIST_URL, "watchlist")
+    if xmls:
+        keys = frozenset(
+            key
+            for xml in xmls
+            for key in (
+                plex_discover.normalize_rating_key(child.get("ratingKey"))
+                for child in xml
+            )
+            if key is not None
+        )
+    if keys is None or _freshness_state == CACHE_STALE:
+        # Warm the listing in the service so the next detail answers instantly
+        enqueue_refresh(WATCHLIST_URL, "watchlist")
+    memo.clear()
+    memo.update(
+        account=account_hash,
+        generation=watchlist_generation(),
+        loaded_at=time(),
+        keys=keys,
+    )
+    return keys
+
+
 def watchlist_hint(rating_key, fallback=None):
-    """Prefer a recent verified overlay to a recent embedded provider hint."""
+    """Prefer a recent verified overlay, then the cached Watchlist listing, to
+    a recent embedded provider hint."""
     account_hash = active_account_hash()
     rating_key = plex_discover.normalize_rating_key(rating_key)
     if rating_key is None or account_hash is None:
         return fallback
+    overlay = _overlay_hint(rating_key, account_hash)
+    if overlay is not None:
+        return overlay
+    try:
+        members = watchlist_membership(account_hash)
+    except Exception as err:
+        LOG.debug("Could not read the cached Plex Watchlist: %s", err)
+        members = None
+    if members is not None:
+        return "present" if rating_key in members else "absent"
+    return fallback
+
+
+def _overlay_hint(rating_key, account_hash):
+    """A recently verified state for one item, or None."""
+    fallback = None
     state_property, updated_property = _overlay_properties(rating_key, account_hash)
     try:
         updated = float(_window_get(updated_property)) if updated_property else None
