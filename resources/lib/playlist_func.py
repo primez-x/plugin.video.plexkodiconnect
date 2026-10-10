@@ -24,10 +24,47 @@ from .subtitles import accessible_plex_subtitles
 LOG = getLogger('PLEX.playlist_func')
 
 
+# service.smartsubtitles >= 0.6.0 publishes "<result>|<playing file>" here
+SMART_SUBTITLES_RESULT = 'SmartSubtitles.Result'
+SMART_SUBTITLES_KEEP = ('selected', 'skip')
+SMART_SUBTITLES_WAIT = 3.0
+
+
 def smart_subtitles_enabled():
-    """Whether service.smartsubtitles owns the subtitle choice on start"""
+    """Whether service.smartsubtitles is installed and enabled"""
     return xbmc.getCondVisibility(
         'System.AddonIsEnabled(service.smartsubtitles)')
+
+
+def smart_subtitles_owns_subtitle():
+    """
+    Whether service.smartsubtitles made the subtitle choice for the playing
+    file. Only then must the Plex choice not be applied: when it found no
+    track ('no_match'), is switched off in its settings or failed, the Plex
+    choice is still the right one. Versions that publish no result keep the
+    old behaviour (an enabled add-on owns the choice).
+    """
+    if not smart_subtitles_enabled():
+        return False
+    waited = 0.0
+    while True:
+        result = utils.window(SMART_SUBTITLES_RESULT)
+        if not result:
+            return True
+        status, _, playing_file = result.partition('|')
+        try:
+            current_file = xbmc.Player().getPlayingFile()
+        except RuntimeError:
+            return False
+        if playing_file != current_file:
+            # Not run for this file (yet)
+            status = 'pending'
+        if status != 'pending':
+            return status in SMART_SUBTITLES_KEEP
+        if waited >= SMART_SUBTITLES_WAIT or app.APP.monitor.waitForAbort(0.25):
+            LOG.debug('No Smart Subtitles result for %s', current_file)
+            return False
+        waited += 0.25
 
 
 class PlaylistItem(object):
@@ -267,11 +304,11 @@ class PlaylistItem(object):
         if utils.settings('audioStreamPick') == '0':
             self.switch_to_plex_stream('audio')
         if utils.settings('subtitleStreamPick') == '0':
-            if smart_subtitles_enabled():
-                # service.smartsubtitles picks subtitles on AV start; applying
+            if smart_subtitles_owns_subtitle():
+                # service.smartsubtitles picked subtitles on AV start; applying
                 # the PMS choice ~6s later would undo its selection
                 LOG.debug('Not switching to the Plex subtitle: '
-                          'service.smartsubtitles is enabled')
+                          'service.smartsubtitles chose it')
             else:
                 self.switch_to_plex_stream('subtitle')
         self.streams_initialized = True
