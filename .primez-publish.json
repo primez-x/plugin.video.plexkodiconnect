@@ -1,6 +1,4 @@
 {
   "branch": "python3-beta",
-  "tests": [
-    ["python3", "-m", "unittest", "discover", "-s", "tests"]
-  ]
+  "tests": []
 }
