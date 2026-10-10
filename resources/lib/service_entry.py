@@ -45,6 +45,11 @@ SKIP_MARKER_COUNTDOWN_SLEEP_MS = 33
 # notification) only between xbmc.sleep() calls, so idle sleeps are sliced
 SERVICE_LOOP_WAKE_SLICE_MS = 40
 DISCOVER_WAKE_FALLBACK_SECONDS = 60.0
+# Discover tiles take their Watchlist hint from the cached Watchlist; refetch
+# it after sign-in and then at this interval (see _schedule_watchlist_warm)
+WATCHLIST_WARM_INTERVAL_SECONDS = 10 * 60.0
+# Next check while signed out, restricted or playing
+WATCHLIST_WARM_RECHECK_SECONDS = 5.0
 
 WINDOW_PROPERTIES = (
     "pms_token",
@@ -179,6 +184,7 @@ class Service(object):
         self.last_discover_refresh_wake = -1.0
         self.discover_maintenance_threader = None
         self.next_discover_maintenance_fallback = 0.0
+        self.next_watchlist_warm = 0.0
         self.artwork_normalized_server = None
         self._init_done = True
 
@@ -468,6 +474,8 @@ class Service(object):
         abort
         """
         if self._do_auth():
+            # Possibly a different plex.tv user: warm their Watchlist now
+            self.next_watchlist_warm = 0.0
             if self.welcome_msg is True:
                 # Reset authentication warnings
                 self.welcome_msg = False
@@ -785,6 +793,33 @@ class Service(object):
             backgroundthread.FunctionAsTask(self._refresh_discover_cache, None, request)
         )
 
+    def _schedule_watchlist_warm(self):
+        """Queue one low-priority Watchlist refresh when due.
+
+        The refresh worker skips a still fresh copy and owns the retry
+        backoff, so this costs at most one Watchlist download per interval.
+        """
+        now = monotonic()
+        if now < self.next_watchlist_warm:
+            return
+        if (
+            not getattr(getattr(app, "ACCOUNT", None), "authenticated", False)
+            or not utils.window("plex_token")
+            or utils.window("plex_restricteduser") == "true"
+            or app.APP.is_playing
+        ):
+            self.next_watchlist_warm = now + WATCHLIST_WARM_RECHECK_SECONDS
+            return
+        if discover_cache.enqueue_refresh(
+            discover_cache.WATCHLIST_URL,
+            "watchlist",
+            priority=discover_cache.REFRESH_PRIORITY_PREFETCH,
+        ):
+            self.next_watchlist_warm = now + WATCHLIST_WARM_INTERVAL_SECONDS
+        else:
+            # Contended lock or a full queue: try again on the slow fallback
+            self.next_watchlist_warm = now + DISCOVER_WAKE_FALLBACK_SECONDS
+
     def _maintain_discover_cache(self):
         """Enforce durable Discover retention away from Kodi's listing path."""
         return discover_cache.sweep()
@@ -1095,6 +1130,7 @@ class Service(object):
             # queues during the 33 ms countdown path.
             if not skip_marker_countdown_visible:
                 self._schedule_discover_maintenance()
+                self._schedule_watchlist_warm()
                 self._schedule_discover_refresh()
 
             service_loop_wait(

@@ -373,6 +373,87 @@ class ServiceEntryStartupTests(unittest.TestCase):
 
         self.assertEqual(len(claims), 1)
 
+    def _watchlist_warm_service(self, window=None, playing=False,
+                                authenticated=True, enqueued=True):
+        service_entry = load_service_entry()
+        service = object.__new__(service_entry.Service)
+        service.next_watchlist_warm = 0.0
+        properties = {'plex_token': 'token', 'plex_restricteduser': 'false'}
+        properties.update(window or {})
+        service_entry.utils.window = lambda key: properties.get(key, '')
+        service_entry.app.ACCOUNT = types.SimpleNamespace(
+            authenticated=authenticated)
+        service_entry.app.APP = types.SimpleNamespace(is_playing=playing)
+        queued = []
+        service_entry.discover_cache = types.SimpleNamespace(
+            WATCHLIST_URL='https://discover.provider.plex.tv/library/sections/watchlist/all',
+            REFRESH_PRIORITY_PREFETCH=1,
+            enqueue_refresh=lambda *args, **kwargs: queued.append(
+                (args, kwargs)) or enqueued,
+        )
+        clock = {'now': 1000.0}
+        service_entry.monotonic = lambda: clock['now']
+        return service_entry, service, queued, clock, properties
+
+    def test_watchlist_is_warmed_after_sign_in_and_every_ten_minutes(self):
+        service_entry, service, queued, clock, _ = self._watchlist_warm_service()
+
+        service._schedule_watchlist_warm()
+        clock['now'] += service_entry.WATCHLIST_WARM_INTERVAL_SECONDS - 1
+        service._schedule_watchlist_warm()
+        self.assertEqual(
+            queued,
+            [(('https://discover.provider.plex.tv/library/sections/watchlist/all',
+               'watchlist'), {'priority': 1})])
+
+        clock['now'] += 1
+        service._schedule_watchlist_warm()
+        self.assertEqual(len(queued), 2)
+        self.assertEqual(service_entry.WATCHLIST_WARM_INTERVAL_SECONDS, 600)
+
+    def test_watchlist_warm_waits_for_sign_in_and_playback_to_end(self):
+        for options in (
+                {'window': {'plex_token': ''}},
+                {'window': {'plex_restricteduser': 'true'}},
+                {'authenticated': False},
+                {'playing': True}):
+            service_entry, service, queued, clock, _ = \
+                self._watchlist_warm_service(**options)
+
+            service._schedule_watchlist_warm()
+            self.assertEqual(queued, [], options)
+
+        # Due work runs shortly after playback ends
+        service_entry.app.APP.is_playing = False
+        clock['now'] += service_entry.WATCHLIST_WARM_RECHECK_SECONDS
+        service._schedule_watchlist_warm()
+        self.assertEqual(len(queued), 1)
+
+    def test_sign_in_warms_the_new_users_watchlist_right_away(self):
+        service_entry, service, queued, clock, _ = self._watchlist_warm_service()
+        service._schedule_watchlist_warm()
+        service._do_auth = lambda: True
+        service.welcome_msg = False
+        service_entry.app.reload = lambda: None
+        service_entry.app.APP.resume_threads = lambda: None
+
+        service.authenticate()
+        service._schedule_watchlist_warm()
+
+        self.assertEqual(len(queued), 2)
+
+    def test_failed_watchlist_warm_enqueue_retries_on_the_slow_fallback(self):
+        service_entry, service, queued, clock, _ = \
+            self._watchlist_warm_service(enqueued=False)
+
+        service._schedule_watchlist_warm()
+        clock['now'] += service_entry.DISCOVER_WAKE_FALLBACK_SECONDS - 1
+        service._schedule_watchlist_warm()
+        self.assertEqual(len(queued), 1)
+        clock['now'] += 1
+        service._schedule_watchlist_warm()
+        self.assertEqual(len(queued), 2)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -63,6 +63,10 @@ CACHE_MAINTENANCE_INTERVAL_SECONDS = 30 * 60
 WATCHLIST_OVERLAY_SECONDS = 5 * 60
 # How long a process reuses its decoded copy of the cached Watchlist listing
 WATCHLIST_MEMBERSHIP_SECONDS = 30
+# Oldest cached Watchlist that may still answer Discover membership hints.
+# Only hints use it: a recent verified overlay still wins, and the Watchlist
+# listing itself keeps the shorter "watchlist" policy limit.
+WATCHLIST_MEMBERSHIP_STALE_SECONDS = 24 * 60 * 60
 _WATCHLIST_MEMBERSHIP = {}
 REFRESH_REQUEST_RETENTION_SECONDS = 24 * 60 * 60
 REFRESH_RETRY_LIMIT_SECONDS = 10 * 60
@@ -584,13 +588,17 @@ def _touch_record(filename):
         pass
 
 
-def read_xml(url, cache_kind, item_key=None):
-    """Return a fresh, stale, or missed provider response."""
+def read_xml(url, cache_kind, item_key=None, stale_seconds=None):
+    """Return a fresh, stale, or missed provider response.
+
+    stale_seconds replaces the policy's stale limit for this read only.
+    """
     del item_key  # Detail URLs are already exact per-item cache keys.
     policy = _policy(cache_kind)
     account_hash = active_account_hash()
     if policy is None or account_hash is None:
         return CACHE_MISS, None
+    stale_limit = policy.get("stale") if stale_seconds is None else stale_seconds
     try:
         l1_stored_at, l1_xmls = _load_l1(url, account_hash)
         if (
@@ -610,8 +618,8 @@ def read_xml(url, cache_kind, item_key=None):
             return CACHE_MISS, None
         if (
             freshness == CACHE_STALE
-            and policy.get("stale") is not None
-            and _freshness(record.get("stored_at"), policy["stale"], policy["stale"])
+            and stale_limit is not None
+            and _freshness(record.get("stored_at"), stale_limit, stale_limit)
             != CACHE_FRESH
         ):
             return CACHE_MISS, None
@@ -759,10 +767,14 @@ def watchlist_generation():
 
 
 def invalidate_watchlist(account_hash=None):
-    """Drop the cached Watchlist listing after a Watchlist mutation."""
+    """Drop the cached Watchlist listing after a Watchlist mutation and queue
+    its re-download, so Discover membership hints are back within seconds."""
     # Bump the generation first so an in-flight download is not stored
     _window_set(CACHE_WATCHLIST_GENERATION, uuid4().hex)
-    return drop_xml(WATCHLIST_URL, account_hash)
+    dropped = drop_xml(WATCHLIST_URL, account_hash)
+    if account_hash is None or account_matches(account_hash):
+        enqueue_refresh(WATCHLIST_URL, "watchlist")
+    return dropped
 
 
 def _overlay_properties(rating_key, account_hash=None):
@@ -821,8 +833,10 @@ def record_watchlist_state(rating_key, present, account_hash=None):
 
 
 def watchlist_membership(account_hash=None):
-    """Rating keys of the cached (fresh or stale) Watchlist listing, or None.
+    """Rating keys of the cached Watchlist listing, or None.
 
+    A cached Watchlist up to WATCHLIST_MEMBERSHIP_STALE_SECONDS old counts;
+    the PKC service refreshes it periodically and after every mutation.
     Decoded at most once per WATCHLIST_MEMBERSHIP_SECONDS per process, so a
     Discover listing can look up every tile cheaply.
     """
@@ -837,7 +851,9 @@ def watchlist_membership(account_hash=None):
     ):
         return memo.get("keys")
     keys = None
-    _freshness_state, xmls = read_xml(WATCHLIST_URL, "watchlist")
+    _freshness_state, xmls = read_xml(
+        WATCHLIST_URL, "watchlist", stale_seconds=WATCHLIST_MEMBERSHIP_STALE_SECONDS
+    )
     if xmls:
         keys = frozenset(
             key

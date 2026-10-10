@@ -5,7 +5,10 @@
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 METADATA_MATCH_URL = "https://metadata.provider.plex.tv/library/metadata/matches"
-METADATA_ITEM_URL = "https://metadata.provider.plex.tv/library/metadata/%s"
+# includeGuids adds the TMDb/IMDb/TVDB ids used to match the synced library
+METADATA_ITEM_URL = (
+    "https://metadata.provider.plex.tv/library/metadata/%s?includeGuids=1"
+)
 DISCOVER_PROVIDER_HOST = "discover.provider.plex.tv"
 METADATA_PROVIDER_HOST = "metadata.provider.plex.tv"
 DISCOVER_PREFERRED_SERVICES_KEY = "x-plex-preferred-services[]"

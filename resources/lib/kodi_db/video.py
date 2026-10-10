@@ -9,6 +9,8 @@ LOG = getLogger('PLEX.kodi_db.video')
 
 MOVIE_PATH = 'plugin://%s.movies/' % v.ADDON_ID
 SHOW_PATH = 'plugin://%s.tvshows/' % v.ADDON_ID
+# Well below SQLite's limit of 999 host parameters per statement
+UNIQUEID_QUERY_BATCH_SIZE = 500
 
 
 class KodiVideoDB(common.KodiDBBase):
@@ -891,6 +893,25 @@ class KodiVideoDB(common.KodiDBBase):
         """
         self.cursor.execute('DELETE FROM uniqueid WHERE media_id = ? AND media_type = ?',
                             (kodi_id, kodi_type))
+
+    def kodi_ids_by_uniqueids(self, kodi_type, values):
+        """
+        Returns {(provider, value): [kodi_id, ...]} for every kodi_type item
+        carrying one of the metadata provider id values, e.g. '603' or
+        'tt0133093'. Uses Kodi's (media_type, value) uniqueid index.
+        """
+        values = sorted(set(values))
+        result = {}
+        for start in range(0, len(values), UNIQUEID_QUERY_BATCH_SIZE):
+            batch = values[start:start + UNIQUEID_QUERY_BATCH_SIZE]
+            self.cursor.execute(
+                'SELECT media_id, type, value FROM uniqueid '
+                'WHERE media_type = ? AND value IN (%s)'
+                % ','.join('?' * len(batch)),
+                [kodi_type] + batch)
+            for kodi_id, provider, value in self.cursor.fetchall():
+                result.setdefault((provider, value), []).append(kodi_id)
+        return result
 
     @db.catch_operationalerrors
     def update_ratings(self, *args):

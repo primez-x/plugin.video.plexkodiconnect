@@ -250,6 +250,43 @@ class DiscoverCacheTests(unittest.TestCase):
 
             self.assertIsNone(cache.watchlist_hint("odyssey"))
 
+    def test_membership_hints_use_a_cached_watchlist_for_a_day(self):
+        with tempfile.TemporaryDirectory() as profile:
+            cache, _ = load_cache(profile)
+            url = cache.WATCHLIST_URL
+            cache.time = lambda: 100.0
+            self.assertTrue(cache.put_xml(
+                url, [provider_xml(("odyssey", "The Odyssey"))], "watchlist"
+            ))
+
+            cache, _ = load_cache(profile)
+            cache.time = lambda: 100.0 + 2 * 60 * 60
+            # The Watchlist listing itself keeps its one-hour limit
+            self.assertEqual(cache.read_xml(url, "watchlist"), (cache.CACHE_MISS, None))
+            self.assertEqual(cache.watchlist_hint("odyssey"), "present")
+            self.assertEqual(cache.watchlist_hint("other", "present"), "absent")
+            # ... and the old copy is revalidated in the background
+            self.assertEqual(cache.claim_refresh()["url"], url)
+
+            cache, _ = load_cache(profile)
+            cache.time = lambda: 100.0 + cache.WATCHLIST_MEMBERSHIP_STALE_SECONDS + 1
+            self.assertEqual(cache.watchlist_hint("odyssey", "absent"), "absent")
+            self.assertIsNone(cache.watchlist_hint("odyssey"))
+
+    def test_verified_overlay_wins_over_a_day_old_cached_listing(self):
+        with tempfile.TemporaryDirectory() as profile:
+            cache, _ = load_cache(profile)
+            cache.time = lambda: 100.0
+            self.assertTrue(cache.put_xml(
+                cache.WATCHLIST_URL,
+                [provider_xml(("odyssey", "The Odyssey"))],
+                "watchlist",
+            ))
+            cache.time = lambda: 100.0 + 12 * 60 * 60
+            self.assertTrue(cache.record_watchlist_state("odyssey", False))
+
+            self.assertEqual(cache.watchlist_hint("odyssey"), "absent")
+
     def test_verified_overlay_wins_over_the_cached_listing(self):
         with tempfile.TemporaryDirectory() as profile:
             cache, _ = load_cache(profile)
@@ -436,6 +473,26 @@ class DiscoverCacheTests(unittest.TestCase):
 
             self.assertEqual(cache.read_xml(url, "watchlist"), (cache.CACHE_MISS, None))
             self.assertFalse(os.path.exists(cache._source_path(url)))
+
+    def test_watchlist_invalidation_queues_its_redownload(self):
+        with tempfile.TemporaryDirectory() as profile:
+            cache, properties = load_cache(profile)
+            url = cache.WATCHLIST_URL
+            cache.time = lambda: 100.0
+            self.assertTrue(cache.put_xml(url, [provider_xml()], "watchlist"))
+
+            self.assertTrue(cache.invalidate_watchlist(cache.active_account_hash()))
+
+            request = cache.claim_refresh()
+            self.assertEqual((request["url"], request["kind"]), (url, "watchlist"))
+            self.assertEqual(request["priority"], cache.REFRESH_PRIORITY_FOREGROUND)
+            self.assertTrue(cache.finish_refresh(request, True))
+
+            # A mutation by a signed-out account must not refetch for the new one
+            previous_account = cache.active_account_hash()
+            properties["plex_token"] = "account-two"
+            cache.invalidate_watchlist(previous_account)
+            self.assertIsNone(cache.claim_refresh())
 
     def test_watchlist_download_predating_a_mutation_is_not_stored(self):
         with tempfile.TemporaryDirectory() as profile:

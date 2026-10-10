@@ -147,9 +147,10 @@ def _provider_xmls(url, allowed_redirect_hosts, cache_kind=None, item_key=None):
 
 
 def _discover_hub_url(hub_id):
+    # includeGuids adds each card's TMDb/IMDb/TVDB ids to match the library
     return (
         "https://discover.provider.plex.tv/hubs/sections/home/%s"
-        "?includeMetadata=1&limit=20" % hub_id
+        "?includeMetadata=1&includeGuids=1&limit=20" % hub_id
     )
 
 
@@ -880,10 +881,14 @@ def discover_hub(hub_id):
     # tile, rather than first invoking that tile's discover_detail route.
     # Resolve the provider GUID before emitting the tile so a synced library
     # item carries its normal DBID and playable PKC path into that dialog.
+    # A library item matched by a legacy agent has no plex:// guid; it is
+    # matched by its TMDb, IMDb or TVDB id instead (one batched DB read).
     # Keep the provider XML untouched: its opaque ratingKey remains the only
     # valid identity for a provider-only Watchlist item.
     local_apis_by_guid = {}
-    for local_api in mass_api(copy.deepcopy(metadata), check_by_guid=True):
+    for local_api in mass_api(
+        copy.deepcopy(metadata), check_by_guid=True, match_external_ids=True
+    ):
         local_guid = local_api.xml.get("guid")
         if local_guid:
             local_apis_by_guid.setdefault(local_guid, local_api)
@@ -969,11 +974,13 @@ def discover_detail(rating_key):
         LOG.info("Ignoring unsupported Plex Discover type for %s", rating_key)
         return False
     # Provider rating keys are global Plex Discover identities, not local PMS
-    # rating keys.  Resolve the exact provider GUID against the synced PKC
-    # database before falling back to the provider-only detail item.  This is
-    # the same native GUID path used by the Watchlist listing and deliberately
-    # avoids a title/year match.
-    library_apis = mass_api([metadata[0]], check_by_guid=True)
+    # rating keys.  Resolve the exact provider GUID, then its TMDb, IMDb or
+    # TVDB id, against the synced PKC database before falling back to the
+    # provider-only detail item.  This is the same native GUID path used by
+    # the hub tiles and deliberately avoids a title/year match.
+    library_apis = mass_api(
+        [metadata[0]], check_by_guid=True, match_external_ids=True
+    )
     library_match = bool(library_apis)
     api = library_apis[0] if library_match else mass_api([metadata[0]])[0]
     widgets.PLEX_TYPE = api.plex_type

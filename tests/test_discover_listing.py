@@ -117,13 +117,16 @@ def load_entrypoint():
             self.plex_type = xml.get("type")
 
     mass_api_calls = []
+    external_id_calls = []
 
-    def mass_api(xml, check_by_guid=False):
+    def mass_api(xml, check_by_guid=False, match_external_ids=False):
         mass_api_calls.append((list(xml), check_by_guid))
+        external_id_calls.append(match_external_ids)
         if check_by_guid:
             return []
         return [API(child) for child in xml]
 
+    mass_api.external_id_calls = external_id_calls
     modules["resources.lib.plex_api"].API = API
     modules["resources.lib.plex_api"].mass_api = mass_api
     modules["resources.lib.library_sync.nodes"].NODE_TYPES = {}
@@ -465,7 +468,7 @@ class DiscoverListingTests(unittest.TestCase):
         local_api = LocalAPI()
         lookup_calls = []
 
-        def mass_api(metadata, check_by_guid=False):
+        def mass_api(metadata, check_by_guid=False, match_external_ids=False):
             lookup_calls.append(check_by_guid)
             if check_by_guid:
                 return [local_api]
@@ -546,7 +549,7 @@ class DiscoverListingTests(unittest.TestCase):
         local_api = LocalAPI()
         lookup_calls = []
 
-        def mass_api(metadata, check_by_guid=False):
+        def mass_api(metadata, check_by_guid=False, match_external_ids=False):
             lookup_calls.append(check_by_guid)
             if check_by_guid:
                 return [local_api]
@@ -574,6 +577,119 @@ class DiscoverListingTests(unittest.TestCase):
         self.assertNotEqual(item.get("IsPlayable"), "false")
         self.assertEqual(item["extraproperties"]["DBID"], "42")
         self.assertEqual(item["extraproperties"]["ratingKey"], "abc123")
+
+    def test_hub_and_detail_request_provider_guids_for_the_library_match(self):
+        entrypoint, _, _, mass_api_calls = load_entrypoint()
+        xml = provider_metadata()
+        urls = []
+
+        def provider_xmls(url, *args, **kwargs):
+            urls.append(url)
+            return [xml]
+
+        entrypoint._provider_xmls = provider_xmls
+
+        entrypoint.discover_hub("new-for-you")
+        self.assertTrue(entrypoint.discover_detail("abc123"))
+
+        self.assertIn("includeGuids=1", urls[0])
+        self.assertIn("includeMetadata=1", urls[0])
+        self.assertEqual(
+            urls[1],
+            "https://metadata.provider.plex.tv/library/metadata/abc123"
+            "?includeGuids=1",
+        )
+        # Only the library lookups fall back to TMDb/IMDb/TVDB ids
+        self.assertEqual(
+            [
+                (check_by_guid, match_external_ids)
+                for (_, check_by_guid), match_external_ids in zip(
+                    mass_api_calls, entrypoint.mass_api.external_id_calls
+                )
+            ],
+            [(True, True), (False, False), (True, True), (False, False)],
+        )
+
+    def _legacy_agent_library_match(self, entrypoint):
+        """A synced item whose PMS guid is com.plexapp.agents.imdb://..."""
+
+        class LocalAPI(object):
+            plex_type = "movie"
+
+            def __init__(self, xml):
+                self.xml = xml
+
+        def mass_api(metadata, check_by_guid=False, match_external_ids=False):
+            if not check_by_guid:
+                return [entrypoint.API(child) for child in metadata]
+            if not match_external_ids:
+                return []
+            # mass_api keeps the provider guid and sets the local ratingKey
+            local_xml = metadata[0]
+            local_xml.set("ratingKey", "42")
+            local_xml.set("key", "/library/metadata/42")
+            return [LocalAPI(local_xml)]
+
+        entrypoint.mass_api = mass_api
+        entrypoint.widgets.generate_item = lambda api: {
+            "title": api.xml.get("title"),
+            "label": api.xml.get("title"),
+            "type": api.plex_type,
+            "movieid": 42,
+            "file": (
+                "plugin://plugin.video.plexkodiconnect.movies/?plex_id=%s&mode=play"
+                % api.xml.get("ratingKey")
+            ),
+            "extraproperties": {"DBID": "42"}
+            if api.xml.get("ratingKey") == "42"
+            else {},
+        }
+
+    def test_hub_external_id_match_builds_the_native_library_tile(self):
+        entrypoint, directory_calls, _, _ = load_entrypoint()
+        xml = provider_metadata()
+        ET.SubElement(xml[0], "Guid", id="tmdb://603")
+        entrypoint._provider_xmls = lambda *args, **kwargs: [xml]
+        self._legacy_agent_library_match(entrypoint)
+
+        entrypoint.discover_hub("new-for-you")
+
+        _, items, _ = directory_calls[0]
+        self.assertEqual(len(items), 1)
+        path, item, is_folder = items[0]
+        self.assertEqual(
+            path,
+            "plugin://plugin.video.plexkodiconnect.movies/?plex_id=42&mode=play",
+        )
+        self.assertFalse(is_folder)
+        self.assertNotEqual(item.get("IsPlayable"), "false")
+        self.assertEqual(item["extraproperties"]["DBID"], "42")
+        # The provider identity stays available for Watchlist actions
+        self.assertEqual(item["extraproperties"]["ratingKey"], "abc123")
+        self.assertEqual(
+            item["extraproperties"]["plexguid"], "plex://movie/abc123"
+        )
+
+    def test_detail_external_id_match_opens_the_native_library_item(self):
+        entrypoint, _, dialog_calls, _ = load_entrypoint()
+        xml = provider_metadata()
+        ET.SubElement(xml[0], "Guid", id="imdb://tt0133093")
+        entrypoint._provider_xmls = lambda *args, **kwargs: [xml]
+        self._legacy_agent_library_match(entrypoint)
+
+        self.assertTrue(entrypoint.discover_detail("abc123"))
+
+        item = dialog_calls[0]
+        self.assertEqual(
+            item["file"],
+            "plugin://plugin.video.plexkodiconnect.movies/?plex_id=42&mode=play",
+        )
+        self.assertNotEqual(item.get("IsPlayable"), "false")
+        self.assertEqual(item["extraproperties"]["DBID"], "42")
+        self.assertEqual(item["extraproperties"]["ratingKey"], "abc123")
+        self.assertEqual(
+            item["extraproperties"]["plexguid"], "plex://movie/abc123"
+        )
 
 
 if __name__ == "__main__":

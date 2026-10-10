@@ -199,6 +199,46 @@ class KodiVideoDBTests(unittest.TestCase):
         self.assertFalse(database.playstate_matches(3, None, 8178, 0, None))
         conn.close()
 
+    def test_uniqueid_lookup_is_batched_and_scoped_to_the_media_type(self):
+        video = load_video_module()
+        conn = sqlite3.connect(':memory:')
+        conn.executescript('''
+            CREATE TABLE uniqueid (
+                uniqueid_id INTEGER PRIMARY KEY,
+                media_id INTEGER,
+                media_type TEXT,
+                value TEXT,
+                type TEXT
+            );
+            CREATE INDEX ix_uniqueid2 ON uniqueid (media_type, value);
+            INSERT INTO uniqueid VALUES (1, 7, 'movie', '603', 'tmdb');
+            INSERT INTO uniqueid VALUES (2, 7, 'movie', 'tt0133093', 'imdb');
+            INSERT INTO uniqueid VALUES (3, 9, 'movie', '603', 'tmdb');
+            INSERT INTO uniqueid VALUES (4, 3, 'tvshow', '603', 'tmdb');
+            INSERT INTO uniqueid VALUES (5, 8, 'movie', '81189', 'tvdb');
+        ''')
+        database = object.__new__(video.KodiVideoDB)
+        database.cursor = conn.cursor()
+        video.UNIQUEID_QUERY_BATCH_SIZE = 2
+
+        result = database.kodi_ids_by_uniqueids(
+            'movie', ['603', 'tt0133093', '603', '81189', 'unknown'])
+
+        self.assertEqual(
+            {key: sorted(kodi_ids) for key, kodi_ids in result.items()},
+            {
+                ('tmdb', '603'): [7, 9],
+                ('imdb', 'tt0133093'): [7],
+                ('tvdb', '81189'): [8],
+            },
+        )
+        self.assertEqual(
+            database.kodi_ids_by_uniqueids('tvshow', ['603']),
+            {('tmdb', '603'): [3]},
+        )
+        self.assertEqual(database.kodi_ids_by_uniqueids('movie', []), {})
+        conn.close()
+
 
 if __name__ == '__main__':
     unittest.main()
