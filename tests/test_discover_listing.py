@@ -510,6 +510,82 @@ class DiscoverListingTests(unittest.TestCase):
         self.assertEqual(item["extraproperties"]["ratingKey"], "abc123")
         self.assertNotIn("DBID", item["extraproperties"])
 
+    def _hub_library_tile(self, xml):
+        """Render a Discover hub whose one item is matched to the library."""
+        entrypoint, directory_calls, _, _ = load_entrypoint()
+        entrypoint._provider_xmls = lambda *args, **kwargs: [xml]
+
+        class LocalAPI(object):
+            plex_type = "movie"
+
+            def __init__(self, child):
+                self.xml = ET.Element("Video", attrib=dict(child.attrib))
+                self.xml.set("ratingKey", "42")
+
+        def mass_api(metadata, check_by_guid=False, match_external_ids=False):
+            if check_by_guid:
+                return [LocalAPI(child) for child in metadata]
+            return [entrypoint.API(child) for child in metadata]
+
+        entrypoint.mass_api = mass_api
+        entrypoint.widgets.generate_item = lambda api: {
+            "title": api.xml.get("title"),
+            "label": api.xml.get("title"),
+            "type": api.plex_type,
+            "file": "plugin://plugin.video.plexkodiconnect.movies/?plex_id=42&mode=play",
+            "extraproperties": {"DBID": "42"},
+        }
+        entrypoint.discover_hub("new-for-you")
+        return directory_calls[0][1][0][1]
+
+    def test_watchlist_library_tile_carries_the_hub_provider_props_and_hint(self):
+        def provider_xml():
+            xml = provider_metadata(user_state=1)
+            ET.SubElement(xml[0], "Guid", id="tmdb://603")
+            ET.SubElement(
+                xml,
+                "Video",
+                type="movie",
+                title="Provider Only",
+                ratingKey="def456",
+                guid="plex://movie/def456",
+            )
+            return xml
+
+        items, _ = self._watchlist_listing(provider_xml())
+        hub_item = self._hub_library_tile(provider_metadata(user_state=1))
+
+        provider_keys = ("ratingKey", "plexguid", "PlexWatchlistHint")
+        path, item, _ = items[0]
+        # The library tile keeps its DBID and native PKC playback path
+        self.assertEqual(
+            path,
+            "plugin://plugin.video.plexkodiconnect.movies/?plex_id=42&mode=play",
+        )
+        self.assertNotEqual(item.get("IsPlayable"), "false")
+        self.assertEqual(item["extraproperties"]["DBID"], "42")
+        # ...and the provider identity and hint exactly like the hub tile
+        expected = {
+            "ratingKey": "abc123",
+            "plexguid": "plex://movie/abc123",
+            "PlexWatchlistHint": "present",
+        }
+        self.assertEqual(
+            {k: hub_item["extraproperties"].get(k) for k in provider_keys},
+            expected,
+        )
+        self.assertEqual(
+            {k: item["extraproperties"].get(k) for k in provider_keys},
+            expected,
+        )
+
+        # A provider-only tile is unchanged: only its provider ratingKey
+        path, item, _ = items[1]
+        self.assertIn("mode=discover_detail", path)
+        self.assertIn("rating_key=def456", path)
+        self.assertEqual(item["IsPlayable"], "false")
+        self.assertEqual(item["extraproperties"], {"ratingKey": "def456"})
+
     def test_hub_items_use_bulk_database_lookup_and_direct_detail_routes(self):
         entrypoint, directory_calls, _, mass_api_calls = load_entrypoint()
         xml = provider_metadata()

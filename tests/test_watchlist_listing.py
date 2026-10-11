@@ -147,6 +147,41 @@ class WatchlistApisTests(unittest.TestCase):
         self.assertEqual(lookups, [(True, True), (False, False)])
 
 
+    def test_entries_pair_each_library_match_with_its_provider_item(self):
+        entrypoint = load_entrypoint()
+        xml = ET.Element("MediaContainer")
+        provider_item(xml, "aaa", "plex://movie/aaa")
+        provider_item(xml, "bbb", "plex://movie/bbb")
+
+        def mass_api(items, check_by_guid=False, match_external_ids=False):
+            if not check_by_guid:
+                return [FakeAPI(child) for child in items]
+            matches = []
+            for child in items:
+                if child.get("guid") == "plex://movie/bbb":
+                    for plex_id in ("41", "42"):
+                        local = ET.Element("Video", attrib=dict(child.attrib))
+                        local.set("ratingKey", plex_id)
+                        matches.append(FakeAPI(local))
+            return matches
+
+        entrypoint.mass_api = mass_api
+
+        entries = entrypoint._watchlist_entries(xml)
+
+        self.assertEqual(
+            [
+                (
+                    api.xml.get("ratingKey"),
+                    None if provider is None else provider.get("ratingKey"),
+                )
+                for api, provider in entries
+            ],
+            [("aaa", None), ("41", "bbb"), ("42", "bbb")],
+        )
+        # The pair holds the provider element itself, not a copy
+        self.assertIs(entries[1][1], xml[1])
+
 def load_plex_api_package(items_by_guid):
     module_names = (
         "resources.lib.plex_api",

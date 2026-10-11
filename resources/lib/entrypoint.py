@@ -328,6 +328,32 @@ def show_section(section_index):
         directory_item(label, path)
 
 
+def _set_provider_props(item, child, provider_state_is_current):
+    """
+    Publish a provider (Plex Discover) item's identity on a list item: its
+    opaque provider ratingKey, plex:// guid and Watchlist hint. Shared by
+    Discover hub tiles and library-matched Watchlist tiles so the skin's
+    Watchlist state and add/remove action work on both.
+    Returns the normalized provider rating key, or None if it is invalid
+    (then nothing is set).
+    """
+    rating_key = plex_discover.normalize_rating_key(child.get("ratingKey"))
+    if rating_key is None:
+        return None
+    props = item.setdefault("extraproperties", {})
+    props["ratingKey"] = rating_key
+    provider_hint = None
+    if provider_state_is_current:
+        provider_hint = watchlist_state.provider_state_hint(child.get("userState"))
+    watchlist_hint = discover_cache.watchlist_hint(rating_key, provider_hint)
+    if watchlist_hint:
+        props[watchlist_state.DISCOVER_HINT_PROPERTY] = watchlist_hint
+    guid = child.get("guid")
+    if guid:
+        props["plexguid"] = guid
+    return rating_key
+
+
 def _watchlist_apis(xml):
     """
     Keep every provider Watchlist item, substituting library matches (one
@@ -337,6 +363,15 @@ def _watchlist_apis(xml):
     batched DB read). Provider-only items keep their opaque provider
     ratingKey.
     """
+    return [api for api, _ in _watchlist_entries(xml)]
+
+
+def _watchlist_entries(xml):
+    """
+    Like _watchlist_apis(), but yields (api, provider_xml) pairs.
+    provider_xml is the provider Watchlist element a library match was
+    substituted for, or None for a provider-only item.
+    """
     provider_items = list(xml)
     local_apis_by_guid = {}
     for local_api in mass_api(
@@ -345,7 +380,7 @@ def _watchlist_apis(xml):
         guid = local_api.xml.get("guid")
         if guid:
             local_apis_by_guid.setdefault(guid, []).append(local_api)
-    apis = []
+    entries = []
     seen_guids = set()
     for provider_api in mass_api(provider_items):
         guid = provider_api.xml.get("guid")
@@ -355,10 +390,10 @@ def _watchlist_apis(xml):
             seen_guids.add(guid)
         local_apis = local_apis_by_guid.get(guid) if guid else None
         if local_apis:
-            apis.extend(local_apis)
+            entries.extend((api, provider_api.xml) for api in local_apis)
         else:
-            apis.append(provider_api)
-    return apis
+            entries.append((provider_api, None))
+    return entries
 
 
 def show_listing(xml, plex_type=None, section_id=None, synched=True, key=None):
@@ -426,26 +461,38 @@ def show_listing(xml, plex_type=None, section_id=None, synched=True, key=None):
         # Need to chain keys for navigation
         widgets.KEY = key
     # Process all items to show
+    provider_state_is_current = False
     if key == "watchlist":
-        all_apis = _watchlist_apis(xml)
-    else:
-        all_apis = mass_api(xml)
-
-    if key == "watchlist":
+        all_entries = _watchlist_entries(xml)
         # filter out items in the wrong section id when it's specified
         if section_id is not None:
-            all_apis = [
-                api for api in all_apis if api.section_id == utils.cast(int, section_id)
+            all_entries = [
+                (api, provider_xml)
+                for api, provider_xml in all_entries
+                if api.section_id == utils.cast(int, section_id)
             ]
+        if any(provider_xml is not None for _, provider_xml in all_entries):
+            # One shared provider timestamp; check it once, like the hub
+            provider_state_is_current = discover_cache.source_is_current(
+                WATCHLIST_URL
+            )
+    else:
+        all_entries = [(api, None) for api in mass_api(xml)]
 
     all_items = []
-    for api in all_apis:
+    for api, provider_xml in all_entries:
         item = widgets.generate_item(api)
         if item is None:
             continue
+        if provider_xml is not None:
+            # A library match keeps its DBID and native PKC playback path but,
+            # like a library-matched Discover hub tile, also carries the
+            # provider identity and Watchlist hint for the skin's Watchlist
+            # state and add/remove action.
+            _set_provider_props(item, provider_xml, provider_state_is_current)
         # For non-DB watchlist items, inject ratingKey so the context menu
         # remove-from-watchlist action works for discover/non-library items
-        if key == "watchlist" and not api.kodi_id:
+        elif key == "watchlist" and not api.kodi_id:
             rk = api.xml.get("ratingKey")
             if rk:
                 item.setdefault("extraproperties", {})["ratingKey"] = rk
@@ -909,24 +956,13 @@ def discover_hub(hub_id):
         item = widgets.generate_item(api)
         if item is None:
             continue
-        rating_key = plex_discover.normalize_rating_key(child.get("ratingKey"))
-        if rating_key is None:
-            continue
         # Keep the provider identity for direct Watchlist actions. A local
         # match deliberately retains its native PKC playback route; only
         # provider-only items need a detail route and a non-playable state.
-        props = item.setdefault("extraproperties", {})
-        props["ratingKey"] = rating_key
-        provider_hint = None
-        if provider_state_is_current:
-            provider_hint = watchlist_state.provider_state_hint(child.get("userState"))
-        watchlist_hint = discover_cache.watchlist_hint(rating_key, provider_hint)
-        if watchlist_hint:
-            props[watchlist_state.DISCOVER_HINT_PROPERTY] = watchlist_hint
-        guid = child.get("guid")
-        if guid:
-            props["plexguid"] = guid
-        props["PlexDiscoverDetail"] = "true"
+        rating_key = _set_provider_props(item, child, provider_state_is_current)
+        if rating_key is None:
+            continue
+        item["extraproperties"]["PlexDiscoverDetail"] = "true"
         if local_api is None:
             item["file"] = utils.extend_url(
                 "plugin://%s" % v.ADDON_ID,
