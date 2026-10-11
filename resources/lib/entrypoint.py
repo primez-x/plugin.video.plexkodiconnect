@@ -32,7 +32,7 @@ from . import app, widgets
 LOG = getLogger("PLEX.entrypoint")
 
 WATCHLIST_PAGE_SIZE = 100
-WATCHLIST_URL = "https://discover.provider.plex.tv/library/sections/watchlist/all"
+WATCHLIST_URL = plex_discover.WATCHLIST_URL
 DISCOVER_REDIRECT_STATUS_CODES = (301, 302, 303, 307, 308)
 DISCOVER_DETAIL_TYPES = frozenset(("movie", "show"))
 DISCOVER_HTTP_TIMEOUT = (3.0, 10.0)
@@ -330,13 +330,18 @@ def show_section(section_index):
 
 def _watchlist_apis(xml):
     """
-    Keep every provider Watchlist item, substituting exact GUID library
-    matches (one entry per local match, e.g. movie editions) for items synced
-    to Kodi. Provider-only items keep their opaque provider ratingKey.
+    Keep every provider Watchlist item, substituting library matches (one
+    entry per local match, e.g. movie editions) for items synced to Kodi.
+    Like the Discover hub, a library item matched by a legacy agent has no
+    plex:// guid and is matched by its TMDb, IMDb or TVDB id instead (one
+    batched DB read). Provider-only items keep their opaque provider
+    ratingKey.
     """
     provider_items = list(xml)
     local_apis_by_guid = {}
-    for local_api in mass_api(copy.deepcopy(provider_items), check_by_guid=True):
+    for local_api in mass_api(
+        copy.deepcopy(provider_items), check_by_guid=True, match_external_ids=True
+    ):
         guid = local_api.xml.get("guid")
         if guid:
             local_apis_by_guid.setdefault(guid, []).append(local_api)

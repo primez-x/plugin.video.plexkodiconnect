@@ -82,6 +82,12 @@ class WatchlistListingTests(unittest.TestCase):
         result = entrypoint._download_watchlist()
 
         self.assertEqual(len(result), 101)
+        # Every page asks for the provider ids; paging stays in parameters
+        self.assertEqual(
+            [call[0] for call in downloader.calls],
+            [entrypoint.WATCHLIST_URL] * 2,
+        )
+        self.assertIn("?includeGuids=1", entrypoint.WATCHLIST_URL)
         self.assertEqual(
             [call[2]["parameters"] for call in downloader.calls],
             [
@@ -114,7 +120,10 @@ class WatchlistApisTests(unittest.TestCase):
         provider_item(xml, "bbb", "plex://movie/bbb")
         provider_item(xml, "ccc", "plex://movie/ccc")
 
-        def mass_api(items, check_by_guid=False):
+        lookups = []
+
+        def mass_api(items, check_by_guid=False, match_external_ids=False):
+            lookups.append((check_by_guid, match_external_ids))
             if not check_by_guid:
                 return [FakeAPI(child) for child in items]
             matches = []
@@ -134,6 +143,8 @@ class WatchlistApisTests(unittest.TestCase):
             [api.xml.get("ratingKey") for api in apis],
             ["aaa", "41", "42", "ccc"],
         )
+        # Legacy-agent library items are matched by TMDb/IMDb/TVDB id
+        self.assertEqual(lookups, [(True, True), (False, False)])
 
 
 def load_plex_api_package(items_by_guid):

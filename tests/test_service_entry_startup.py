@@ -12,6 +12,25 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
+# The canonical Watchlist URL (resources.lib.plex_discover.WATCHLIST_URL)
+WATCHLIST_URL = (
+    'https://discover.provider.plex.tv/library/sections/watchlist/all'
+    '?includeGuids=1'
+)
+
+
+def load_real_discover_cache():
+    """Import the real discover_cache over the Kodi-free stubs in place."""
+    for module_name in ('resources.lib.discover_cache',
+                        'resources.lib.plex_discover'):
+        sys.modules.pop(module_name, None)
+    resources_lib = sys.modules.get('resources.lib')
+    for attribute in ('discover_cache', 'plex_discover'):
+        if resources_lib is not None and hasattr(resources_lib, attribute):
+            delattr(resources_lib, attribute)
+    return importlib.import_module('resources.lib.discover_cache')
+
+
 def load_service_entry():
     module_names = (
         'xbmc',
@@ -212,7 +231,7 @@ class ServiceEntryStartupTests(unittest.TestCase):
         previous_attribute = getattr(resources_lib, 'entrypoint', None)
         sys.modules['resources.lib.entrypoint'] = entrypoint
         resources_lib.entrypoint = entrypoint
-        url = 'https://discover.provider.plex.tv/library/sections/watchlist/all'
+        url = WATCHLIST_URL
         try:
             self.assertTrue(
                 service._refresh_discover_cache(
@@ -386,7 +405,7 @@ class ServiceEntryStartupTests(unittest.TestCase):
         service_entry.app.APP = types.SimpleNamespace(is_playing=playing)
         queued = []
         service_entry.discover_cache = types.SimpleNamespace(
-            WATCHLIST_URL='https://discover.provider.plex.tv/library/sections/watchlist/all',
+            WATCHLIST_URL=WATCHLIST_URL,
             REFRESH_PRIORITY_PREFETCH=1,
             enqueue_refresh=lambda *args, **kwargs: queued.append(
                 (args, kwargs)) or enqueued,
@@ -403,13 +422,31 @@ class ServiceEntryStartupTests(unittest.TestCase):
         service._schedule_watchlist_warm()
         self.assertEqual(
             queued,
-            [(('https://discover.provider.plex.tv/library/sections/watchlist/all',
-               'watchlist'), {'priority': 1})])
+            [((WATCHLIST_URL, 'watchlist'), {'priority': 1})])
 
         clock['now'] += 1
         service._schedule_watchlist_warm()
         self.assertEqual(len(queued), 2)
         self.assertEqual(service_entry.WATCHLIST_WARM_INTERVAL_SECONDS, 600)
+
+    def test_watchlist_warm_up_queues_the_url_the_listing_caches(self):
+        service_entry, service, _, _, _ = self._watchlist_warm_service()
+        cache = load_real_discover_cache()
+        queued = []
+        cache.enqueue_refresh = lambda *args, **kwargs: queued.append(
+            (args, kwargs)) or True
+        service_entry.discover_cache = cache
+
+        service._schedule_watchlist_warm()
+
+        self.assertEqual(
+            queued,
+            [((WATCHLIST_URL, 'watchlist'),
+              {'priority': cache.REFRESH_PRIORITY_PREFETCH})])
+        self.assertIs(cache.WATCHLIST_URL, cache.plex_discover.WATCHLIST_URL)
+        # The refresh worker accepts it, so the warm-up fills the same entry
+        # the Watchlist listing and the membership hints read
+        self.assertTrue(cache._valid_refresh_url(WATCHLIST_URL, 'watchlist'))
 
     def test_watchlist_warm_waits_for_sign_in_and_playback_to_end(self):
         for options in (

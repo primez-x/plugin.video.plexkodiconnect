@@ -105,7 +105,8 @@ CACHE_POLICIES = {
         "max_raw_bytes": 4 * 1024 * 1024,
     },
 }
-WATCHLIST_URL = "https://discover.provider.plex.tv/library/sections/watchlist/all"
+# A Watchlist cached under an earlier URL is never read again and ages out
+WATCHLIST_URL = plex_discover.WATCHLIST_URL
 REFRESH_HOSTS = {
     "catalog": (
         getattr(plex_discover, "DISCOVER_PROVIDER_HOST", "discover.provider.plex.tv"),

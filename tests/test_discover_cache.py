@@ -7,11 +7,17 @@ import types
 import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+
+LEGACY_WATCHLIST_URL = (
+    "https://discover.provider.plex.tv/library/sections/watchlist/all"
+)
 
 
 def load_cache(profile, properties=None):
@@ -461,6 +467,55 @@ class DiscoverCacheTests(unittest.TestCase):
             cache, _ = load_cache(profile)
             cache.time = lambda: 100.0 + cache.CACHE_POLICIES["watchlist"]["stale"] + 1
             self.assertEqual(cache.read_xml(url, "watchlist"), (cache.CACHE_MISS, None))
+
+    def test_watchlist_url_carries_provider_ids_and_is_the_one_refresh_url(self):
+        with tempfile.TemporaryDirectory() as profile:
+            cache, _ = load_cache(profile)
+
+            self.assertIs(cache.WATCHLIST_URL, cache.plex_discover.WATCHLIST_URL)
+            self.assertEqual(
+                parse_qs(urlsplit(cache.WATCHLIST_URL).query),
+                {"includeGuids": ["1"]},
+            )
+            self.assertTrue(
+                cache._valid_refresh_url(cache.WATCHLIST_URL, "watchlist")
+            )
+            self.assertFalse(
+                cache._valid_refresh_url(LEGACY_WATCHLIST_URL, "watchlist")
+            )
+
+    def test_watchlist_cached_under_the_previous_url_ages_out(self):
+        with tempfile.TemporaryDirectory() as profile:
+            cache, _ = load_cache(profile)
+            cache.time = lambda: 100.0
+            # The previous release cached the listing and queued its refresh
+            # under the URL without includeGuids
+            cache.WATCHLIST_URL = LEGACY_WATCHLIST_URL
+            self.assertTrue(cache.put_xml(
+                LEGACY_WATCHLIST_URL,
+                [provider_xml(("odyssey", "The Odyssey"))],
+                "watchlist",
+            ))
+            self.assertTrue(cache.enqueue_refresh(LEGACY_WATCHLIST_URL, "watchlist"))
+            legacy_path = cache._source_path(LEGACY_WATCHLIST_URL)
+
+            cache, _ = load_cache(profile)
+            cache.time = lambda: 101.0
+            url = cache.WATCHLIST_URL
+            self.assertNotEqual(url, LEGACY_WATCHLIST_URL)
+            self.assertEqual(cache.read_xml(url, "watchlist"), (cache.CACHE_MISS, None))
+            # The old listing answers no membership hint ...
+            self.assertIsNone(cache.watchlist_hint("odyssey"))
+            self.assertEqual(cache.watchlist_hint("odyssey", "absent"), "absent")
+            # ... its queued refresh is dropped, the new URL is fetched instead
+            request = cache.claim_refresh()
+            self.assertEqual((request["url"], request["kind"]), (url, "watchlist"))
+            self.assertTrue(cache.finish_refresh(request, True))
+            self.assertIsNone(cache.claim_refresh())
+
+            cache.time = lambda: 100.0 + cache.CACHE_RETENTION_SECONDS + 1
+            cache.sweep()
+            self.assertFalse(Path(legacy_path).exists())
 
     def test_watchlist_invalidation_drops_window_and_durable_copies(self):
         with tempfile.TemporaryDirectory() as profile:

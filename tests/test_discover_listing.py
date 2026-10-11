@@ -338,8 +338,13 @@ class DiscoverListingTests(unittest.TestCase):
 
     def _watchlist_with_cache(self, freshness, cached):
         entrypoint, _, _, _ = load_entrypoint()
-        calls = {"download": 0, "put": [], "enqueue": [], "listing": []}
-        entrypoint.discover_cache.read_xml = lambda url, kind: (freshness, cached)
+        calls = {"download": 0, "read": [], "put": [], "enqueue": [], "listing": []}
+
+        def read_xml(url, kind):
+            calls["read"].append((url, kind))
+            return freshness, cached
+
+        entrypoint.discover_cache.read_xml = read_xml
         entrypoint.discover_cache.watchlist_generation = lambda: "generation"
         entrypoint.discover_cache.put_xml = (
             lambda url, xmls, kind, generation=None: calls["put"].append(
@@ -387,6 +392,123 @@ class DiscoverListingTests(unittest.TestCase):
             [(entrypoint.WATCHLIST_URL, [downloaded], "watchlist", "generation")],
         )
         self.assertEqual(calls["listing"], [downloaded])
+
+    def test_watchlist_listing_caches_the_one_url_that_requests_provider_ids(self):
+        entrypoint, calls, downloaded = self._watchlist_with_cache("miss", None)
+
+        url = entrypoint.WATCHLIST_URL
+        # discover_cache, its membership hints and the service warm-up use
+        # the same plex_discover constant
+        self.assertIs(url, entrypoint.plex_discover.WATCHLIST_URL)
+        self.assertEqual(
+            url,
+            "https://discover.provider.plex.tv/library/sections/watchlist/all"
+            "?includeGuids=1",
+        )
+        self.assertEqual(calls["read"], [(url, "watchlist")])
+        self.assertEqual(calls["put"], [(url, [downloaded], "watchlist", "generation")])
+
+    def _watchlist_listing(self, xml):
+        """Render the cached Watchlist through the real show_listing."""
+        entrypoint, directory_calls, _, _ = load_entrypoint()
+        entrypoint.discover_cache.read_xml = lambda url, kind: ("fresh", [xml])
+        entrypoint.v.PLEX_TYPE_VIDEO = "video"
+        entrypoint.v.PLEX_TYPE_EPISODE = "episode"
+        entrypoint.v.CONTENT_FROM_PLEX_TYPE["video"] = "videos"
+        entrypoint.widgets.prepare_listitem = lambda item, key=None: item
+        lookups = []
+
+        class WatchlistAPI(object):
+            tag = "Video"
+            fast_key = None
+
+            def __init__(self, xml, kodi_id=None):
+                self.xml = xml
+                self.plex_type = xml.get("type")
+                self.kodi_id = kodi_id
+
+        def mass_api(metadata, check_by_guid=False, match_external_ids=False):
+            lookups.append((check_by_guid, match_external_ids))
+            if not check_by_guid:
+                return [WatchlistAPI(child) for child in metadata]
+            matches = []
+            for child in metadata:
+                # A legacy-agent library item has no plex:// guid; only its
+                # TMDb id matches. mass_api keeps the provider guid.
+                if match_external_ids and child.find("Guid[@id='tmdb://603']") is not None:
+                    child.set("ratingKey", "42")
+                    child.set("key", "/library/metadata/42")
+                    matches.append(WatchlistAPI(child, kodi_id=42))
+            return matches
+
+        entrypoint.API = WatchlistAPI
+        entrypoint.mass_api = mass_api
+        entrypoint.widgets.generate_item = lambda api: {
+            "title": api.xml.get("title"),
+            "label": api.xml.get("title"),
+            "type": api.plex_type,
+            "file": (
+                "plugin://plugin.video.plexkodiconnect.movies/?plex_id=%s&mode=play"
+                % api.xml.get("ratingKey")
+            ),
+            "extraproperties": {"DBID": str(api.kodi_id)} if api.kodi_id else {},
+        }
+
+        entrypoint.watchlist()
+
+        self.assertEqual(len(directory_calls), 1)
+        return directory_calls[0][1], lookups
+
+    def test_watchlist_external_id_match_builds_the_native_library_tile(self):
+        xml = provider_metadata()
+        ET.SubElement(xml[0], "Guid", id="imdb://tt0133093")
+        ET.SubElement(xml[0], "Guid", id="tmdb://603")
+        ET.SubElement(
+            xml,
+            "Video",
+            type="movie",
+            title="Provider Only",
+            ratingKey="def456",
+            guid="plex://movie/def456",
+        )
+
+        items, lookups = self._watchlist_listing(xml)
+
+        # Only the library lookup falls back to TMDb/IMDb/TVDB ids
+        self.assertEqual(lookups, [(True, True), (False, False)])
+        self.assertEqual(len(items), 2)
+        path, item, is_folder = items[0]
+        self.assertEqual(
+            path,
+            "plugin://plugin.video.plexkodiconnect.movies/?plex_id=42&mode=play",
+        )
+        self.assertFalse(is_folder)
+        self.assertNotEqual(item.get("IsPlayable"), "false")
+        self.assertEqual(item["extraproperties"]["DBID"], "42")
+
+        # An unmatched item stays provider-only behind its provider key
+        path, item, is_folder = items[1]
+        self.assertIn("mode=discover_detail", path)
+        self.assertIn("rating_key=def456", path)
+        self.assertFalse(is_folder)
+        self.assertEqual(item["IsPlayable"], "false")
+        self.assertEqual(item["extraproperties"]["ratingKey"], "def456")
+        self.assertNotIn("DBID", item["extraproperties"])
+
+    def test_watchlist_without_a_library_match_stays_provider_only(self):
+        xml = provider_metadata()
+        ET.SubElement(xml[0], "Guid", id="tmdb://999")
+
+        items, lookups = self._watchlist_listing(xml)
+
+        self.assertEqual(lookups, [(True, True), (False, False)])
+        self.assertEqual(len(items), 1)
+        path, item, _ = items[0]
+        self.assertIn("mode=discover_detail", path)
+        self.assertIn("rating_key=abc123", path)
+        self.assertEqual(item["IsPlayable"], "false")
+        self.assertEqual(item["extraproperties"]["ratingKey"], "abc123")
+        self.assertNotIn("DBID", item["extraproperties"])
 
     def test_hub_items_use_bulk_database_lookup_and_direct_detail_routes(self):
         entrypoint, directory_calls, _, mass_api_calls = load_entrypoint()

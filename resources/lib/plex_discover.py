@@ -9,6 +9,13 @@ METADATA_MATCH_URL = "https://metadata.provider.plex.tv/library/metadata/matches
 METADATA_ITEM_URL = (
     "https://metadata.provider.plex.tv/library/metadata/%s?includeGuids=1"
 )
+# The one Watchlist URL: the listing, the service warm-up and the Discover
+# membership hints all download and cache the Watchlist under this key.
+# includeGuids adds the TMDb/IMDb/TVDB ids used to match the synced library
+WATCHLIST_URL = (
+    "https://discover.provider.plex.tv/library/sections/watchlist/all"
+    "?includeGuids=1"
+)
 DISCOVER_PROVIDER_HOST = "discover.provider.plex.tv"
 METADATA_PROVIDER_HOST = "metadata.provider.plex.tv"
 DISCOVER_PREFERRED_SERVICES_KEY = "x-plex-preferred-services[]"
