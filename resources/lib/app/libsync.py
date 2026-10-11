@@ -94,8 +94,9 @@ class Sync(object):
 
     def load(self):
         self.direct_paths = utils.settings('useDirectPaths') == '1'
+        # Boolean settings are stored as 'true' / 'false'
         self.check_media_file_existence = \
-            utils.settings('check_media_file_existence') == '1'
+            utils.settings('check_media_file_existence') == 'true'
         self.enable_music = utils.settings('enableMusic') == 'true'
         self.artwork = utils.settings('usePlexArtwork') == 'true'
         self.replace_smb_path = utils.settings('replaceSMB') == 'true'

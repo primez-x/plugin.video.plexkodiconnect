@@ -8,6 +8,14 @@ from .. import db, variables as v, app, timing
 LOG = getLogger('PLEX.kodi_db.music')
 
 
+# kodi_type: (table, rating column, id column) for update_userrating().
+# Trusted identifiers only - never build these from item data
+USERRATING_COLUMNS = {
+    v.KODI_TYPE_SONG: ('song', 'userrating', 'idSong'),
+    v.KODI_TYPE_ALBUM: ('album', 'iUserrating', 'idAlbum'),
+}
+
+
 class KodiMusicDB(common.KodiDBBase):
     db_kind = 'music'
 
@@ -453,19 +461,22 @@ class KodiMusicDB(common.KodiDBBase):
     @db.catch_operationalerrors
     def update_userrating(self, kodi_id, kodi_type, userrating):
         """
-        Updates userrating for songs and albums
+        Sets the userrating of a song or album. Table, rating column and id
+        column come from the fixed USERRATING_COLUMNS mapping, only the values
+        are bound. Kodi's NULL counts as 0 (no rating).
+
+        Returns True if the Kodi DB changed, False otherwise (rating already
+        set, unknown item or a kodi_type without userrating, e.g. artist)
         """
-        if kodi_type == v.KODI_TYPE_SONG:
-            column = 'userrating'
-            identifier = 'idSong'
-        elif kodi_type == v.KODI_TYPE_ALBUM:
-            column = 'iUserrating'
-            identifier = 'idAlbum'
-        else:
-            return
-        self.cursor.execute('''UPDATE %s SET %s = ? WHERE ? = ?'''
-                            % (kodi_type, column),
-                            (userrating, identifier, kodi_id))
+        try:
+            table, column, identifier = USERRATING_COLUMNS[kodi_type]
+        except KeyError:
+            return False
+        self.cursor.execute(
+            'UPDATE %s SET %s = ? WHERE %s = ? AND IFNULL(%s, 0) != ?'
+            % (table, column, identifier, column),
+            (userrating, kodi_id, userrating))
+        return self.cursor.rowcount > 0
 
     @db.catch_operationalerrors
     def remove_albuminfosong(self, kodi_id):

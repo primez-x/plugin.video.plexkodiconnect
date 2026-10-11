@@ -236,11 +236,11 @@ class Movie(ItemBase):
             self.userdata_changed = True
         # Write to Kodi DB
         self.kodidb.set_resume(db_item['kodi_fileid'], *playstate)
-        # Note: update_userrating() does not reach any row (it binds the id
-        # column name as a value), so it never changes the Kodi DB
-        self.kodidb.update_userrating(db_item['kodi_id'],
-                                      db_item['kodi_type'],
-                                      api.userrating())
+        # update_userrating() returns True only if the rating differed
+        if self.kodidb.update_userrating(db_item['kodi_id'],
+                                         db_item['kodi_type'],
+                                         api.userrating()):
+            self.userdata_changed = True
         return True
 
     def _process_collections(self, api, tags, kodi_id, section_id, children):

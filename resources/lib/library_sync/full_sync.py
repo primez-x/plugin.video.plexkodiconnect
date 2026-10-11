@@ -40,7 +40,7 @@ class FullSync(common.LibrarySyncMixin, bg.KillableThread):
         """
         self.successful = True
         # True once this sync added, updated or removed something in the Kodi
-        # DB (including playstates). Decides whether Kodi's views and widgets
+        # DB (including playstates and user ratings). Decides whether Kodi's views and widgets
         # need to be reloaded at the end
         self.changed = False
         self.repair = repair
@@ -147,7 +147,7 @@ class FullSync(common.LibrarySyncMixin, bg.KillableThread):
                                                section_name=section.name,
                                                section_id=section.section_id)
                         elif getattr(context, 'userdata_changed', True):
-                            # A playstate in the Kodi DB changed
+                            # A playstate or user rating in the Kodi DB changed
                             self.changed = True
                         context.plexdb.update_last_sync(
                             int(xml.attrib['ratingKey']),

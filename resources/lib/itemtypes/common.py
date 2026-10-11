@@ -44,7 +44,8 @@ class ItemBase(object):
     def __init__(self, last_sync, plexdb=None, kodidb=None, lock=True):
         self.last_sync = last_sync
         self.lock = lock
-        # Set by update_userdata() once it changed a playstate in the Kodi DB
+        # Set by update_userdata() once it changed a playstate or user rating
+        # in the Kodi DB
         self.userdata_changed = False
         self.plexdb = plexdb
         self.kodidb = kodidb

@@ -13,6 +13,16 @@ SHOW_PATH = 'plugin://%s.tvshows/' % v.ADDON_ID
 UNIQUEID_QUERY_BATCH_SIZE = 500
 
 
+# kodi_type: (table, id column) for update_userrating(). Trusted identifiers
+# only - never build these from item data
+USERRATING_COLUMNS = {
+    v.KODI_TYPE_MOVIE: ('movie', 'idMovie'),
+    v.KODI_TYPE_EPISODE: ('episode', 'idEpisode'),
+    v.KODI_TYPE_SEASON: ('seasons', 'idSeason'),
+    v.KODI_TYPE_SHOW: ('tvshow', 'idShow'),
+}
+
+
 class KodiVideoDB(common.KodiDBBase):
     db_kind = 'video'
 
@@ -1151,22 +1161,23 @@ class KodiVideoDB(common.KodiDBBase):
     @db.catch_operationalerrors
     def update_userrating(self, kodi_id, kodi_type, userrating):
         """
-        Updates userrating
+        Sets the userrating of a movie, episode, season or tvshow. Table and
+        id column come from the fixed USERRATING_COLUMNS mapping, only the
+        values are bound. Kodi's NULL counts as 0 (no rating).
+
+        Returns True if the Kodi DB changed, False otherwise (rating already
+        set, unknown item or unsupported kodi_type)
         """
-        if kodi_type == v.KODI_TYPE_MOVIE:
-            table = kodi_type
-            identifier = 'idMovie'
-        elif kodi_type == v.KODI_TYPE_EPISODE:
-            table = kodi_type
-            identifier = 'idEpisode'
-        elif kodi_type == v.KODI_TYPE_SEASON:
-            table = 'seasons'
-            identifier = 'idSeason'
-        elif kodi_type == v.KODI_TYPE_SHOW:
-            table = kodi_type
-            identifier = 'idShow'
-        self.cursor.execute('''UPDATE %s SET userrating = ? WHERE ? = ?''' % table,
-                            (userrating, identifier, kodi_id))
+        try:
+            table, identifier = USERRATING_COLUMNS[kodi_type]
+        except KeyError:
+            LOG.warning('Cannot set userrating for kodi_type %s', kodi_type)
+            return False
+        self.cursor.execute(
+            'UPDATE %s SET userrating = ? WHERE %s = ? '
+            'AND IFNULL(userrating, 0) != ?' % (table, identifier),
+            (userrating, kodi_id, userrating))
+        return self.cursor.rowcount > 0
 
     @property
     def has_video_version_table(self):

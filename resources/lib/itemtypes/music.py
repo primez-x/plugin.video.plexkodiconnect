@@ -29,11 +29,11 @@ class MusicMixin(object):
             LOG.info('Item not yet synced: %s', xml_element.attrib)
             return False
         # Grab the user's viewcount, resume points etc. from PMS' answer
-        # Note: update_userrating() does not reach any row (it binds the id
-        # column name as a value), so it never changes the Kodi DB
-        self.kodidb.update_userrating(db_item['kodi_id'],
-                                      db_item['kodi_type'],
-                                      api.userrating())
+        # update_userrating() returns True only if the rating differed
+        if self.kodidb.update_userrating(db_item['kodi_id'],
+                                         db_item['kodi_type'],
+                                         api.userrating()):
+            self.userdata_changed = True
         if plex_type == v.PLEX_TYPE_SONG:
             playcount = api.viewcount()
             lastplayed = api.lastplayed()

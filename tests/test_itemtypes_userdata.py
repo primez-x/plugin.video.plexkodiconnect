@@ -32,15 +32,16 @@ class FakeAPI(object):
         return self.xml.get('lastplayed')
 
     def userrating(self):
-        return 0
+        return self.xml.get('userrating', 0)
 
 
 class FakeKodiDB(object):
     """Kodi DB holding one playstate per file (or song) id"""
     kodiconn = cursor = artconn = artcursor = None
 
-    def __init__(self, playstates):
+    def __init__(self, playstates, ratings=None):
         self.playstates = dict(playstates)
+        self.ratings = dict(ratings or {})
         self.writes = []
 
     def playstate_matches(self, file_id, *playstate):
@@ -57,8 +58,12 @@ class FakeKodiDB(object):
         self.writes.append(kodi_id)
         self.playstates[kodi_id] = (playcount, lastplayed)
 
-    def update_userrating(self, *args):
-        pass
+    def update_userrating(self, kodi_id, kodi_type, userrating):
+        """Like the Kodi DBs: True only if the rating differed"""
+        if self.ratings.get((kodi_type, kodi_id), 0) == userrating:
+            return False
+        self.ratings[(kodi_type, kodi_id)] = userrating
+        return True
 
 
 def stub(name, **attributes):
@@ -114,13 +119,13 @@ class UpdateUserdataChangeTests(unittest.TestCase):
         self.addCleanup(restore_attributes, package, dict(vars(package)))
         self.modules = load_itemtypes()
 
-    def item(self, module, cls, db_item, playstates):
+    def item(self, module, cls, db_item, playstates, ratings=None):
         typus = getattr(self.modules[module], cls)(
             None,
             plexdb=SimpleNamespace(
                 item_by_id=lambda plex_id, plex_type: db_item,
                 plexconn=None, cursor=None),
-            kodidb=FakeKodiDB(playstates))
+            kodidb=FakeKodiDB(playstates, ratings))
         return typus
 
     def test_movie_with_unchanged_playstate_is_not_a_change(self):
@@ -173,6 +178,42 @@ class UpdateUserdataChangeTests(unittest.TestCase):
         song = self.item('music', 'Song', db_item, {3: (3, '2026-09-01')})
         self.assertTrue(song.update_userdata(xml, 'song'))
         self.assertTrue(song.userdata_changed)
+
+
+    def test_userrating_change_is_a_change(self):
+        playstate = (None, 8178, 1, '2026-10-01 12:00:00')
+        xml = {'plex_id': 5, 'resume': None, 'viewcount': 1,
+               'lastplayed': '2026-10-01 12:00:00', 'userrating': 8}
+        cases = (
+            ('movies', 'Movie', 'movie',
+             {'kodi_fileid': 1, 'kodi_id': 1, 'kodi_type': 'movie'}),
+            ('tvshows', 'Episode', 'episode',
+             {'kodi_fileid': 1, 'kodi_fileid_2': None, 'kodi_id': 1,
+              'kodi_type': 'episode'}),
+            ('tvshows', 'Season', 'season',
+             {'kodi_id': 1, 'kodi_type': 'season'}),
+            ('music', 'Album', 'album',
+             {'kodi_id': 1, 'kodi_type': 'album'}),
+        )
+        song_xml = {'plex_id': 5, 'viewcount': 1,
+                    'lastplayed': '2026-10-01 12:00:00', 'userrating': 8}
+        cases += (('music', 'Song', 'song',
+                   {'kodi_id': 1, 'kodi_type': 'song'}),)
+        for module, cls, plex_type, db_item in cases:
+            with self.subTest(cls):
+                data = song_xml if cls == 'Song' else xml
+                states = {1: (1, '2026-10-01 12:00:00')} if cls == 'Song' \
+                    else {1: playstate}
+                item = self.item(module, cls, db_item, states)
+                self.assertTrue(item.update_userdata(data, plex_type))
+                self.assertTrue(item.userdata_changed)
+                self.assertEqual(
+                    item.kodidb.ratings[(db_item['kodi_type'], 1)], 8)
+
+                item = self.item(module, cls, db_item, states,
+                                 {(db_item['kodi_type'], 1): 8})
+                self.assertTrue(item.update_userdata(data, plex_type))
+                self.assertFalse(item.userdata_changed)
 
 
 if __name__ == '__main__':

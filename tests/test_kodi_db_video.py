@@ -264,5 +264,74 @@ class KodiVideoDBTests(unittest.TestCase):
         self.assertFalse(database.playcount_matches(2, 0, None))
         conn.close()
 
+    def test_update_userrating_writes_video_ratings(self):
+        video = load_video_module()
+        conn = sqlite3.connect(':memory:')
+        conn.executescript('''
+            CREATE TABLE movie (idMovie INTEGER PRIMARY KEY, userrating INTEGER);
+            CREATE TABLE episode (idEpisode INTEGER PRIMARY KEY, userrating INTEGER);
+            CREATE TABLE seasons (idSeason INTEGER PRIMARY KEY, userrating INTEGER);
+            CREATE TABLE tvshow (idShow INTEGER PRIMARY KEY, userrating INTEGER);
+            INSERT INTO movie VALUES (1, NULL);
+            INSERT INTO movie VALUES (2, NULL);
+            INSERT INTO episode VALUES (3, 4);
+            INSERT INTO seasons VALUES (4, NULL);
+            INSERT INTO tvshow VALUES (5, 0);
+        ''')
+        database = object.__new__(video.KodiVideoDB)
+        database.cursor = conn.cursor()
+
+        self.assertTrue(database.update_userrating(1, 'movie', 8))
+        self.assertTrue(database.update_userrating(3, 'episode', 6))
+        self.assertTrue(database.update_userrating(4, 'season', 2))
+        self.assertTrue(database.update_userrating(5, 'tvshow', 10))
+
+        def rating(table, column, kodi_id):
+            return conn.execute('SELECT userrating FROM %s WHERE %s = ?'
+                                % (table, column), (kodi_id,)).fetchone()[0]
+        self.assertEqual(rating('movie', 'idMovie', 1), 8)
+        # Only the addressed row changed
+        self.assertIsNone(rating('movie', 'idMovie', 2))
+        self.assertEqual(rating('episode', 'idEpisode', 3), 6)
+        self.assertEqual(rating('seasons', 'idSeason', 4), 2)
+        self.assertEqual(rating('tvshow', 'idShow', 5), 10)
+
+        # Same rating again, or no rating (0) where Kodi has NULL: no change
+        self.assertFalse(database.update_userrating(1, 'movie', 8))
+        self.assertFalse(database.update_userrating(2, 'movie', 0))
+        self.assertIsNone(rating('movie', 'idMovie', 2))
+        # Unknown item or kodi_type
+        self.assertFalse(database.update_userrating(9, 'movie', 8))
+        self.assertFalse(database.update_userrating(1, 'movie; DROP', 8))
+        conn.close()
+
+    def test_update_userrating_writes_music_ratings(self):
+        load_video_module()
+        music = importlib.import_module('resources.lib.kodi_db.music')
+        conn = sqlite3.connect(':memory:')
+        conn.executescript('''
+            CREATE TABLE song (idSong INTEGER PRIMARY KEY, userrating INTEGER);
+            CREATE TABLE album (idAlbum INTEGER PRIMARY KEY, iUserrating INTEGER);
+            INSERT INTO song VALUES (1, 0);
+            INSERT INTO song VALUES (2, 0);
+            INSERT INTO album VALUES (3, NULL);
+        ''')
+        database = object.__new__(music.KodiMusicDB)
+        database.cursor = conn.cursor()
+
+        self.assertTrue(database.update_userrating(1, 'song', 7))
+        self.assertTrue(database.update_userrating(3, 'album', 9))
+        self.assertEqual(conn.execute('SELECT idSong, userrating FROM song '
+                                      'ORDER BY idSong').fetchall(),
+                         [(1, 7), (2, 0)])
+        self.assertEqual(conn.execute('SELECT iUserrating FROM album '
+                                      'WHERE idAlbum = 3').fetchone()[0], 9)
+
+        self.assertFalse(database.update_userrating(1, 'song', 7))
+        self.assertFalse(database.update_userrating(3, 'album', 9))
+        # Artists have no user rating in Kodi
+        self.assertFalse(database.update_userrating(1, 'artist', 7))
+        conn.close()
+
 if __name__ == '__main__':
     unittest.main()
