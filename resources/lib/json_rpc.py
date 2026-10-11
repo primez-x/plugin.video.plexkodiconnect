@@ -617,15 +617,9 @@ def settings_setsettingvalue(setting, value):
     })
 
 
-def item_details(kodi_id, kodi_type):
-    '''
-    Returns the Kodi item dict for this item
-    '''
-    json, fields = JSON_FROM_KODITYPE[kodi_type]
-    ret = JsonRPC(json).execute({'%sid' % kodi_type: kodi_id,
-                                'properties': fields})
+def _details_from_response(kodi_type, response):
     try:
-        ret = ret['result']['%sdetails' % kodi_type]
+        ret = response['result']['%sdetails' % kodi_type]
     except (KeyError, TypeError):
         return {}
     if kodi_type == v.KODI_TYPE_SHOW:
@@ -637,3 +631,79 @@ def item_details(kodi_id, kodi_type):
             "unwatchedepisodes": str(ret["episode"] - ret["watchedepisodes"])
         }
     return ret
+
+
+def item_details(kodi_id, kodi_type):
+    '''
+    Returns the Kodi item dict for this item
+    '''
+    json, fields = JSON_FROM_KODITYPE[kodi_type]
+    ret = JsonRPC(json).execute({'%sid' % kodi_type: kodi_id,
+                                'properties': fields})
+    return _details_from_response(kodi_type, ret)
+
+
+# items_details(): a listing's Kodi details are fetched with one JSON-RPC
+# batch call per chunk instead of one call per item. Chunks run in parallel
+# threads (executeJSONRPC releases the GIL while Kodi works)
+ITEMS_DETAILS_MIN_CHUNK = 8
+ITEMS_DETAILS_MAX_WORKERS = 4
+
+
+def _batch_item_details(keys):
+    """
+    Returns {(kodi_id, kodi_type): details} for keys, using a single
+    JSON-RPC batch request. Falls back to one item_details() call per item
+    if Kodi does not answer the batch with a list.
+    """
+    requests = []
+    for index, (kodi_id, kodi_type) in enumerate(keys):
+        method, fields = JSON_FROM_KODITYPE[kodi_type]
+        requests.append({
+            'jsonrpc': JsonRPC.version,
+            'id': index,
+            'method': method,
+            'params': {'%sid' % kodi_type: kodi_id, 'properties': fields},
+        })
+    try:
+        answer = loads(executeJSONRPC(dumps(requests)))
+    except (TypeError, ValueError):
+        answer = None
+    if not isinstance(answer, list):
+        return {key: item_details(*key) for key in keys}
+    responses = {}
+    for response in answer:
+        if isinstance(response, dict) and isinstance(response.get('id'), int):
+            responses[response['id']] = response
+    return {key: _details_from_response(key[1], responses.get(index))
+            for index, key in enumerate(keys)}
+
+
+def items_details(keys):
+    """
+    Pass an iterable of (kodi_id, kodi_type) tuples. Returns the dict
+    {(kodi_id, kodi_type): details}, details exactly as item_details() would
+    return them ({} if Kodi has no such item). Unsupported kodi_types and
+    duplicates are skipped.
+    """
+    unique = []
+    seen = set()
+    for key in keys:
+        if key in seen or key[1] not in JSON_FROM_KODITYPE:
+            continue
+        seen.add(key)
+        unique.append(key)
+    if not unique:
+        return {}
+    workers = min(ITEMS_DETAILS_MAX_WORKERS,
+                  -(-len(unique) // ITEMS_DETAILS_MIN_CHUNK))
+    size = -(-len(unique) // workers)
+    chunks = [unique[i:i + size] for i in range(0, len(unique), size)]
+    if len(chunks) == 1:
+        return _batch_item_details(chunks[0])
+    from concurrent.futures import ThreadPoolExecutor
+    result = {}
+    with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
+        for details in executor.map(_batch_item_details, chunks):
+            result.update(details)
+    return result

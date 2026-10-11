@@ -22,6 +22,7 @@ from . import app
 from . import loghandler
 from . import backgroundthread
 from . import skip_plex_markers
+from . import listing_timer
 from . import watchlist
 from .windows import userselect
 
@@ -117,6 +118,8 @@ class Service(object):
             # the Plex forum."
             utils.messageDialog(utils.lang(29999), utils.lang(39403))
             return
+        # Opt-in listing timing log for widget processes
+        listing_timer.sync_window_property()
         # Initial logging
         LOG.info("======== START %s ========", v.ADDON_NAME)
         LOG.info("KODI Version: %s", v.KODILONGVERSION)

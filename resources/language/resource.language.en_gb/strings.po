@@ -1788,3 +1788,14 @@ msgstr ""
 msgctxt "#39735"
 msgid "How long Up Next counts down after the Plex credits marker before starting the next episode."
 msgstr ""
+
+# PKC. Advanced setting: write one log line per PKC listing (widget or
+# browsing) with its elapsed time, to find slow widgets.
+msgctxt "#39736"
+msgid "Log listing times"
+msgstr ""
+
+# PKC. Help text for the above setting.
+msgctxt "#39737"
+msgid "Write one line per PKC listing (widgets and browsing) to the Kodi log with the time it took and where the time went. Leave off unless you are measuring widget speed."
+msgstr ""

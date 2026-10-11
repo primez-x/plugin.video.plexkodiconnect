@@ -228,7 +228,7 @@ class FullSync(common.LibrarySyncMixin, bg.KillableThread):
                           items='all' if self.repair else 'updated').start()
         # Do the heavy lifting
         self.process_new_and_changed_items(section_queue, processing_queue)
-        common.update_kodi_library(video=True, music=True)
+        common.update_kodi_library(video=True, music=app.SYNC.enable_music)
         if self.should_cancel() or not self.successful:
             return
 
@@ -320,7 +320,7 @@ class FullSync(common.LibrarySyncMixin, bg.KillableThread):
             self.copy_plex_db()
             self.full_library_sync()
         finally:
-            common.update_kodi_library(video=True, music=True)
+            common.update_kodi_library(video=True, music=app.SYNC.enable_music)
             if self.dialog:
                 self.dialog.close()
             if not self.successful and not self.should_cancel():

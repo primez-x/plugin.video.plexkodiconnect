@@ -139,6 +139,8 @@ def load_entrypoint():
         "file": "plugin://plugin.video.plexkodiconnect?mode=play",
         "extraproperties": {},
     }
+    widgets.prefetch_calls = []
+    widgets.prefetch_kodi_details = lambda apis: widgets.prefetch_calls.append(list(apis))
     widgets.prepare_listitem = lambda item: item
     widgets.create_listitem = lambda item, as_tuple=True, **kwargs: (
         (item["file"], item, item.get("isFolder", False)) if as_tuple else item
@@ -695,6 +697,9 @@ class DiscoverListingTests(unittest.TestCase):
         self.assertNotEqual(item.get("IsPlayable"), "false")
         self.assertEqual(item["extraproperties"]["DBID"], "42")
         self.assertEqual(item["extraproperties"]["ratingKey"], "abc123")
+        # The library match's Kodi details are fetched for the whole hub at
+        # once, before the tiles are built
+        self.assertEqual(entrypoint.widgets.prefetch_calls, [[local_api]])
 
     def test_detail_rejects_a_trailer_clip_without_building_a_dead_play_item(self):
         entrypoint, _, dialog_calls, mass_api_calls = load_entrypoint()

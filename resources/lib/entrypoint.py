@@ -28,6 +28,7 @@ from . import variables as v
 
 # Be careful - your using app in another Python instance!
 from . import app, widgets
+from . import listing_timer
 
 LOG = getLogger("PLEX.entrypoint")
 
@@ -478,6 +479,9 @@ def show_listing(xml, plex_type=None, section_id=None, synched=True, key=None):
             )
     else:
         all_entries = [(api, None) for api in mass_api(xml)]
+    listing_timer.mark("match")
+    widgets.prefetch_kodi_details(api for api, _ in all_entries)
+    listing_timer.mark("details")
 
     all_items = []
     for api, provider_xml in all_entries:
@@ -514,7 +518,10 @@ def show_listing(xml, plex_type=None, section_id=None, synched=True, key=None):
     all_items = [widgets.prepare_listitem(item, key) for item in all_items]
     # fill that listing...
     all_items = [widgets.create_listitem(item) for item in all_items]
+    listing_timer.mark("build")
+    listing_timer.items(len(all_items))
     xbmcplugin.addDirectoryItems(int(sys.argv[1]), all_items, len(all_items))
+    listing_timer.mark("add")
     # end directory listing
     xbmcplugin.addSortMethod(int(sys.argv[1]), xbmcplugin.SORT_METHOD_UNSORTED)
 
@@ -659,8 +666,11 @@ def hub(content_type):
     content_type = content_type or guess_video_or_audio()
     LOG.debug("Showing Plex Hub entries for %s", content_type)
     _wait_for_auth()
+    listing_timer.mark("auth")
     app.init(entrypoint=True)
+    listing_timer.mark("init")
     xml = PF.get_plex_hub()
+    listing_timer.mark("fetch")
     try:
         xml[0].attrib
     except (TypeError, IndexError, AttributeError):
@@ -784,6 +794,7 @@ def watchlist(section_id=None):
     """
     url = WATCHLIST_URL
     freshness, cached_xmls = discover_cache.read_xml(url, "watchlist")
+    listing_timer.mark("cache")
     if not cached_xmls:
         _wait_for_auth()
     if utils.window("plex_token") == "":
@@ -792,7 +803,9 @@ def watchlist(section_id=None):
     if utils.window("plex_restricteduser") == "true":
         LOG.error("No watchlist - restricted user")
         raise ListingException
+    listing_timer.mark("auth")
     app.init(entrypoint=True)
+    listing_timer.mark("init")
     if cached_xmls:
         xml = cached_xmls[0]
         if freshness == discover_cache.CACHE_STALE:
@@ -805,6 +818,7 @@ def watchlist(section_id=None):
         xml = _download_watchlist()
         if xml is not None:
             discover_cache.put_xml(url, [xml], "watchlist", generation=generation)
+        listing_timer.mark("fetch")
     try:
         xml.attrib
     except AttributeError:
@@ -821,6 +835,7 @@ def discover_hubs():
     # Try the cache first. A cache hit avoids ~850 ms of _wait_for_auth()
     # busy-waiting for the service to authenticate on every cold plugin spawn.
     cached_xmls = discover_cache.read_xml(url, "catalog")[1]
+    listing_timer.mark("cache")
     if cached_xmls is None:
         _wait_for_auth()
         if utils.window("plex_token") == "":
@@ -836,12 +851,15 @@ def discover_hubs():
     # it on a cache hit leaves app.SYNC=None and crashes with
     # "AttributeError: 'NoneType' object has no attribute 'direct_paths'".
     # Only _wait_for_auth() above is expensive.
+    listing_timer.mark("auth")
     app.init(entrypoint=True)
+    listing_timer.mark("init")
     xmls = _provider_xmls(
         url,
         (plex_discover.DISCOVER_PROVIDER_HOST,),
         "catalog",
     )
+    listing_timer.mark("fetch")
     if not xmls:
         LOG.error("Could not download discover hubs from plex.tv")
         raise ListingException
@@ -876,6 +894,8 @@ def discover_hubs():
                 hub_slug,
             )
             directory_item(title, path)
+    listing_timer.items(len(prefetch_hub_ids))
+    listing_timer.mark("add")
     xbmcplugin.addSortMethod(int(sys.argv[1]), xbmcplugin.SORT_METHOD_UNSORTED)
     _prefetch_discover_hubs(prefetch_hub_ids)
 
@@ -886,6 +906,7 @@ def discover_hub(hub_id):
     """
     url = _discover_hub_url(hub_id)
     cached_xmls = discover_cache.read_xml(url, "hub")[1]
+    listing_timer.mark("cache")
     if cached_xmls is None:
         _wait_for_auth()
         if utils.window("plex_token") == "":
@@ -896,12 +917,15 @@ def discover_hub(hub_id):
             raise ListingException
     # See discover_hubs(): app.init(entrypoint=True) must run on every path
     # or app.SYNC stays None and listitem generation crashes in fullpath().
+    listing_timer.mark("auth")
     app.init(entrypoint=True)
+    listing_timer.mark("init")
     xmls = _provider_xmls(
         url,
         (plex_discover.DISCOVER_PROVIDER_HOST,),
         "hub",
     )
+    listing_timer.mark("fetch")
     if not xmls:
         LOG.error("Could not download discover hub %s from plex.tv", hub_id)
         raise ListingException
@@ -948,10 +972,18 @@ def discover_hub(hub_id):
     # building tiles; doing this per tile needlessly reparses the same cache
     # record on the Kodi listing hot path.
     provider_state_is_current = discover_cache.source_is_current(url)
+    tiles = [
+        (provider_api, local_apis_by_guid.get(provider_api.xml.get("guid")))
+        for provider_api in mass_api(metadata)
+    ]
+    listing_timer.mark("match")
+    widgets.prefetch_kodi_details(
+        local_api or provider_api for provider_api, local_api in tiles
+    )
+    listing_timer.mark("details")
     all_items = []
-    for provider_api in mass_api(metadata):
+    for provider_api, local_api in tiles:
         child = provider_api.xml
-        local_api = local_apis_by_guid.get(child.get("guid"))
         api = local_api or provider_api
         item = widgets.generate_item(api)
         if item is None:
@@ -977,7 +1009,10 @@ def discover_hub(hub_id):
         all_items.append(item)
     all_items = [widgets.prepare_listitem(item) for item in all_items]
     all_items = [widgets.create_listitem(item) for item in all_items]
+    listing_timer.mark("build")
+    listing_timer.items(len(all_items))
     xbmcplugin.addDirectoryItems(int(sys.argv[1]), all_items, len(all_items))
+    listing_timer.mark("add")
     xbmcplugin.addSortMethod(int(sys.argv[1]), xbmcplugin.SORT_METHOD_UNSORTED)
 
 
@@ -1108,7 +1143,9 @@ def browse_plex(
         args,
     )
     _wait_for_auth()
+    listing_timer.mark("auth")
     app.init(entrypoint=True)
+    listing_timer.mark("init")
     args = args or {}
     if query:
         args["query"] = query
@@ -1124,6 +1161,7 @@ def browse_plex(
         args.setdefault("X-Plex-Container-Start", 0)
         args.setdefault("X-Plex-Container-Size", container_size)
     xml = DU().downloadUrl(utils.extend_url("{server}%s" % key, args))
+    listing_timer.mark("fetch")
     try:
         xml.attrib
     except AttributeError:

@@ -1,10 +1,38 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 from logging import getLogger
-import requests
-import requests.exceptions as exceptions
 
 from . import utils, clientinfo, app
+
+# requests (with urllib3, charset_normalizer, http.cookiejar, ...) is most of
+# the import time of a widget process. Import it on the first request only:
+# listings served from PKC's caches (Discover hubs, the Watchlist) never send
+# one.
+_REQUESTS = None
+
+
+def _requests():
+    global _REQUESTS
+    if _REQUESTS is None:
+        import requests
+        import requests.adapters
+        import requests.exceptions
+        import requests.packages.urllib3
+
+        # Disable annoying requests warnings
+        requests.packages.urllib3.disable_warnings()
+        _REQUESTS = requests
+    return _REQUESTS
+
+
+def __getattr__(name):
+    """Keep downloadutils.requests and downloadutils.exceptions available."""
+    if name == "requests":
+        return _requests()
+    if name == "exceptions":
+        return _requests().exceptions
+    raise AttributeError("module %r has no attribute %r" % (__name__, name))
+
 
 # A lazily-created Session for ``authenticate=False`` calls (plex.tv,
 # discover.provider.plex.tv, metadata.provider.plex.tv).  These hosts are
@@ -16,6 +44,7 @@ _DISCOVER_SESSION = None
 def _discover_session():
     global _DISCOVER_SESSION
     if _DISCOVER_SESSION is None:
+        requests = _requests()
         session = requests.Session()
         adapter = requests.adapters.HTTPAdapter(
             pool_connections=4, pool_maxsize=8, max_retries=1
@@ -27,11 +56,6 @@ def _discover_session():
 
 
 ###############################################################################
-
-# Disable annoying requests warnings
-import requests.packages.urllib3
-
-requests.packages.urllib3.disable_warnings()
 
 LOG = getLogger("PLEX.download")
 
@@ -81,6 +105,7 @@ class DownloadUtils(object):
             LOG.debug("Requests session already alive, reusing")
             return
         # Start session
+        requests = _requests()
         self.s = requests.Session()
 
         self.deviceId = clientinfo.getDeviceId()
@@ -163,6 +188,7 @@ class DownloadUtils(object):
             json               json() object, if applicable
             <response-object>  if return_response=True is set
         """
+        exceptions = _requests().exceptions
         kwargs = {"timeout": self.timeout}
         kwargs["allow_redirects"] = allow_redirects
         if authenticate is True:

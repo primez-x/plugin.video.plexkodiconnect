@@ -6,7 +6,8 @@ from copy import deepcopy
 from time import time
 from threading import Thread
 
-from .downloadutils import DownloadUtils as DU, exceptions
+from .downloadutils import DownloadUtils as DU
+from . import downloadutils
 from . import backgroundthread, utils, plex_tv, variables as v, app
 
 ###############################################################################
@@ -486,7 +487,7 @@ def GetPlexMetadata(key, reraise=False):
     try:
         xml = DU().downloadUrl(utils.extend_url(url, arguments),
                                reraise=reraise)
-    except exceptions.RequestException:
+    except downloadutils.exceptions.RequestException:
         # "PMS offline"
         utils.dialog('notification',
                      utils.lang(29999),
@@ -524,7 +525,7 @@ def get_playback_xml(url, server_name, authenticate=True, token=None):
                                authenticate=authenticate,
                                headerOptions=header_options,
                                reraise=True)
-    except exceptions.RequestException:
+    except downloadutils.exceptions.RequestException:
         # "{0} offline"
         utils.dialog('notification',
                      utils.lang(29999),
@@ -861,7 +862,7 @@ def _pms_https_enabled(url):
         DU().downloadUrl('https://%s/identity' % url,
                          authenticate=False,
                          reraise=True)
-    except exceptions.SSLError:
+    except downloadutils.exceptions.SSLError:
         LOG.debug('SSLError trying to connect to https://%s/identity', url)
     except Exception as e:
         LOG.info('Couldnt check https connection to https://%s/identity: %s',

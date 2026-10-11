@@ -1,13 +1,18 @@
 # -*- coding: utf-8 -*-
-import logging
-from sys import argv
-from urllib.parse import parse_qsl, urlencode
+from time import perf_counter
 
-import xbmc
-import xbmcgui
-import xbmcplugin
+STARTED_AT = perf_counter()
 
-from resources.lib import utils, transfer, variables as v, loghandler
+import logging  # noqa: E402
+from sys import argv  # noqa: E402
+from urllib.parse import parse_qsl, urlencode  # noqa: E402
+
+import xbmc  # noqa: E402
+import xbmcgui  # noqa: E402
+import xbmcplugin  # noqa: E402
+
+from resources.lib import utils, transfer, variables as v, loghandler  # noqa: E402
+from resources.lib import listing_timer  # noqa: E402
 
 loghandler.config()
 LOG = logging.getLogger("PLEX.default")
@@ -165,8 +170,10 @@ def triage(mode, params, path, arguments, itemid):
             )
         return
 
+    listing_timer.start(STARTED_AT)
     from resources.lib import entrypoint
 
+    listing_timer.mark("import")
     # Listings: we list ListItems and need to tell Kodi when we're done
     try:
         if mode == "browseplex":
@@ -232,9 +239,11 @@ def triage(mode, params, path, arguments, itemid):
     except entrypoint.ListingException:
         # Tell Kodi listing is done and we failed
         xbmcplugin.endOfDirectory(int(argv[1]), False)
+        listing_timer.report("%s failed" % listing_timer.label(params))
     else:
         # Tell Kodi listing is done and we were successful
         xbmcplugin.endOfDirectory(int(argv[1]))
+        listing_timer.report(listing_timer.label(params))
 
 
 def play():

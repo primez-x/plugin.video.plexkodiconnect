@@ -42,11 +42,13 @@ def load_kodimonitor():
         'resources.lib.skip_marker_state',
         'resources.lib.upnext',
         'resources.lib.gui_refresh',
+        'resources.lib.listing_timer',
     ):
         sys.modules.pop(module_name, None)
     lib_package = sys.modules.get('resources.lib')
     if lib_package is not None:
-        for attribute in ('gui_refresh', 'skip_plex_markers', 'timing'):
+        for attribute in ('gui_refresh', 'skip_plex_markers', 'timing',
+                          'listing_timer'):
             lib_package.__dict__.pop(attribute, None)
 
     xbmc = types.ModuleType('xbmc')
@@ -191,6 +193,11 @@ def load_kodimonitor():
     gui_refresh.refresh_sidepanel_containers = \
         lambda items: gui_refresh.calls.append(tuple(items))
 
+    listing_timer = types.ModuleType('resources.lib.listing_timer')
+    listing_timer.sync_calls = []
+    listing_timer.sync_window_property = \
+        lambda: listing_timer.sync_calls.append(True)
+
     for module_name, module in {
         'resources.lib.plex_api': plex_api,
         'resources.lib.plex_db': plex_db,
@@ -209,6 +216,7 @@ def load_kodimonitor():
         'resources.lib.skip_plex_markers': skip_plex_markers,
         'resources.lib.upnext': upnext,
         'resources.lib.gui_refresh': gui_refresh,
+        'resources.lib.listing_timer': listing_timer,
     }.items():
         sys.modules[module_name] = module
 

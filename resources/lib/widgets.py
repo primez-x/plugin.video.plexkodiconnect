@@ -25,6 +25,11 @@ SYNCHED = True
 # Need to chain the PMS keys
 KEY = None
 
+# Kodi details fetched for a whole listing by prefetch_kodi_details(), keyed
+# by (kodi_id, kodi_type). Each entry is used (popped) once
+KODI_DETAILS = {}
+FOLDER_TAGS = ('Directory', 'Playlist', 'Hub')
+
 # use getVideoInfoTag to set some list item properties
 USE_TAGS = v.KODIVERSION >= 20
 # properties that should be set by tag methods
@@ -57,6 +62,43 @@ def get_clean_image(image):
 
 def get_clean_artwork_image(image):
     return artwork_urls.normalize_plex_artwork_url(get_clean_image(image))
+
+
+def _uses_kodi_details(api):
+    """True if generate_item(api) will look up the item in the Kodi DB"""
+    if not api.kodi_id:
+        return False
+    if api.tag in FOLDER_TAGS:
+        # Mirrors _generate_folder(): only these folders use _generate_content
+        return api.plex_type in (v.PLEX_TYPE_SHOW, v.PLEX_TYPE_SEASON,
+                                 v.PLEX_TYPE_ARTIST, v.PLEX_TYPE_ALBUM)
+    return True
+
+
+def prefetch_kodi_details(apis):
+    """
+    Fetch the Kodi details of every synced item of a listing at once (one
+    JSON-RPC batch per chunk) instead of one JSON-RPC call per item inside
+    generate_item(). The listing's content does not change.
+    """
+    KODI_DETAILS.clear()
+    try:
+        keys = [(api.kodi_id, api.kodi_type) for api in apis
+                if _uses_kodi_details(api)]
+        if keys:
+            KODI_DETAILS.update(js.items_details(keys))
+    except Exception:
+        # generate_item() then looks every item up on its own, as before
+        LOG.exception('Could not prefetch the Kodi details of this listing')
+        KODI_DETAILS.clear()
+
+
+def _kodi_item_details(api):
+    key = (api.kodi_id, api.kodi_type)
+    item = KODI_DETAILS.pop(key, None)
+    if item is None:
+        item = js.item_details(api.kodi_id, api.kodi_type)
+    return item
 
 
 def generate_item(api):
@@ -135,7 +177,7 @@ def _generate_content(api):
     if api.kodi_id:
         # Item is synched to the Kodi db - let's use that info
         # (will thus e.g. include additional artwork or metadata)
-        item = js.item_details(api.kodi_id, api.kodi_type)
+        item = _kodi_item_details(api)
 
     # In rare cases, Kodi's JSON reply does not provide 'title' plus potentially
     # other fields - let's use the PMS answer to be safe

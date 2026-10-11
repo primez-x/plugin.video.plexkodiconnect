@@ -1530,6 +1530,11 @@
                         <heading>30529</heading> <!-- Startup delay (in seconds) -->
                     </control>
                 </setting>
+                <setting id="listingTimingLog" type="boolean" label="39736" help="39737"> <!-- Log listing times -->
+                    <level>0</level>
+                    <default>false</default>
+                    <control type="toggle" />
+                </setting>
                 <setting id="elhsrylanhzahoxakgxbqdgrdnoxoiov" type="action" label="39018" help=""> <!-- Repair the Kodi database (force update all content) -->
                     <level>0</level>
                     <data>RunPlugin(plugin://plugin.video.plexkodiconnect/?mode=repair)</data>

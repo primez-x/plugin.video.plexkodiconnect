@@ -22,6 +22,7 @@ from . import exceptions
 from . import skip_plex_markers
 from . import upnext
 from . import gui_refresh
+from . import listing_timer
 
 LOG = getLogger('PLEX.kodimonitor')
 
@@ -613,6 +614,7 @@ class KodiMonitor(xbmc.Monitor):
         # Service hot loops re-read their settings (utils.cached_setting)
         utils.invalidate_cached_settings()
         skip_plex_markers.reset_runtime()
+        listing_timer.sync_window_property()
 
     def onNotification(self, sender, method, data):
         """
