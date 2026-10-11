@@ -521,7 +521,7 @@
                 </setting>
                 <setting id="check_media_file_existence" type="boolean" label="39075" help=""> <!-- Verify access to media files while synching -->
                     <level>0</level>
-                    <default>true</default>
+                    <default>false</default>
                     <control type="toggle" />
                 </setting>
                 <setting id="syncThreadNumber" type="integer" label="39003" help=""> <!-- Number of simultaneous download threads -->

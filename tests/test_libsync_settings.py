@@ -53,5 +53,16 @@ class SyncSettingsTests(unittest.TestCase):
         self.assertIs(sync.check_media_file_existence, False)
 
 
+class FileExistenceDefaultTests(unittest.TestCase):
+    def test_file_existence_check_is_off_by_default(self):
+        # With Direct Paths an unmounted share at boot would stop the startup
+        # sync with a modal prompt, so the check is opt-in.
+        import xml.etree.ElementTree as ET
+        from pathlib import Path
+        root = ET.parse(Path(__file__).resolve().parents[1] / "resources" / "settings.xml").getroot()
+        setting = root.find(".//setting[@id='check_media_file_existence']")
+        self.assertEqual("false", setting.findtext("default"))
+
+
 if __name__ == '__main__':
     unittest.main()
