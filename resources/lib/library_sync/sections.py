@@ -16,6 +16,7 @@ LOG = getLogger('PLEX.sync.sections')
 BATCH_SIZE = 500
 # Need a way to interrupt our synching process
 SHOULD_CANCEL = None
+ON_CHANGE = None
 
 LIBRARY_PATH = path_ops.translate_path('special://profile/library/video/')
 # The video library might not yet exist for this user - create it
@@ -619,19 +620,23 @@ def delete_files():
     delete_playlists()
 
 
-def sync_from_pms(parent_self, pick_libraries=False):
+def sync_from_pms(parent_self, pick_libraries=False, on_change=None):
     """
     Sync the Plex library sections.
     pick_libraries=True will prompt the user the select the libraries he
     wants to sync
+    on_change: optional callable, called before items of an obsolete section
+    are removed from the Kodi DB
     """
-    global SHOULD_CANCEL
+    global SHOULD_CANCEL, ON_CHANGE
     LOG.info('Starting synching sections from the PMS')
     SHOULD_CANCEL = parent_self.should_cancel
+    ON_CHANGE = on_change
     try:
         return _sync_from_pms(pick_libraries)
     finally:
         SHOULD_CANCEL = None
+        ON_CHANGE = None
         LOG.info('Done synching sections from the PMS: %s', app.SYNC.sections)
 
 
@@ -678,6 +683,8 @@ def _sync_from_pms(pick_libraries):
             if not old_section.sync_to_kodi:
                 continue
             LOG.info('Deleting entire section: %s', old_section)
+            if ON_CHANGE:
+                ON_CHANGE()
             # Remove all linked items
             if not _delete_kodi_db_items(old_section):
                 return False

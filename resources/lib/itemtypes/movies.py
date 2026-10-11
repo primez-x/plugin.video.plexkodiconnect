@@ -227,12 +227,17 @@ class Movie(ItemBase):
         if not db_item:
             LOG.info('Item not yet synced: %s', xml_element.attrib)
             return False
+        playstate = (api.resume_point(),
+                     api.runtime(),
+                     api.viewcount(),
+                     api.lastplayed())
+        if not self.kodidb.playstate_matches(db_item['kodi_fileid'],
+                                             *playstate):
+            self.userdata_changed = True
         # Write to Kodi DB
-        self.kodidb.set_resume(db_item['kodi_fileid'],
-                               api.resume_point(),
-                               api.runtime(),
-                               api.viewcount(),
-                               api.lastplayed())
+        self.kodidb.set_resume(db_item['kodi_fileid'], *playstate)
+        # Note: update_userrating() does not reach any row (it binds the id
+        # column name as a value), so it never changes the Kodi DB
         self.kodidb.update_userrating(db_item['kodi_id'],
                                       db_item['kodi_type'],
                                       api.userrating())

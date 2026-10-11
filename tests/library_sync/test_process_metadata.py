@@ -122,5 +122,18 @@ class ProcessMetadataLockTests(unittest.TestCase):
         self.assertEqual(section.events, ['enter', 'a', 'b', 'c', 'exit'])
         self.assertEqual(processing_queue.timeouts_while_locked, [])
 
+    def test_processed_items_are_reported_as_changes(self):
+        section = self.section
+        thread, _ = self.run_thread([[item(section, 'a'), None]])
+
+        self.assertTrue(thread.changed)
+
+    def test_nothing_processed_is_not_a_change(self):
+        thread, _ = self.run_thread([[None]])
+
+        self.assertFalse(thread.changed)
+        self.assertTrue(thread.successful)
+
+
 if __name__ == '__main__':
     unittest.main()

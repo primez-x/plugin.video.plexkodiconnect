@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 from logging import getLogger
+import os
 import queue
 
 import xbmcgui
@@ -38,6 +39,10 @@ class FullSync(common.LibrarySyncMixin, bg.KillableThread):
         repair=True: force sync EVERY item
         """
         self.successful = True
+        # True once this sync added, updated or removed something in the Kodi
+        # DB (including playstates). Decides whether Kodi's views and widgets
+        # need to be reloaded at the end
+        self.changed = False
         self.repair = repair
         self.callback = callback
         # For progress dialog
@@ -52,6 +57,9 @@ class FullSync(common.LibrarySyncMixin, bg.KillableThread):
         self.last_section = sections.Section()
         self.install_sync_done = utils.settings('SyncInstallRunDone') == 'true'
         super(FullSync, self).__init__()
+
+    def mark_changed(self):
+        self.changed = True
 
     def update_progressbar(self, section, title, current):
         if not self.dialog:
@@ -106,6 +114,8 @@ class FullSync(common.LibrarySyncMixin, bg.KillableThread):
         LOG.debug('Download metadata threads finished')
         process_thread.join()
         self.successful = process_thread.successful
+        if getattr(process_thread, 'changed', True):
+            self.changed = True
         LOG.debug('threads finished work. successful: %s', self.successful)
 
     @utils.log_time
@@ -132,9 +142,13 @@ class FullSync(common.LibrarySyncMixin, bg.KillableThread):
                         section.count += 1
                         if not context.update_userdata(xml, section.plex_type):
                             # Somehow did not sync this item yet
+                            self.changed = True
                             context.add_update(xml,
                                                section_name=section.name,
                                                section_id=section.section_id)
+                        elif getattr(context, 'userdata_changed', True):
+                            # A playstate in the Kodi DB changed
+                            self.changed = True
                         context.plexdb.update_last_sync(
                             int(xml.attrib['ratingKey']),
                             section.plex_type,
@@ -205,6 +219,9 @@ class FullSync(common.LibrarySyncMixin, bg.KillableThread):
             LOG.debug('Exiting threaded_get_generators')
 
     def full_library_sync(self):
+        """
+        Returns True only if every step ran to its end
+        """
         section_queue = queue.Queue()
         processing_queue = bg.ProcessingQueue(maxsize=XML_QUEUE_SIZE)
         kinds = [
@@ -228,7 +245,6 @@ class FullSync(common.LibrarySyncMixin, bg.KillableThread):
                           items='all' if self.repair else 'updated').start()
         # Do the heavy lifting
         self.process_new_and_changed_items(section_queue, processing_queue)
-        common.update_kodi_library(video=True, music=app.SYNC.enable_music)
         if self.should_cancel() or not self.successful:
             return
 
@@ -260,8 +276,12 @@ class FullSync(common.LibrarySyncMixin, bg.KillableThread):
                 self.dialog = xbmcgui.DialogProgressBG()
                 # "Synching playlists"
                 self.dialog.create(utils.lang(39715))
+            before = playlist_snapshot()
             if not playlists.full_sync() or self.should_cancel():
                 return
+            if before is None or playlist_snapshot() != before:
+                # Plex playlists were written to Kodi
+                self.changed = True
 
         # SYNC PLAYSTATE of ALL items (otherwise we won't pick up on items that
         # were set to unwatched or changed user ratings). Also mark all items on
@@ -306,21 +326,39 @@ class FullSync(common.LibrarySyncMixin, bg.KillableThread):
                     for plex_id in plex_ids:
                         if self.should_cancel():
                             return
+                        # Only items still in the Plex DB are returned
+                        self.changed = True
                         ctx.remove(plex_id, plex_type)
                 if len(plex_ids) < DELETION_BATCH_SIZE:
                     break
         LOG.debug('Done looking for items to delete')
+        return True
+
+    def needs_library_refresh(self, finished):
+        """
+        Kodi reloads all views and widgets on update_kodi_library(). Skip that
+        only if this sync ran to its end and changed nothing in the Kodi DB
+        """
+        return (self.changed or not finished or not self.successful or
+                self.should_cancel())
 
     @utils.log_time
     def _run(self):
+        finished = False
         try:
             # Get latest Plex libraries and build playlist and video node files
-            if self.should_cancel() or not sections.sync_from_pms(self):
+            if self.should_cancel() or not sections.sync_from_pms(
+                    self, on_change=self.mark_changed):
                 return
             self.copy_plex_db()
-            self.full_library_sync()
+            finished = self.full_library_sync() is True
         finally:
-            common.update_kodi_library(video=True, music=app.SYNC.enable_music)
+            if self.needs_library_refresh(finished):
+                common.update_kodi_library(video=True,
+                                           music=app.SYNC.enable_music)
+            else:
+                LOG.info('Full sync changed nothing in the Kodi DB, not '
+                         'reloading the Kodi library views and widgets')
             if self.dialog:
                 self.dialog.close()
             if not self.successful and not self.should_cancel():
@@ -330,6 +368,23 @@ class FullSync(common.LibrarySyncMixin, bg.KillableThread):
                              message=utils.lang(39410),
                              icon='{error}')
             self.callback(self.successful)
+
+
+def playlist_snapshot():
+    """
+    Returns a set of (path, size, mtime) of all files in Kodi's playlist
+    folder, or None if that could not be read
+    """
+    snapshot = set()
+    try:
+        for root, _, files in os.walk(v.PLAYLIST_PATH):
+            for filename in files:
+                path = os.path.join(root, filename)
+                stat = os.stat(path)
+                snapshot.add((path, stat.st_size, stat.st_mtime_ns))
+    except (OSError, TypeError, ValueError):
+        return None
+    return snapshot
 
 
 def start(show_dialog, repair=False, callback=None):

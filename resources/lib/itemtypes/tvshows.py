@@ -22,21 +22,22 @@ class TvShowMixin(object):
             LOG.info('Item not yet synced: %s', xml_element.attrib)
             return False
         # Grab the user's viewcount, resume points etc. from PMS' answer
+        # Note: update_userrating() does not reach any row (it binds the id
+        # column name as a value), so it never changes the Kodi DB
         self.kodidb.update_userrating(db_item['kodi_id'],
                                       db_item['kodi_type'],
                                       api.userrating())
         if plex_type == v.PLEX_TYPE_EPISODE:
-            self.kodidb.set_resume(db_item['kodi_fileid'],
-                                   api.resume_point(),
-                                   api.runtime(),
-                                   api.viewcount(),
-                                   api.lastplayed())
-            if db_item['kodi_fileid_2']:
-                self.kodidb.set_resume(db_item['kodi_fileid_2'],
-                                       api.resume_point(),
-                                       api.runtime(),
-                                       api.viewcount(),
-                                       api.lastplayed())
+            playstate = (api.resume_point(),
+                         api.runtime(),
+                         api.viewcount(),
+                         api.lastplayed())
+            for file_id in (db_item['kodi_fileid'], db_item['kodi_fileid_2']):
+                if not file_id:
+                    continue
+                if not self.kodidb.playstate_matches(file_id, *playstate):
+                    self.userdata_changed = True
+                self.kodidb.set_resume(file_id, *playstate)
         return True
 
     def remove(self, plex_id, plex_type=None):

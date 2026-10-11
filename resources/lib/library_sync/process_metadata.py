@@ -31,6 +31,8 @@ class ProcessMetadataThread(common.LibrarySyncMixin,
         self.update_progressbar = update_progressbar
         self.last_section = sections.Section()
         self.successful = True
+        # True once an item was added to or updated in the Kodi DB
+        self.changed = False
         super(ProcessMetadataThread, self).__init__()
 
     def start_section(self, section):
@@ -96,6 +98,9 @@ class ProcessMetadataThread(common.LibrarySyncMixin,
                     self.update_progressbar(section,
                                             item['xml'][0].get('title'),
                                             section.count)
+                    # Set before writing: a failed write may have changed
+                    # the Kodi DB partially
+                    self.changed = True
                     context.add_update(item['xml'][0],
                                        section_name=section.name,
                                        section_id=section.section_id,

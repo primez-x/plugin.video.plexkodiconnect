@@ -240,5 +240,29 @@ class KodiVideoDBTests(unittest.TestCase):
         conn.close()
 
 
+    def test_music_playcount_matches_only_what_set_playcount_would_write(self):
+        load_video_module()
+        music = importlib.import_module('resources.lib.kodi_db.music')
+        conn = sqlite3.connect(':memory:')
+        conn.executescript('''
+            CREATE TABLE song (
+                idSong INTEGER PRIMARY KEY,
+                iTimesPlayed INTEGER,
+                lastplayed TEXT
+            );
+            INSERT INTO song VALUES (1, 0, NULL);
+        ''')
+        database = object.__new__(music.KodiMusicDB)
+        database.cursor = conn.cursor()
+        self.assertTrue(database.playcount_matches(1, 0, None))
+        self.assertFalse(database.playcount_matches(1, 1, '2026-10-01'))
+
+        database.set_playcount(1, '2026-10-01', 1)
+        self.assertTrue(database.playcount_matches(1, 1, '2026-10-01'))
+        self.assertFalse(database.playcount_matches(1, 1, '2026-10-02'))
+        # Unknown Kodi song: never claim a match
+        self.assertFalse(database.playcount_matches(2, 0, None))
+        conn.close()
+
 if __name__ == '__main__':
     unittest.main()

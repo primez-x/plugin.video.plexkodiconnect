@@ -359,6 +359,17 @@ class KodiMusicDB(common.KodiDBBase):
             WHERE idSong = ?
         ''', (args))
 
+    def playcount_matches(self, kodi_id, playcount, lastplayed):
+        """
+        Returns True if set_playcount() with these values would leave the Kodi
+        DB unchanged for the song kodi_id
+        """
+        self.cursor.execute(
+            'SELECT iTimesPlayed, lastplayed FROM song WHERE idSong = ? LIMIT 1',
+            (kodi_id, ))
+        row = self.cursor.fetchone()
+        return row is not None and tuple(row) == (playcount, lastplayed)
+
     @db.catch_operationalerrors
     def set_playcount(self, *args):
         self.cursor.execute('''
