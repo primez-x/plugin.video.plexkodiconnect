@@ -28,6 +28,7 @@ def load_playback():
         'resources.lib.playback_decision',
         'resources.lib.app',
         'resources.lib.exceptions',
+        'resources.lib.playstate',
     ):
         sys.modules.pop(module_name, None)
 
@@ -157,6 +158,67 @@ class PlaybackTests(unittest.TestCase):
             ('lookup', 6347, playback.v.PLEX_TYPE_MOVIE),
             ('resume', (32, 5653.428, 8178, 0, None)),
             ('resume', (33, 5653.428, 8178, 0, None)),
+        ])
+
+    def test_sync_kodi_resume_for_an_episode_keeps_the_playcount_of_a_sibling(self):
+        playback, _, _ = load_playback()
+        shared = playback.shared_playstate
+        shared.clear()
+        calls = []
+
+        class FakePlexDB(object):
+            def __init__(self, lock=True):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def item_by_id(self, plex_id, plex_type):
+                return {'kodi_fileid': 32, 'kodi_fileid_2': 33}
+
+            def episode_ids_by_file(self, file_id):
+                return [6347, 6348] if file_id == 32 else [6347]
+
+        class FakeKodiVideoDB(object):
+            def __init__(self, lock=True):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def playstate_matches(self, *args):
+                return False
+
+            def set_resume(self, *args):
+                calls.append(args)
+
+        playback.PlexDB = shared.PlexDB = FakePlexDB
+        playback.KodiVideoDB = FakeKodiVideoDB
+        shared.PF.GetPlexMetadata = lambda plex_id: [plex_id]
+        shared.API = lambda plex_id: SimpleNamespace(
+            resume_point=lambda: 0.0, runtime=lambda: 8178,
+            viewcount=lambda: 3, lastplayed=lambda: '2026-10-01 12:00:00')
+        api = SimpleNamespace(
+            resume_point=lambda: 5653.428,
+            runtime=lambda: 8178,
+            viewcount=lambda: 0,
+            lastplayed=lambda: '2026-10-02 12:00:00',
+        )
+
+        playback._sync_kodi_resume_from_api(
+            6347, playback.v.PLEX_TYPE_EPISODE, api)
+
+        # The shared file keeps the sibling's playcount, the episode's own
+        # add-on path file (33) is not shared
+        self.assertEqual(calls, [
+            (32, 5653.428, 8178, 3, '2026-10-02 12:00:00'),
+            (33, 5653.428, 8178, 0, '2026-10-02 12:00:00'),
         ])
 
     def test_sync_kodi_resume_skips_files_that_already_match(self):

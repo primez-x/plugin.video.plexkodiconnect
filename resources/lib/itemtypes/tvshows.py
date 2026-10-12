@@ -5,52 +5,15 @@ from logging import getLogger
 from .common import ItemBase, process_path
 from ..plex_api import API
 from .. import plex_functions as PF, app, variables as v
+from .. import playstate as playstate_module
 
 LOG = getLogger('PLEX.tvshows')
 
 
-def merge_playstates(playstates):
-    """
-    Merges the Plex playstates (resume, runtime, playcount, lastplayed) of all
-    episodes sharing one Kodi file into the single playstate Kodi can hold for
-    it: highest playcount, latest lastplayed and the resume point of the
-    episode viewed most recently. playstates is a dict {plex_id: playstate};
-    the result does not depend on the order of the episodes
-    """
-    plex_id = max(playstates,
-                  key=lambda x: (playstates[x][3] or '', x))
-    resume, runtime, _, lastplayed = playstates[plex_id]
-    return (resume,
-            runtime,
-            max(x[2] or 0 for x in playstates.values()),
-            lastplayed)
-
-
 class TvShowMixin(object):
     def merged_playstate(self, plex_id, kodi_fileid, playstate):
-        """
-        For a file shared by several episodes (e.g. S01E03E04), merges the
-        playstates of all of them, as Kodi holds just one for the file.
-        Returns None if the playstate of another episode cannot be retrieved
-        from the PMS: better to leave the file alone than to write a state
-        that misses what was done with the other episode
-        """
-        playstates = {plex_id: playstate}
-        for sibling_id in self.plexdb.episode_ids_by_file(kodi_fileid):
-            if sibling_id in playstates:
-                continue
-            xml = PF.GetPlexMetadata(sibling_id)
-            if xml in (None, 401) or not len(xml):
-                LOG.warn('Could not get the playstate of episode %s sharing '
-                         'the Kodi file %s with %s',
-                         sibling_id, kodi_fileid, plex_id)
-                return
-            api = API(xml[0])
-            playstates[sibling_id] = (api.resume_point(),
-                                      api.runtime(),
-                                      api.viewcount(),
-                                      api.lastplayed())
-        return merge_playstates(playstates)
+        return playstate_module.merged(plex_id, v.PLEX_TYPE_EPISODE,
+                                       kodi_fileid, playstate, self.plexdb)
 
     def update_userdata(self, xml_element, plex_type):
         """
@@ -87,6 +50,23 @@ class TvShowMixin(object):
                 self.userdata_changed = True
                 self.kodidb.set_resume(file_id, *playstate)
         return True
+
+    def set_playstate(self, api, kodi_fileid, kodi_fileid_2):
+        """
+        Writes the Plex playstate of an episode to its Kodi file(s), merged
+        with the other episodes sharing the file
+        """
+        own_playstate = (api.resume_point(),
+                         api.runtime(),
+                         api.viewcount(),
+                         api.lastplayed())
+        for file_id in (kodi_fileid, kodi_fileid_2):
+            if not file_id:
+                continue
+            playstate = self.merged_playstate(api.plex_id, file_id,
+                                              own_playstate)
+            if playstate is not None:
+                self.kodidb.set_resume(file_id, *playstate)
 
     def remove(self, plex_id, plex_type=None):
         """
@@ -536,17 +516,7 @@ class Episode(TvShowMixin, ItemBase):
                                        parent_id,
                                        api.userrating(),
                                        kodi_id)
-            self.kodidb.set_resume(kodi_fileid,
-                                   api.resume_point(),
-                                   api.runtime(),
-                                   api.viewcount(),
-                                   api.lastplayed())
-            if not app.SYNC.direct_paths:
-                self.kodidb.set_resume(kodi_fileid_2,
-                                       api.resume_point(),
-                                       api.runtime(),
-                                       api.viewcount(),
-                                       api.lastplayed())
+            self.set_playstate(api, kodi_fileid, kodi_fileid_2)
             self.plexdb.add_episode(plex_id=plex_id,
                                     plex_guid=api.plex_guid,
                                     checksum=api.checksum(),
@@ -607,17 +577,7 @@ class Episode(TvShowMixin, ItemBase):
                                     unique_id,
                                     parent_id,
                                     api.userrating())
-            self.kodidb.set_resume(kodi_fileid,
-                                   api.resume_point(),
-                                   api.runtime(),
-                                   api.viewcount(),
-                                   api.lastplayed())
-            if not app.SYNC.direct_paths:
-                self.kodidb.set_resume(kodi_fileid_2,
-                                       api.resume_point(),
-                                       api.runtime(),
-                                       api.viewcount(),
-                                       api.lastplayed())
+            self.set_playstate(api, kodi_fileid, kodi_fileid_2)
             self.plexdb.add_episode(plex_id=plex_id,
                                     plex_guid=api.plex_guid,
                                     checksum=api.checksum(),

@@ -118,6 +118,19 @@ class UpdateUserdataChangeTests(unittest.TestCase):
         package = importlib.import_module('resources.lib')
         self.addCleanup(restore_attributes, package, dict(vars(package)))
         self.modules = load_itemtypes()
+        self.playstate = importlib.import_module('resources.lib.playstate')
+        self.playstate.clear()
+
+    def pms(self, answer):
+        """Sets the PMS answer: answer(plex_id) -> xml; returns request log"""
+        requests = []
+
+        def get_metadata(plex_id):
+            requests.append(plex_id)
+            return answer(plex_id)
+
+        self.playstate.PF.GetPlexMetadata = get_metadata
+        return requests
 
     def item(self, module, cls, db_item, playstates, ratings=None,
              file_episodes=None):
@@ -186,8 +199,13 @@ class UpdateUserdataChangeTests(unittest.TestCase):
         Full sync of both episodes sharing a file, given the Plex states
         {plex_id: xml}. Returns the Kodi items to inspect their end state
         """
-        self.modules['tvshows'].PF.GetPlexMetadata = (
+        requests = self.pms(
             lambda plex_id: [dict(plex[plex_id], plex_id=plex_id)])
+        # Before the DB locks are taken ...
+        self.playstate.fetch_states([5, 6], 0)
+        self.assertEqual(requests, [5, 6])
+        # ... as there is no PMS request while they are held
+        self.pms(lambda plex_id: self.fail('PMS request with DB locks held'))
         playstates = {7: kodi_state}
         items = []
         for plex_id, kodi_id in ((5, 1), (6, 2)):
@@ -248,20 +266,51 @@ class UpdateUserdataChangeTests(unittest.TestCase):
             {'kodi_fileid': 7, 'kodi_fileid_2': None, 'kodi_id': 1,
              'kodi_type': 'episode'},
             {7: kodi_state}, file_episodes={7: [5, 6]})
-        self.modules['tvshows'].PF.GetPlexMetadata = lambda plex_id: None
+        self.pms(lambda plex_id: None)
+        self.assertFalse(self.playstate.fetch_states([6]))
         self.assertTrue(episode.update_userdata(
             dict(self.UNWATCHED, plex_id=5), 'episode'))
         self.assertEqual(episode.kodidb.writes, [])
         self.assertFalse(episode.userdata_changed)
         self.assertEqual(episode.kodidb.playstates[7], kodi_state)
 
+    def test_sibling_playstates_are_not_refetched_for_every_progress_message(self):
+        requests = self.pms(lambda plex_id: [dict(self.WATCHED,
+                                                  plex_id=plex_id)])
+        for _ in range(10):
+            self.assertTrue(self.playstate.fetch_states([6]))
+        self.assertEqual(requests, [6])
+        # A full sync forces fresh playstates
+        self.playstate.fetch_states([6], 0)
+        self.assertEqual(requests, [6, 6])
+
+    def test_added_episode_is_merged_with_the_episode_sharing_its_file(self):
+        # Episode 5 (watched) was synced before; adding/updating episode 6
+        # (unwatched, same Kodi file 7) must not write its state over it
+        self.pms(lambda plex_id: [dict(self.WATCHED, plex_id=plex_id)])
+        self.playstate.fetch_states([5])
+        episode = self.item('tvshows', 'Episode', {}, {},
+                            file_episodes={7: [5, 6]})
+        api = FakeAPI(dict(self.UNWATCHED, plex_id=6))
+        episode.set_playstate(api, 7, 8)
+        self.assertEqual(episode.kodidb.playstates[7],
+                         (0.0, 8178, 1, '2026-10-01 12:00:00'))
+        # Its own add-on path file (8) is not shared
+        self.assertEqual(episode.kodidb.playstates[8], (0.0, 8178, 0, None))
+
+    def test_added_episode_leaves_the_file_alone_without_the_other_playstate(self):
+        episode = self.item('tvshows', 'Episode', {}, {},
+                            file_episodes={7: [5, 6]})
+        episode.set_playstate(FakeAPI(dict(self.UNWATCHED, plex_id=6)), 7, None)
+        self.assertEqual(episode.kodidb.writes, [])
+
     def test_websocket_playstate_matches_what_full_sync_writes(self):
         # E04 (6) was watched. E03 (5) is now played on another device, up to
         # 300 seconds, at 2026-10-03 12:00:00
         playing = {'resume': 300, 'viewcount': 0,
                    'lastplayed': '2026-10-03 12:00:00'}
-        self.modules['tvshows'].PF.GetPlexMetadata = (
-            lambda plex_id: [dict(self.WATCHED, plex_id=plex_id)])
+        self.pms(lambda plex_id: [dict(self.WATCHED, plex_id=plex_id)])
+        self.playstate.fetch_states([6])
         episode = self.item(
             'tvshows', 'Episode',
             {'kodi_fileid': 7, 'kodi_fileid_2': None, 'kodi_id': 1,
@@ -283,8 +332,8 @@ class UpdateUserdataChangeTests(unittest.TestCase):
     def test_websocket_finished_episode_keeps_watched_sibling_playcount(self):
         sibling = {'resume': 0.0, 'viewcount': 2,
                    'lastplayed': '2026-10-01 12:00:00'}
-        self.modules['tvshows'].PF.GetPlexMetadata = (
-            lambda plex_id: [dict(sibling, plex_id=plex_id)])
+        self.pms(lambda plex_id: [dict(sibling, plex_id=plex_id)])
+        self.playstate.fetch_states([6])
         episode = self.item(
             'tvshows', 'Episode',
             {'kodi_fileid': 7, 'kodi_fileid_2': None, 'kodi_id': 1,

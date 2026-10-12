@@ -40,6 +40,7 @@ class FullSyncPlaystateLockTests(unittest.TestCase):
             'resources.lib.plex_functions': {},
             'resources.lib.itemtypes': {},
             'resources.lib.path_ops': {},
+            'resources.lib.playstate': {},
         })
         self.module.PLAYSTATE_BATCH_SIZE = 2
         self.sync = self.module.FullSync.__new__(self.module.FullSync)
@@ -107,6 +108,7 @@ class FullSyncLibraryRefreshTests(unittest.TestCase):
     def setUp(self):
         isolate_modules(self)
         self.refreshes = []
+        self.events = []
         # What the fake PMS / Kodi DB report for this test
         self.items_processed = False
         self.process_successful = True
@@ -257,6 +259,8 @@ class FullSyncLibraryRefreshTests(unittest.TestCase):
                     ('Artist', 'artist'), ('Album', 'album'),
                     ('Song', 'song'))},
             'resources.lib.path_ops': {'copyfile': lambda *args: None},
+            'resources.lib.playstate': {
+                'prefetch_all_shared': lambda: test.events.append('prefetch')},
         })
         self.results = []
         self.sync = self.module.FullSync(repair=False,
@@ -267,6 +271,13 @@ class FullSyncLibraryRefreshTests(unittest.TestCase):
     def run_sync(self):
         self.sync._run()
         return self.refreshes
+
+    def test_shared_episode_playstates_are_fetched_before_each_playstate_pass(self):
+        # Before the DB locks are taken: before adding items, before the
+        # playstate pass for recently watched items and before the pass for
+        # every item
+        self.run_sync()
+        self.assertEqual(self.events, ['prefetch'] * 3)
 
     def test_sync_without_changes_does_not_reload_the_library(self):
         # Every item's playstate is checked, none differs from Kodi's

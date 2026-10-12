@@ -11,7 +11,7 @@ from .fill_metadata_queue import FillMetadataQueue
 from .process_metadata import ProcessMetadataThread
 from . import common, sections
 from .. import utils, timing, backgroundthread as bg, variables as v, app
-from .. import plex_functions as PF, itemtypes, path_ops
+from .. import plex_functions as PF, itemtypes, path_ops, playstate
 
 if common.PLAYLIST_SYNC_ENABLED:
     from .. import playlists
@@ -236,6 +236,10 @@ class FullSync(common.LibrarySyncMixin, bg.KillableThread):
                 (v.PLEX_TYPE_ALBUM, v.PLEX_TYPE_ARTIST),
             ])
 
+        # Episodes sharing a Kodi file: get their Plex playstates before DB
+        # locks are taken
+        playstate.prefetch_all_shared()
+
         # ADD NEW ITEMS
         # We need to enforce syncing e.g. show before season before episode
         bg.FunctionAsTask(self.threaded_get_generators,
@@ -258,6 +262,7 @@ class FullSync(common.LibrarySyncMixin, bg.KillableThread):
         # users of very large libraries since this step is very fast
         # These playstates will be synched twice
         LOG.debug('Start synching playstate for last watched items')
+        playstate.prefetch_all_shared()
         bg.FunctionAsTask(self.threaded_get_generators,
                           None,
                           kinds,
@@ -287,6 +292,7 @@ class FullSync(common.LibrarySyncMixin, bg.KillableThread):
         # were set to unwatched or changed user ratings). Also mark all items on
         # the PMS to be able to delete the ones still in Kodi
         LOG.debug('Start synching playstate and userdata for every item')
+        playstate.prefetch_all_shared()
         # Make sure we're not showing an item's title in the sync dialog
         if not self.show_dialog_userdata and self.dialog:
             # Close the progress indicator dialog

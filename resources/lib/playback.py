@@ -20,6 +20,7 @@ from . import json_rpc as js
 from . import variables as v
 from . import utils
 from . import transfer
+from . import playstate as shared_playstate
 from . import playback_decision, app
 from . import exceptions
 
@@ -400,16 +401,22 @@ def _sync_kodi_resume_from_api(plex_id, plex_type, api):
     total = api.runtime()
     playcount = api.viewcount()
     lastplayed = api.lastplayed()
+    file_ids = (db_item['kodi_fileid'], db_item.get('kodi_fileid_2'))
+    shared_playstate.prefetch(plex_id, plex_type, file_ids)
     with KodiVideoDB(lock=False) as kodidb:
-        for file_id in (db_item['kodi_fileid'], db_item.get('kodi_fileid_2')):
+        for file_id in file_ids:
             if not file_id:
+                continue
+            playstate = shared_playstate.merged(
+                plex_id, plex_type, file_id,
+                (resume, total, playcount, lastplayed))
+            if playstate is None:
                 continue
             # Both playback passes sync the same playstate; skip the write
             # (and the DB commit) if Kodi already has it
-            if kodidb.playstate_matches(file_id, resume, total, playcount,
-                                        lastplayed):
+            if kodidb.playstate_matches(file_id, *playstate):
                 continue
-            kodidb.set_resume(file_id, resume, total, playcount, lastplayed)
+            kodidb.set_resume(file_id, *playstate)
     if resume:
         LOG.info('Synced Plex resume point %.3f to Kodi for %s %s',
                  resume, plex_type, plex_id)

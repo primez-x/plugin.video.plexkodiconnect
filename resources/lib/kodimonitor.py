@@ -22,6 +22,7 @@ from . import exceptions
 from . import skip_plex_markers
 from . import upnext
 from . import gui_refresh
+from . import playstate as shared_playstate
 from . import listing_timer
 
 LOG = getLogger('PLEX.kodimonitor')
@@ -498,10 +499,13 @@ def _write_kodi_watched(db_item):
 
 
 def _write_kodi_unwatched(db_item):
+    # The playstates of other episodes sharing the file need to be prefetched
+    # (see _force_kodi_unwatched)
     with kodi_db.KodiVideoDB() as kodidb:
-        kodidb.set_resume(db_item['kodi_fileid'], 0.0, 0.0, 0, None)
-        if db_item.get('kodi_fileid_2'):
-            kodidb.set_resume(db_item['kodi_fileid_2'], 0.0, 0.0, 0, None)
+        shared_playstate.write(
+            kodidb, db_item['plex_id'], db_item['plex_type'],
+            (db_item['kodi_fileid'], db_item.get('kodi_fileid_2')),
+            (0.0, 0.0, 0, None))
 
 
 def _refresh_kodi_playstate(db_item):
@@ -526,6 +530,9 @@ def _force_kodi_unwatched(kodi_id, kodi_type):
         LOG.error('Could not repair unwatched state for Kodi item %s/%s: '
                   'Plex mapping not found', kodi_type, kodi_id)
         return False
+    shared_playstate.prefetch(
+        db_item['plex_id'], db_item['plex_type'],
+        (db_item['kodi_fileid'], db_item.get('kodi_fileid_2')))
     try:
         with _PLAYBACK_RESTORE_LOCK:
             _write_kodi_unwatched(db_item)
@@ -1104,19 +1111,14 @@ def _record_playstate(status, ended):
         return
     time, totaltime, playcount, last_played = _playback_progress(
         status, ended, db_item)
+    # Dirty hack for our episodes: kodi_fileid_2
+    file_ids = (db_item['kodi_fileid'], db_item.get('kodi_fileid_2'))
+    shared_playstate.prefetch(db_item['plex_id'], db_item['plex_type'],
+                              file_ids)
     with kodi_db.KodiVideoDB() as kodidb:
-        kodidb.set_resume(db_item['kodi_fileid'],
-                          time,
-                          totaltime,
-                          playcount,
-                          last_played)
-        if 'kodi_fileid_2' in db_item and db_item['kodi_fileid_2']:
-            # Dirty hack for our episodes
-            kodidb.set_resume(db_item['kodi_fileid_2'],
-                              time,
-                              totaltime,
-                              playcount,
-                              last_played)
+        shared_playstate.write(kodidb, db_item['plex_id'],
+                               db_item['plex_type'], file_ids,
+                               (time, totaltime, playcount, last_played))
     xbmc.executebuiltin('Container.Refresh')
     if status['plex_type'] == v.PLEX_TYPE_EPISODE:
         gui_refresh.refresh_sidepanel_containers((
@@ -1305,6 +1307,9 @@ class RestorePlexPlaystate(backgroundthread.Task):
         runtime = api.runtime()
         playcount = api.viewcount()
         lastplayed = api.lastplayed()
+        file_ids = (db_item['kodi_fileid'], db_item.get('kodi_fileid_2'))
+        shared_playstate.prefetch(db_item['plex_id'], db_item['plex_type'],
+                                  file_ids)
         # A completion callback can arrive while the PMS metadata request is
         # in flight. Serialize the final validity check with the Kodi writes
         # so a canceled restore cannot overwrite the completed state.
@@ -1319,17 +1324,9 @@ class RestorePlexPlaystate(backgroundthread.Task):
                 # follow-up restore; a completed or explicit unwatch callback
                 # removes the state as terminal cancellation.
             with kodi_db.KodiVideoDB() as kodidb:
-                kodidb.set_resume(db_item['kodi_fileid'],
-                                  resume,
-                                  runtime,
-                                  playcount,
-                                  lastplayed)
-                if db_item.get('kodi_fileid_2'):
-                    kodidb.set_resume(db_item['kodi_fileid_2'],
-                                      resume,
-                                      runtime,
-                                      playcount,
-                                      lastplayed)
+                shared_playstate.write(kodidb, db_item['plex_id'],
+                                       db_item['plex_type'], file_ids,
+                                       (resume, runtime, playcount, lastplayed))
         xbmc.executebuiltin('Container.Refresh')
         if db_item['plex_type'] == v.PLEX_TYPE_EPISODE:
             gui_refresh.refresh_sidepanel_containers((

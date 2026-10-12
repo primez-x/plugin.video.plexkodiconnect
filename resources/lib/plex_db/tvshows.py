@@ -214,9 +214,18 @@ class TVShows(object):
         Returns the Plex ids of all episodes using the Kodi file kodi_fileid.
         There are several of them for multi-episode files (e.g. S01E03E04)
         """
-        self.cursor.execute('SELECT plex_id FROM episode '
-                            'WHERE kodi_fileid = ? OR kodi_fileid_2 = ?',
-                            (kodi_fileid, kodi_fileid))
+        self.cursor.execute('SELECT plex_id FROM episode WHERE kodi_fileid = ?',
+                            (kodi_fileid, ))
+        return [x[0] for x in self.cursor.fetchall()]
+
+    def shared_episode_ids(self):
+        """
+        Returns the Plex ids of all episodes sharing their Kodi file with
+        another episode
+        """
+        self.cursor.execute('SELECT plex_id FROM episode WHERE kodi_fileid IN '
+                            '(SELECT kodi_fileid FROM episode '
+                            'GROUP BY kodi_fileid HAVING COUNT(*) > 1)')
         return [x[0] for x in self.cursor.fetchall()]
 
     @staticmethod

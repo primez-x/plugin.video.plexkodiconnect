@@ -8,7 +8,7 @@ from ..plex_api import API
 from ..plex_db import PlexDB
 from .. import kodi_db
 from .. import backgroundthread, plex_functions as PF, itemtypes
-from .. import artwork, utils, timing, variables as v, app
+from .. import artwork, utils, timing, variables as v, app, playstate
 
 if PLAYLIST_SYNC_ENABLED:
     from .. import playlists
@@ -378,6 +378,12 @@ def process_playing(data):
                   'viewCount %s, resume %s, mark_played %s for item %s',
                   app.ACCOUNT.plex_username, session['kodi_type'], plex_id,
                   session['viewCount'], resume, mark_played, session)
+        if session['kodi_type'] == v.KODI_TYPE_EPISODE:
+            # Before taking the DB locks: playstates of the other episodes
+            # sharing the Kodi file
+            playstate.prefetch(plex_id, v.PLEX_TYPE_EPISODE,
+                               (session['kodi_fileid'],
+                                session['kodi_fileid_2']))
         func = itemtypes.ITEMTYPE_FROM_KODITYPE[session['kodi_type']]
         with func(None) as fkt:
             fkt.update_playstate(mark_played,

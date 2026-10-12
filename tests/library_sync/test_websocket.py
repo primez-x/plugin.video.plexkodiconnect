@@ -9,8 +9,10 @@ ITEMS = {
           'kodi_fileid': 11},
     200: {'plex_type': 'movie', 'kodi_id': 2, 'kodi_type': 'movie',
           'kodi_fileid': 22},
+    300: {'plex_type': 'episode', 'kodi_id': 3, 'kodi_type': 'episode',
+          'kodi_fileid': 33, 'kodi_fileid_2': 34},
 }
-DURATIONS = {100: 1000, 200: 4000}
+DURATIONS = {100: 1000, 200: 4000, 300: 2000}
 
 
 class FakePlexDB(object):
@@ -47,15 +49,18 @@ class WebsocketPlaystateSessionTests(unittest.TestCase):
         self.settings = {'plex_serverowned': 'false'}
         self.pms_sessions = {}
         writes = self.writes
+        events = self.events = []
 
         class FakeItemtype(object):
             def __init__(self, last_sync):
                 pass
 
             def __enter__(self):
+                events.append('lock')
                 return self
 
             def __exit__(self, exc_type, exc_value, traceback):
+                events.append('unlock')
                 return False
 
             def update_playstate(self, mark_played, view_count, resume,
@@ -91,14 +96,18 @@ class WebsocketPlaystateSessionTests(unittest.TestCase):
                 'GetPlexMetadata': get_metadata,
                 'GetPMSStatus': lambda token: dict(self.pms_sessions)},
             'resources.lib.itemtypes': {
-                'ITEMTYPE_FROM_KODITYPE': {'movie': FakeItemtype}},
+                'ITEMTYPE_FROM_KODITYPE': {'movie': FakeItemtype,
+                                           'episode': FakeItemtype}},
             'resources.lib.artwork': {},
             'resources.lib.utils': {
                 'settings': lambda key: self.settings.get(key, ''),
                 'cast': cast},
             'resources.lib.timing': {'unix_timestamp': lambda: 0},
+            'resources.lib.playstate': {
+                'prefetch': lambda *args: events.append(('prefetch', args))},
             'resources.lib.variables': {
                 'PLEX_TYPE_EPISODE': 'episode',
+                'KODI_TYPE_EPISODE': 'episode',
                 'IGNORE_SECONDS_AT_START': 60,
                 'MARK_PLAYED_AT': 0.9},
             'resources.lib.app': {
@@ -133,6 +142,17 @@ class WebsocketPlaystateSessionTests(unittest.TestCase):
 
         self.assertEqual(self.metadata_requests, [100])
         self.assertEqual([write[1] for write in self.writes], [300.0, 400.0])
+
+    def test_episode_playstates_of_its_file_are_fetched_before_the_db_locks(self):
+        self.play('1', 300, 300000)
+
+        self.assertEqual(self.events, [
+            ('prefetch', (300, 'episode', (33, 34))), 'lock', 'unlock'])
+
+    def test_movie_playstate_needs_no_prefetch(self):
+        self.play('1', 100, 300000)
+
+        self.assertEqual(self.events, ['lock', 'unlock'])
 
     def test_stopped_drops_session_without_writing(self):
         self.play('1', 100, 300000)

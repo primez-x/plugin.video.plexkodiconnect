@@ -43,12 +43,13 @@ def load_kodimonitor():
         'resources.lib.upnext',
         'resources.lib.gui_refresh',
         'resources.lib.listing_timer',
+        'resources.lib.playstate',
     ):
         sys.modules.pop(module_name, None)
     lib_package = sys.modules.get('resources.lib')
     if lib_package is not None:
         for attribute in ('gui_refresh', 'skip_plex_markers', 'timing',
-                          'listing_timer'):
+                          'listing_timer', 'playstate'):
             lib_package.__dict__.pop(attribute, None)
 
     xbmc = types.ModuleType('xbmc')
@@ -73,8 +74,24 @@ def load_kodimonitor():
     plex_api = types.ModuleType('resources.lib.plex_api')
     plex_api.API = object
 
+    class SiblingPlexDB(object):
+        """Plex DB of the shared playstate lookups: siblings per Kodi file"""
+        siblings = {}
+
+        def __init__(self, lock=True):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def episode_ids_by_file(self, file_id):
+            return list(self.siblings.get(file_id, []))
+
     plex_db = types.ModuleType('resources.lib.plex_db')
-    plex_db.PlexDB = object
+    plex_db.PlexDB = SiblingPlexDB
 
     kodi_db = types.ModuleType('resources.lib.kodi_db')
     kodi_db.KodiVideoDB = object
@@ -261,7 +278,8 @@ def install_playstate_databases(kodimonitor):
             return False
 
         def item_by_id(self, plex_id, plex_type):
-            return {'plex_id': plex_id, 'kodi_fileid': 42}
+            return {'plex_id': plex_id, 'plex_type': plex_type,
+                    'kodi_fileid': 42}
 
     class FakeKodiVideoDB(object):
         def __init__(self, lock=True):
@@ -2031,6 +2049,72 @@ class KodiMonitorTests(unittest.TestCase):
         self.assertEqual(xbmc.commands, ['Container.Refresh'])
         self.assertEqual(kodimonitor.gui_refresh.calls,
                          [(('16388', 'episode'),)])
+
+    def watched_sibling(self, file_ids, own=16388):
+        """Episode 99 shares the Kodi files file_ids and was watched on Plex"""
+        shared = sys.modules['resources.lib.playstate']
+        shared.clear()
+        shared.PlexDB.siblings = {file_id: [own, 99] for file_id in file_ids}
+        shared.PF.GetPlexMetadata = lambda plex_id: [plex_id]
+        shared.API = lambda plex_id: SimpleNamespace(
+            resume_point=lambda: 0.0, runtime=lambda: 1434.0,
+            viewcount=lambda: 2, lastplayed=lambda: '2026-08-01 08:00:00')
+        self.assertTrue(shared.fetch_states([99]))
+        shared.PF.GetPlexMetadata = lambda plex_id: self.fail('PMS request')
+
+    def test_playback_of_an_episode_keeps_the_playcount_of_its_sibling(self):
+        kodimonitor, _, _, _ = load_kodimonitor()
+        writes = install_playstate_databases(kodimonitor)
+        self.watched_sibling([42])
+        kodimonitor._playback_progress = lambda status, ended, db_item: (
+            600.0, 1434.96, 0, '2026-08-02 08:53:51')
+
+        kodimonitor._record_playstate(playback_status(), ended=False)
+
+        self.assertEqual(writes, [
+            (42, 600.0, 1434.96, 2, '2026-08-02 08:53:51'),
+        ])
+
+    def test_restored_pms_playstate_keeps_the_playcount_of_a_sibling(self):
+        kodimonitor, _, _, backgroundthread = load_kodimonitor()
+        writes = install_onupdate_databases(kodimonitor)
+        kodimonitor.PF.scrobble = lambda plex_id, state: None
+        self.watched_sibling([42, 43], own=16390)
+        kodimonitor.API = lambda xml: SimpleNamespace(
+            resume_point=lambda: 45.0,
+            runtime=lambda: 1434.0,
+            viewcount=lambda: 0,
+            lastplayed=lambda: '2026-08-04 19:19:41',
+        )
+        kodimonitor.app.PLAYSTATE.item = None
+        kodimonitor._ACTIVE_UPNEXT_HANDOFF = {
+            'previous_item': (8950, 'episode'),
+            'expires_at': 130.0,
+        }
+        kodimonitor.monotonic = lambda: 101.0
+        kodimonitor.PF.GetPlexMetadata = lambda plex_id: [ET.Element('Video')]
+
+        kodimonitor._videolibrary_onupdate({
+            'item': {'id': 8950, 'type': 'episode'},
+        })
+        backgroundthread.BGThreader.tasks[-1].run()
+
+        self.assertEqual(writes, [
+            (42, 45.0, 1434.0, 2, '2026-08-04 19:19:41'),
+            (43, 45.0, 1434.0, 2, '2026-08-04 19:19:41'),
+        ])
+
+    def test_explicit_unwatch_of_an_episode_keeps_its_watched_sibling(self):
+        kodimonitor, _, _, _ = load_kodimonitor()
+        writes = install_onupdate_databases(kodimonitor, plex_id=16388)
+        self.watched_sibling([42, 43])
+
+        self.assertTrue(kodimonitor._force_kodi_unwatched(8950, 'episode'))
+
+        self.assertEqual(writes, [
+            (42, 0.0, 1434.0, 2, '2026-08-01 08:00:00'),
+            (43, 0.0, 1434.0, 2, '2026-08-01 08:00:00'),
+        ])
 
     def test_partial_episode_threshold_mismatch_uses_scoped_refresh(self):
         kodimonitor, xbmc, _, _ = load_kodimonitor()
