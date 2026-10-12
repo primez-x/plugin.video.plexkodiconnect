@@ -199,24 +199,6 @@ class KodiVideoDBTests(unittest.TestCase):
         self.assertFalse(database.playstate_matches(3, None, 8178, 0, None))
         conn.close()
 
-    def test_only_the_last_episode_of_a_shared_file_owns_its_playstate(self):
-        video = load_video_module()
-        conn = sqlite3.connect(':memory:')
-        conn.executescript('''
-            CREATE TABLE episode (idEpisode INTEGER PRIMARY KEY, idFile INTEGER);
-            INSERT INTO episode VALUES (8288, 25371);
-            INSERT INTO episode VALUES (8292, 25371);
-            INSERT INTO episode VALUES (9000, 30000);
-        ''')
-        database = object.__new__(video.KodiVideoDB)
-        database.cursor = conn.cursor()
-        self.assertFalse(database.episode_owns_file(8288, 25371))
-        self.assertTrue(database.episode_owns_file(8292, 25371))
-        self.assertTrue(database.episode_owns_file(9000, 30000))
-        # Second (add-on path) file: no Kodi episode points at it
-        self.assertTrue(database.episode_owns_file(9000, 30001))
-        conn.close()
-
     def test_uniqueid_lookup_is_batched_and_scoped_to_the_media_type(self):
         video = load_video_module()
         conn = sqlite3.connect(':memory:')

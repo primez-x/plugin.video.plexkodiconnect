@@ -39,14 +39,10 @@ class FakeKodiDB(object):
     """Kodi DB holding one playstate per file (or song) id"""
     kodiconn = cursor = artconn = artcursor = None
 
-    def __init__(self, playstates, ratings=None, file_owners=None):
+    def __init__(self, playstates, ratings=None):
         self.playstates = dict(playstates)
         self.ratings = dict(ratings or {})
-        self.file_owners = dict(file_owners or {})
         self.writes = []
-
-    def episode_owns_file(self, kodi_id, file_id):
-        return self.file_owners.get(file_id, kodi_id) == kodi_id
 
     def playstate_matches(self, file_id, *playstate):
         return self.playstates.get(file_id) == playstate
@@ -93,7 +89,7 @@ def load_itemtypes():
     stub('resources.lib.kodi_db', KodiVideoDB=object, KodiMusicDB=object,
          KODIDB_LOCK=lock)
     stub('resources.lib.db')
-    stub('resources.lib.timing')
+    stub('resources.lib.timing', plex_date_to_kodi=lambda timestamp: timestamp)
     stub('resources.lib.app')
     stub('resources.lib.plex_functions')
     stub('resources.lib.plex_api', API=FakeAPI)
@@ -124,13 +120,16 @@ class UpdateUserdataChangeTests(unittest.TestCase):
         self.modules = load_itemtypes()
 
     def item(self, module, cls, db_item, playstates, ratings=None,
-             file_owners=None):
+             file_episodes=None):
+        file_episodes = file_episodes or {}
         typus = getattr(self.modules[module], cls)(
             None,
             plexdb=SimpleNamespace(
                 item_by_id=lambda plex_id, plex_type: db_item,
+                episode_ids_by_file=lambda file_id: file_episodes.get(
+                    file_id, []),
                 plexconn=None, cursor=None),
-            kodidb=FakeKodiDB(playstates, ratings, file_owners))
+            kodidb=FakeKodiDB(playstates, ratings))
         return typus
 
     def test_movie_with_unchanged_playstate_is_not_a_change(self):
@@ -165,38 +164,137 @@ class UpdateUserdataChangeTests(unittest.TestCase):
                             {1: playstate, 2: playstate})
         self.assertTrue(episode.update_userdata(xml, 'episode'))
         self.assertFalse(episode.userdata_changed)
-        self.assertEqual(episode.kodidb.writes, [1, 2])
+        self.assertEqual(episode.kodidb.writes, [])
 
         # Only the second (add-on path) file is out of date
         episode = self.item('tvshows', 'Episode', db_item,
                             {1: playstate, 2: (None, 8178, None, None)})
         self.assertTrue(episode.update_userdata(xml, 'episode'))
         self.assertTrue(episode.userdata_changed)
+        self.assertEqual(episode.kodidb.writes, [2])
 
-    def test_shared_multi_episode_file_is_written_by_one_episode_only(self):
-        # S01E03E04: Kodi episodes 1 and 2 share file 7, Plex has E03 watched
-        # and E04 unwatched. Only episode 2 writes the file's playstate, so a
-        # full sync does not flip it on every run
-        unwatched = (None, 8178, None, None)
-        watched_xml = {'plex_id': 5, 'resume': None, 'viewcount': 1,
-                       'lastplayed': '2026-10-01 12:00:00'}
-        unwatched_xml = {'plex_id': 6, 'resume': None, 'viewcount': None,
-                         'lastplayed': None}
-        first = self.item('tvshows', 'Episode',
-                          {'kodi_fileid': 7, 'kodi_fileid_2': None,
-                           'kodi_id': 1, 'kodi_type': 'episode'},
-                          {7: unwatched}, file_owners={7: 2})
-        self.assertTrue(first.update_userdata(watched_xml, 'episode'))
-        second = self.item('tvshows', 'Episode',
-                           {'kodi_fileid': 7, 'kodi_fileid_2': None,
-                            'kodi_id': 2, 'kodi_type': 'episode'},
-                           first.kodidb.playstates, file_owners={7: 2})
-        self.assertTrue(second.update_userdata(unwatched_xml, 'episode'))
+    # S01E03E04: Plex episodes 5 and 6 are Kodi episodes 1 and 2, which share
+    # Kodi file 7. Kodi holds just one playstate for the file
+    WATCHED = {'resume': 0.0, 'viewcount': 1,
+               'lastplayed': '2026-10-01 12:00:00'}
+    UNWATCHED = {'resume': 0.0, 'viewcount': 0, 'lastplayed': None}
+    RESUMED = {'resume': 600.0, 'viewcount': 0,
+               'lastplayed': '2026-10-02 12:00:00'}
 
-        self.assertEqual(first.kodidb.writes, [])
-        self.assertFalse(first.userdata_changed)
-        self.assertFalse(second.userdata_changed)
-        self.assertEqual(second.kodidb.playstates[7], unwatched)
+    def shared_file_sync(self, plex, kodi_state):
+        """
+        Full sync of both episodes sharing a file, given the Plex states
+        {plex_id: xml}. Returns the Kodi items to inspect their end state
+        """
+        self.modules['tvshows'].PF.GetPlexMetadata = (
+            lambda plex_id: [dict(plex[plex_id], plex_id=plex_id)])
+        playstates = {7: kodi_state}
+        items = []
+        for plex_id, kodi_id in ((5, 1), (6, 2)):
+            episode = self.item(
+                'tvshows', 'Episode',
+                {'kodi_fileid': 7, 'kodi_fileid_2': None, 'kodi_id': kodi_id,
+                 'kodi_type': 'episode'},
+                playstates, file_episodes={7: [5, 6]})
+            episode.kodidb.playstates = playstates
+            self.assertTrue(episode.update_userdata(
+                dict(plex[plex_id], plex_id=plex_id), 'episode'))
+            items.append(episode)
+        return items, playstates[7]
+
+    def test_unchanged_shared_file_is_not_a_change(self):
+        merged = (0.0, 8178, 1, '2026-10-01 12:00:00')
+        items, state = self.shared_file_sync(
+            {5: self.WATCHED, 6: self.UNWATCHED}, merged)
+        self.assertEqual([x.userdata_changed for x in items], [False, False])
+        self.assertEqual(items[0].kodidb.writes, [])
+        self.assertEqual(state, merged)
+
+    def test_shared_file_stays_watched_via_either_episode(self):
+        unwatched = (0.0, 8178, 0, None)
+        for plex in ({5: self.WATCHED, 6: self.UNWATCHED},
+                     {5: self.UNWATCHED, 6: self.WATCHED}):
+            items, state = self.shared_file_sync(plex, unwatched)
+            self.assertEqual(state, (0.0, 8178, 1, '2026-10-01 12:00:00'))
+            # The next full sync has nothing left to do
+            items, state = self.shared_file_sync(plex, state)
+            self.assertEqual([x.userdata_changed for x in items],
+                             [False, False])
+
+    def test_shared_file_keeps_resume_point_of_either_episode(self):
+        unwatched = (0.0, 8178, 0, None)
+        resumed = (600.0, 8178, 0, '2026-10-02 12:00:00')
+        for plex in ({5: self.RESUMED, 6: self.UNWATCHED},
+                     {5: self.UNWATCHED, 6: self.RESUMED}):
+            items, state = self.shared_file_sync(plex, unwatched)
+            self.assertEqual(state, resumed)
+            items, state = self.shared_file_sync(plex, state)
+            self.assertEqual([x.userdata_changed for x in items],
+                             [False, False])
+
+    def test_shared_file_merges_watched_and_resumed_episodes(self):
+        # E03 was watched, E04 started afterwards: watched, resume of E04
+        expected = (600.0, 8178, 1, '2026-10-02 12:00:00')
+        for plex in ({5: self.WATCHED, 6: self.RESUMED},
+                     {5: self.RESUMED, 6: self.WATCHED}):
+            items, state = self.shared_file_sync(
+                plex, (0.0, 8178, 0, None))
+            self.assertEqual(state, expected)
+
+    def test_shared_file_is_left_alone_if_the_other_episode_is_unknown(self):
+        kodi_state = (0.0, 8178, 1, '2026-10-01 12:00:00')
+        episode = self.item(
+            'tvshows', 'Episode',
+            {'kodi_fileid': 7, 'kodi_fileid_2': None, 'kodi_id': 1,
+             'kodi_type': 'episode'},
+            {7: kodi_state}, file_episodes={7: [5, 6]})
+        self.modules['tvshows'].PF.GetPlexMetadata = lambda plex_id: None
+        self.assertTrue(episode.update_userdata(
+            dict(self.UNWATCHED, plex_id=5), 'episode'))
+        self.assertEqual(episode.kodidb.writes, [])
+        self.assertFalse(episode.userdata_changed)
+        self.assertEqual(episode.kodidb.playstates[7], kodi_state)
+
+    def test_websocket_playstate_matches_what_full_sync_writes(self):
+        # E04 (6) was watched. E03 (5) is now played on another device, up to
+        # 300 seconds, at 2026-10-03 12:00:00
+        playing = {'resume': 300, 'viewcount': 0,
+                   'lastplayed': '2026-10-03 12:00:00'}
+        self.modules['tvshows'].PF.GetPlexMetadata = (
+            lambda plex_id: [dict(self.WATCHED, plex_id=plex_id)])
+        episode = self.item(
+            'tvshows', 'Episode',
+            {'kodi_fileid': 7, 'kodi_fileid_2': None, 'kodi_id': 1,
+             'kodi_type': 'episode'},
+            {7: (0.0, 8178, 1, '2026-10-01 12:00:00')},
+            file_episodes={7: [5, 6]})
+        episode.update_playstate(False, 0, 300, 8178, 7, None,
+                                 '2026-10-03 12:00:00', 5)
+        websocket_state = episode.kodidb.playstates[7]
+        self.assertEqual(websocket_state,
+                         (300, 8178, 1, '2026-10-03 12:00:00'))
+
+        # PMS then reports the same, and the full sync has nothing to change
+        items, state = self.shared_file_sync(
+            {5: playing, 6: self.WATCHED}, websocket_state)
+        self.assertEqual([x.userdata_changed for x in items], [False, False])
+        self.assertEqual(state, websocket_state)
+
+    def test_websocket_finished_episode_keeps_watched_sibling_playcount(self):
+        sibling = {'resume': 0.0, 'viewcount': 2,
+                   'lastplayed': '2026-10-01 12:00:00'}
+        self.modules['tvshows'].PF.GetPlexMetadata = (
+            lambda plex_id: [dict(sibling, plex_id=plex_id)])
+        episode = self.item(
+            'tvshows', 'Episode',
+            {'kodi_fileid': 7, 'kodi_fileid_2': None, 'kodi_id': 1,
+             'kodi_type': 'episode'},
+            {7: (0.0, 8178, 2, '2026-10-01 12:00:00')},
+            file_episodes={7: [5, 6]})
+        episode.update_playstate(True, 0, 8000, 8178, 7, None,
+                                 '2026-10-03 12:00:00', 5)
+        self.assertEqual(episode.kodidb.playstates[7],
+                         (0, 8178, 2, '2026-10-03 12:00:00'))
 
     def test_song_playcount_change_is_a_change(self):
         db_item = {'kodi_id': 3, 'kodi_type': 'song'}

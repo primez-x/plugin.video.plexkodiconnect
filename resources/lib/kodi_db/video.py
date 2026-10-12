@@ -708,18 +708,6 @@ class KodiVideoDB(common.KodiDBBase):
             return not bookmarks
         return bookmarks == [(resume_seconds, total_seconds, 1)]
 
-    def episode_owns_file(self, kodi_id, file_id):
-        """
-        A multi-episode file (e.g. S01E03E04) is one Kodi file shared by
-        several episodes, but has only one playstate. Returns True if episode
-        kodi_id is the one that writes it (the last of them), so that a full
-        sync does not flip the playstate back and forth between episodes
-        """
-        self.cursor.execute('SELECT MAX(idEpisode) FROM episode WHERE idFile = ?',
-                            (file_id, ))
-        owner = self.cursor.fetchone()[0]
-        return owner is None or owner == kodi_id
-
     @db.catch_operationalerrors
     def set_resume(self, file_id, resume_seconds, total_seconds, playcount,
                    dateplayed):

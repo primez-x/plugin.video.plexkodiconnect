@@ -206,9 +206,9 @@ class PlexWebSocketApp(websocket.WebSocketApp,
             try:
                 utils.settings(self.name + SETTINGS_STRING,
                                value=message)
-            except RuntimeError:
+            except RuntimeError as err:
                 # PKC is being replaced (add-on update): its settings are gone
-                pass
+                log.debug('Could not set the connection status: %s', err)
             app.APP.deregister_thread(self)
             log.info("----===## %s stopped ##===----", self.name)
 

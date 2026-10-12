@@ -386,7 +386,8 @@ def process_playing(data):
                                  session['duration'],
                                  session['kodi_fileid'],
                                  session['kodi_fileid_2'],
-                                 timing.unix_timestamp())
+                                 timing.unix_timestamp(),
+                                 plex_id)
 
 
 def cache_artwork(plex_id, plex_type, kodi_id=None, kodi_type=None):

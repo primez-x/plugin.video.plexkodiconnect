@@ -128,8 +128,17 @@ class ItemBase(object):
                                    kodi_id,
                                    kodi_type)
 
+    def merged_playstate(self, plex_id, kodi_fileid, playstate):
+        """
+        Returns the playstate (resume, runtime, playcount, lastplayed) to write
+        for the Kodi file kodi_fileid, given the playstate of the Plex item
+        plex_id. Returns None if the file must be left alone. Unchanged unless
+        several Plex items share the file (see TvShowMixin)
+        """
+        return playstate
+
     def update_playstate(self, mark_played, view_count, resume, duration,
-                         kodi_fileid, kodi_fileid_2, lastViewedAt):
+                         kodi_fileid, kodi_fileid_2, lastViewedAt, plex_id):
         """
         Use with websockets, not xml
         """
@@ -143,18 +152,17 @@ class ItemBase(object):
                 view_count = 1
             resume = 0
         # Do the actual update
-        self.kodidb.set_resume(kodi_fileid,
-                               resume,
-                               duration,
-                               view_count,
-                               timing.plex_date_to_kodi(lastViewedAt))
-        if kodi_fileid_2:
-            # Our dirty hack for episodes
-            self.kodidb.set_resume(kodi_fileid_2,
-                                   resume,
-                                   duration,
-                                   view_count,
-                                   timing.plex_date_to_kodi(lastViewedAt))
+        playstate = (resume,
+                     duration,
+                     view_count,
+                     timing.plex_date_to_kodi(lastViewedAt))
+        # kodi_fileid_2: our dirty hack for episodes
+        for file_id in (kodi_fileid, kodi_fileid_2):
+            if not file_id:
+                continue
+            merged = self.merged_playstate(plex_id, file_id, playstate)
+            if merged is not None:
+                self.kodidb.set_resume(file_id, *merged)
 
     @staticmethod
     def sync_this_item(section_id):

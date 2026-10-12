@@ -9,7 +9,49 @@ from .. import plex_functions as PF, app, variables as v
 LOG = getLogger('PLEX.tvshows')
 
 
+def merge_playstates(playstates):
+    """
+    Merges the Plex playstates (resume, runtime, playcount, lastplayed) of all
+    episodes sharing one Kodi file into the single playstate Kodi can hold for
+    it: highest playcount, latest lastplayed and the resume point of the
+    episode viewed most recently. playstates is a dict {plex_id: playstate};
+    the result does not depend on the order of the episodes
+    """
+    plex_id = max(playstates,
+                  key=lambda x: (playstates[x][3] or '', x))
+    resume, runtime, _, lastplayed = playstates[plex_id]
+    return (resume,
+            runtime,
+            max(x[2] or 0 for x in playstates.values()),
+            lastplayed)
+
+
 class TvShowMixin(object):
+    def merged_playstate(self, plex_id, kodi_fileid, playstate):
+        """
+        For a file shared by several episodes (e.g. S01E03E04), merges the
+        playstates of all of them, as Kodi holds just one for the file.
+        Returns None if the playstate of another episode cannot be retrieved
+        from the PMS: better to leave the file alone than to write a state
+        that misses what was done with the other episode
+        """
+        playstates = {plex_id: playstate}
+        for sibling_id in self.plexdb.episode_ids_by_file(kodi_fileid):
+            if sibling_id in playstates:
+                continue
+            xml = PF.GetPlexMetadata(sibling_id)
+            if xml in (None, 401) or not len(xml):
+                LOG.warn('Could not get the playstate of episode %s sharing '
+                         'the Kodi file %s with %s',
+                         sibling_id, kodi_fileid, plex_id)
+                return
+            api = API(xml[0])
+            playstates[sibling_id] = (api.resume_point(),
+                                      api.runtime(),
+                                      api.viewcount(),
+                                      api.lastplayed())
+        return merge_playstates(playstates)
+
     def update_userdata(self, xml_element, plex_type):
         """
         Updates the Kodi watched state of the item from PMS. Also retrieves
@@ -28,18 +70,21 @@ class TvShowMixin(object):
                                          api.userrating()):
             self.userdata_changed = True
         if plex_type == v.PLEX_TYPE_EPISODE:
-            playstate = (api.resume_point(),
-                         api.runtime(),
-                         api.viewcount(),
-                         api.lastplayed())
+            own_playstate = (api.resume_point(),
+                             api.runtime(),
+                             api.viewcount(),
+                             api.lastplayed())
             for file_id in (db_item['kodi_fileid'], db_item['kodi_fileid_2']):
                 if not file_id:
                     continue
-                if not self.kodidb.episode_owns_file(db_item['kodi_id'],
-                                                     file_id):
+                playstate = self.merged_playstate(api.plex_id,
+                                                  file_id,
+                                                  own_playstate)
+                if playstate is None:
                     continue
-                if not self.kodidb.playstate_matches(file_id, *playstate):
-                    self.userdata_changed = True
+                if self.kodidb.playstate_matches(file_id, *playstate):
+                    continue
+                self.userdata_changed = True
                 self.kodidb.set_resume(file_id, *playstate)
         return True
 

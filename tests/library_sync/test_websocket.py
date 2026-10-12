@@ -60,7 +60,7 @@ class WebsocketPlaystateSessionTests(unittest.TestCase):
 
             def update_playstate(self, mark_played, view_count, resume,
                                  duration, kodi_fileid, kodi_fileid_2,
-                                 lastplayed):
+                                 lastplayed, plex_id):
                 writes.append((kodi_fileid, resume, duration, mark_played))
 
         def get_metadata(plex_id):

@@ -209,6 +209,16 @@ class TVShows(object):
                             (plex_guid, ))
         return list(self.entry_to_episode(x) for x in self.cursor.fetchall())
 
+    def episode_ids_by_file(self, kodi_fileid):
+        """
+        Returns the Plex ids of all episodes using the Kodi file kodi_fileid.
+        There are several of them for multi-episode files (e.g. S01E03E04)
+        """
+        self.cursor.execute('SELECT plex_id FROM episode '
+                            'WHERE kodi_fileid = ? OR kodi_fileid_2 = ?',
+                            (kodi_fileid, kodi_fileid))
+        return [x[0] for x in self.cursor.fetchall()]
+
     @staticmethod
     def entry_to_episode(entry):
         if not entry:
