@@ -35,6 +35,9 @@ class TvShowMixin(object):
             for file_id in (db_item['kodi_fileid'], db_item['kodi_fileid_2']):
                 if not file_id:
                     continue
+                if not self.kodidb.episode_owns_file(db_item['kodi_id'],
+                                                     file_id):
+                    continue
                 if not self.kodidb.playstate_matches(file_id, *playstate):
                     self.userdata_changed = True
                 self.kodidb.set_resume(file_id, *playstate)

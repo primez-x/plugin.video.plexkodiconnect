@@ -29,6 +29,8 @@ class App(object):
             self.suspend = False
             # Update Kodi widgets
             self.update_widgets = False
+            # Container.Refresh waiting for the container to finish loading
+            self.refresh_container = False
             # Need to lock all methods and functions messing with Plex Companion subscribers
             self.lock_subscriber = RLock()
             # Need to lock everything messing with Kodi/PKC playqueues

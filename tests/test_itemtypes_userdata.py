@@ -39,10 +39,14 @@ class FakeKodiDB(object):
     """Kodi DB holding one playstate per file (or song) id"""
     kodiconn = cursor = artconn = artcursor = None
 
-    def __init__(self, playstates, ratings=None):
+    def __init__(self, playstates, ratings=None, file_owners=None):
         self.playstates = dict(playstates)
         self.ratings = dict(ratings or {})
+        self.file_owners = dict(file_owners or {})
         self.writes = []
+
+    def episode_owns_file(self, kodi_id, file_id):
+        return self.file_owners.get(file_id, kodi_id) == kodi_id
 
     def playstate_matches(self, file_id, *playstate):
         return self.playstates.get(file_id) == playstate
@@ -119,13 +123,14 @@ class UpdateUserdataChangeTests(unittest.TestCase):
         self.addCleanup(restore_attributes, package, dict(vars(package)))
         self.modules = load_itemtypes()
 
-    def item(self, module, cls, db_item, playstates, ratings=None):
+    def item(self, module, cls, db_item, playstates, ratings=None,
+             file_owners=None):
         typus = getattr(self.modules[module], cls)(
             None,
             plexdb=SimpleNamespace(
                 item_by_id=lambda plex_id, plex_type: db_item,
                 plexconn=None, cursor=None),
-            kodidb=FakeKodiDB(playstates, ratings))
+            kodidb=FakeKodiDB(playstates, ratings, file_owners))
         return typus
 
     def test_movie_with_unchanged_playstate_is_not_a_change(self):
@@ -167,6 +172,31 @@ class UpdateUserdataChangeTests(unittest.TestCase):
                             {1: playstate, 2: (None, 8178, None, None)})
         self.assertTrue(episode.update_userdata(xml, 'episode'))
         self.assertTrue(episode.userdata_changed)
+
+    def test_shared_multi_episode_file_is_written_by_one_episode_only(self):
+        # S01E03E04: Kodi episodes 1 and 2 share file 7, Plex has E03 watched
+        # and E04 unwatched. Only episode 2 writes the file's playstate, so a
+        # full sync does not flip it on every run
+        unwatched = (None, 8178, None, None)
+        watched_xml = {'plex_id': 5, 'resume': None, 'viewcount': 1,
+                       'lastplayed': '2026-10-01 12:00:00'}
+        unwatched_xml = {'plex_id': 6, 'resume': None, 'viewcount': None,
+                         'lastplayed': None}
+        first = self.item('tvshows', 'Episode',
+                          {'kodi_fileid': 7, 'kodi_fileid_2': None,
+                           'kodi_id': 1, 'kodi_type': 'episode'},
+                          {7: unwatched}, file_owners={7: 2})
+        self.assertTrue(first.update_userdata(watched_xml, 'episode'))
+        second = self.item('tvshows', 'Episode',
+                           {'kodi_fileid': 7, 'kodi_fileid_2': None,
+                            'kodi_id': 2, 'kodi_type': 'episode'},
+                           first.kodidb.playstates, file_owners={7: 2})
+        self.assertTrue(second.update_userdata(unwatched_xml, 'episode'))
+
+        self.assertEqual(first.kodidb.writes, [])
+        self.assertFalse(first.userdata_changed)
+        self.assertFalse(second.userdata_changed)
+        self.assertEqual(second.kodidb.playstates[7], unwatched)
 
     def test_song_playcount_change_is_a_change(self):
         db_item = {'kodi_id': 3, 'kodi_type': 'song'}

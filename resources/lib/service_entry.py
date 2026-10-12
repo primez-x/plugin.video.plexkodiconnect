@@ -1079,6 +1079,7 @@ class Service(object):
 
             self._schedule_artwork_normalization()
 
+            library_sync.refresh_container_if_pending()
             if app.APP.update_widgets and not xbmc.getCondVisibility("Window.IsMedia"):
                 """
                 In case an update happened but we were not on the homescreen
