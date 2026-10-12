@@ -621,7 +621,7 @@ class Base(object):
         return self._producers
 
     def tv_show_path(self):
-        """
+        r"""
         Returns the direct path to the TV show, e.g. '\\NAS\tv\series'
         or None
         """

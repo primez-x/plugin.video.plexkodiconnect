@@ -203,8 +203,12 @@ class PlexWebSocketApp(websocket.WebSocketApp,
             else:
                 # Status = Disabled
                 message = utils.lang(24023)
-            utils.settings(self.name + SETTINGS_STRING,
-                           value=message)
+            try:
+                utils.settings(self.name + SETTINGS_STRING,
+                               value=message)
+            except RuntimeError:
+                # PKC is being replaced (add-on update): its settings are gone
+                pass
             app.APP.deregister_thread(self)
             log.info("----===## %s stopped ##===----", self.name)
 

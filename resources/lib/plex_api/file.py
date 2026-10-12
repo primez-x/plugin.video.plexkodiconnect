@@ -176,7 +176,7 @@ class File(object):
         return filename
 
     def file_path(self, force_first_media=False):
-        """
+        r"""
         Returns the direct path to this item, e.g. '\\NAS\movies\movie.mkv'
         as unicode or None
 
