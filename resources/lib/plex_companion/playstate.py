@@ -59,6 +59,7 @@ class PlaystateMgr(backgroundthread.KillableThread):
         self.subscribers = dict()
         self.s = None
         self.httpd = None
+        self.httpd_thread = None
         self.stopped_timeline = stopped_timeline()
         self.gdm = plexgdm()
         msg = stopped_timeline()
@@ -96,18 +97,24 @@ class PlaystateMgr(backgroundthread.KillableThread):
             HandlerClass = CompanionHandlerClassFactory(self)
             self.httpd = ThreadedHTTPServer(server_address, HandlerClass)
             self.httpd.timeout = 10.0
-            t = Thread(target=self.httpd.serve_forever)
-            t.start()
+            self.httpd_thread = Thread(target=self.httpd.serve_forever)
+            self.httpd_thread.start()
 
     def _stop_webserver(self):
-        if self.httpd is not None:
+        server = self.httpd
+        server_thread = self.httpd_thread
+        if server is not None:
             log.debug('Shutting down PKC Companion webserver')
             try:
-                self.httpd.shutdown()
+                server.shutdown()
             except AttributeError:
                 # Ensure thread-safety
                 pass
+            if server_thread is not None:
+                server_thread.join()
+            server.server_close()
             self.httpd = None
+            self.httpd_thread = None
 
     def _get_requests_session(self):
         if self.s is None:

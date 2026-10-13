@@ -1,4 +1,6 @@
 import importlib.util
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import socket
 import sys
 import threading
 import types
@@ -149,6 +151,41 @@ class CompanionPlaystateTimelineTests(unittest.TestCase):
             self._tick('playing', 60000 + second * 1000)
 
         self.assertEqual(len(self.sent), 3)
+
+    def test_stopping_listener_closes_port_for_rebind(self):
+        with socket.socket() as reservation:
+            reservation.bind(('127.0.0.1', 0))
+            port = reservation.getsockname()[1]
+        manager = self.playstate.PlaystateMgr(companion_enabled=True)
+        first_server = None
+        second_server = None
+
+        with patch.object(self.playstate, 'ThreadedHTTPServer', HTTPServer), \
+                patch.object(self.playstate, 'CompanionHandlerClassFactory',
+                             return_value=BaseHTTPRequestHandler), \
+                patch.object(self.playstate.v, 'COMPANION_PORT', port,
+                             create=True):
+            try:
+                manager._start_webserver()
+                first_server = manager.httpd
+                with socket.create_connection(('127.0.0.1', port),
+                                              timeout=1):
+                    pass
+
+                manager._stop_webserver()
+                try:
+                    manager._start_webserver()
+                except OSError as error:
+                    self.fail('Stopped listener blocked rebind: %s' % error)
+                second_server = manager.httpd
+                with socket.create_connection(('127.0.0.1', port),
+                                              timeout=1):
+                    pass
+            finally:
+                manager._stop_webserver()
+                for server in (first_server, second_server):
+                    if server is not None and server.socket.fileno() >= 0:
+                        server.server_close()
 
 
 if __name__ == '__main__':
