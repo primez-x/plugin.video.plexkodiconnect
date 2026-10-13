@@ -27,7 +27,7 @@ STUBBED_MODULES = (
 
 
 def load_playlist_func(settings, smart_subtitles_enabled, window=None,
-                       playing_file='episode2.mkv'):
+                       playing_file='episode2.mkv', wait_callback=None):
     window = {} if window is None else window
     saved = {name: sys.modules.get(name) for name in STUBBED_MODULES}
 
@@ -67,8 +67,15 @@ def load_playlist_func(settings, smart_subtitles_enabled, window=None,
     stub('resources.lib.json_rpc')
     stub('resources.lib.variables')
     waits = []
+
+    def wait_for_abort(timeout):
+        waits.append(timeout)
+        if wait_callback is not None:
+            return wait_callback(timeout, window, len(waits))
+        return False
+
     monitor = types.SimpleNamespace(
-        waitForAbort=lambda timeout: waits.append(timeout) or False)
+        waitForAbort=wait_for_abort)
     stub('resources.lib.app', PLAYSTATE=types.SimpleNamespace(item=None),
          APP=types.SimpleNamespace(monitor=monitor), waits=waits)
     stub('resources.lib.exceptions', PlaylistError=Exception)
@@ -82,11 +89,12 @@ def load_playlist_func(settings, smart_subtitles_enabled, window=None,
 
 
 class InitStreamsSubtitleTests(unittest.TestCase):
-    def run_init_streams(self, subtitle_pick, smart_subtitles_enabled, result=None):
+    def run_init_streams(self, subtitle_pick, smart_subtitles_enabled,
+                         result=None, wait_callback=None):
         window = {} if result is None else {'SmartSubtitles.Result': result}
         module, restore = load_playlist_func(
             {'audioStreamPick': '1', 'subtitleStreamPick': subtitle_pick},
-            smart_subtitles_enabled, window)
+            smart_subtitles_enabled, window, wait_callback=wait_callback)
         self.module = module
         self.addCleanup(restore)
         switched = []
@@ -121,7 +129,25 @@ class InitStreamsSubtitleTests(unittest.TestCase):
         self.assertEqual(
             self.run_init_streams('0', True, 'selected|episode1.mkv'),
             ['video', 'subtitle'])
-        self.assertEqual(12, len(self.module.app.waits))
+        self.assertEqual(48, len(self.module.app.waits))
+
+    def test_smart_subtitles_selection_after_three_seconds_is_kept(self):
+        def publish_late_selection(_timeout, window, wait_count):
+            if wait_count == 13:
+                window['SmartSubtitles.Result'] = 'selected|episode2.mkv'
+            return False
+
+        self.assertEqual(
+            ['video'], self.run_init_streams(
+                '0', True, 'pending|episode2.mkv', publish_late_selection))
+        self.assertEqual(13, len(self.module.app.waits))
+
+    def test_pending_result_falls_back_when_wait_is_aborted(self):
+        self.assertEqual(
+            ['video', 'subtitle'], self.run_init_streams(
+                '0', True, 'pending|episode2.mkv',
+                lambda _timeout, _window, _wait_count: True))
+        self.assertEqual(1, len(self.module.app.waits))
 
     def test_kodi_pick_never_switches_subtitles(self):
         self.assertEqual(self.run_init_streams('1', False), ['video'])

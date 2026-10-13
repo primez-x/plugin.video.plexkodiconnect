@@ -27,7 +27,7 @@ LOG = getLogger('PLEX.playlist_func')
 # service.smartsubtitles >= 0.6.0 publishes "<result>|<playing file>" here
 SMART_SUBTITLES_RESULT = 'SmartSubtitles.Result'
 SMART_SUBTITLES_KEEP = ('selected', 'skip')
-SMART_SUBTITLES_WAIT = 3.0
+SMART_SUBTITLES_WAIT = 12.0
 
 
 def smart_subtitles_enabled():
