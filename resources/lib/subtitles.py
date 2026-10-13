@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+from collections import namedtuple
 from logging import getLogger
 import re
 from os import path
@@ -252,104 +253,79 @@ def accessible_plex_subtitles(playmethod, playing_file, xml_streams):
     return reordered_plex_streams_ext
 
 
+# Matching passes of reorder_plex_streams, tried in this order. Fields:
+#   needs_iso: Kodi sub needs a known language
+#   needs_forced: Kodi sub needs to be "forced"
+#   strict_language: Plex language tag has to equal the Kodi language
+#       (otherwise only a mismatch of two known languages is rejected, as Plex
+#       does not detect e.g. "English" as en)
+#   forced_rule: 'forced' = Plex stream needs to be forced, 'same' = Plex and
+#       Kodi forced flag need to be equal, None = ignore the forced flag
+MatchingPass = namedtuple(
+    'MatchingPass',
+    ('needs_iso', 'needs_forced', 'strict_language', 'forced_rule'))
+MATCHING_PASSES = (
+    # Known language, extension and "forced" True first
+    MatchingPass(True, True, True, 'forced'),
+    # Non-forced
+    MatchingPass(True, False, True, 'same'),
+    # Irrelevant of forced flag
+    MatchingPass(True, False, True, None),
+    # Based on codec, forced ones first
+    MatchingPass(False, True, False, 'forced'),
+    # Based on codec alone, non-forced
+    MatchingPass(False, False, False, 'same'),
+    # Based on codec alone, even with miss-matching forced flag
+    MatchingPass(False, False, False, None),
+)
+
+
+def plex_stream_forced(plex_stream):
+    """
+    Plex sends the flag as the string '1' or '0': only '1' means forced
+    """
+    return plex_stream.get('forced') == '1'
+
+
+def _kodi_sub_qualifies(kodi_sub, pass_):
+    if pass_.needs_iso and not kodi_sub['iso']:
+        return False
+    return kodi_sub['forced'] or not pass_.needs_forced
+
+
+def _plex_stream_matches(kodi_sub, plex_stream, pass_):
+    if kodi_sub['codec'] != plex_stream.get('codec').lower():
+        return False
+    forced = plex_stream_forced(plex_stream)
+    if pass_.forced_rule == 'forced' and not forced:
+        return False
+    if pass_.forced_rule == 'same' and kodi_sub['forced'] != forced:
+        return False
+    language = plex_stream.get('languageTag')
+    if pass_.strict_language:
+        return kodi_sub['iso'][1] == language
+    return not (language and kodi_sub['iso']
+                and language != kodi_sub['iso'][1])
+
+
 def reorder_plex_streams(plex_streams_ext, kodi_subs_file):
     """
     Returns the Plex streams in a "best-guess" order as indicated by the
     Kodi external subtitles kodi_subs_file
     """
     order = [None for i in range(len(kodi_subs_file))]
-    # Pick subtitles with known language, extension and "forced" True first
-    for i, kodi_sub in enumerate(kodi_subs_file):
-        if not kodi_sub['iso'] or not kodi_sub['forced']:
-            continue
-        for plex_stream in plex_streams_ext:
-            if not plex_stream.get('forced'):
+    for pass_ in MATCHING_PASSES:
+        for i, kodi_sub in enumerate(kodi_subs_file):
+            if order[i] is not None or not _kodi_sub_qualifies(kodi_sub, pass_):
                 continue
-            elif not kodi_sub['iso'][1] == plex_stream.get('languageTag'):
-                continue
-            elif not kodi_sub['codec'] == plex_stream.get('codec').lower():
-                continue
-            # Pick the first matching result - even though it's a best guess
-            order[i] = plex_stream
-            plex_streams_ext.remove(plex_stream)
-            break
-    # Pick non-forced
-    for i, kodi_sub in enumerate(kodi_subs_file):
-        if order[i] is not None or not kodi_sub['iso']:
-            continue
-        for plex_stream in plex_streams_ext:
-            if not kodi_sub['iso'][1] == plex_stream.get('languageTag'):
-                continue
-            elif not kodi_sub['codec'] == plex_stream.get('codec').lower():
-                continue
-            elif not (kodi_sub['forced'] is (plex_stream.get('forced') == '1')):
-                continue
-            # Pick the first matching result - even though it's a best guess
-            order[i] = plex_stream
-            plex_streams_ext.remove(plex_stream)
-            break
-    # Pick subs irrelevant of forced flag
-    for i, kodi_sub in enumerate(kodi_subs_file):
-        if order[i] is not None or not kodi_sub['iso']:
-            continue
-        for plex_stream in plex_streams_ext:
-            if not kodi_sub['iso'][1] == plex_stream.get('languageTag'):
-                continue
-            elif not kodi_sub['codec'] == plex_stream.get('codec').lower():
-                continue
-            # Pick the first matching result - even though it's a best guess
-            order[i] = plex_stream
-            plex_streams_ext.remove(plex_stream)
-            break
-    # Pick subs based on codec (Plex does not detect "English" as en). Forced
-    # ones first
-    for i, kodi_sub in enumerate(kodi_subs_file):
-        if order[i] is not None or not kodi_sub['forced']:
-            continue
-        for plex_stream in plex_streams_ext:
-            if not kodi_sub['codec'] == plex_stream.get('codec').lower():
-                continue
-            elif not plex_stream.get('forced'):
-                continue
-            elif plex_stream.get('languageTag') and kodi_sub['iso'] \
-                    and not plex_stream.get('languageTag') == kodi_sub['iso'][1]:
-                continue
-            # Pick the first matching result - even though it's a best guess
-            order[i] = plex_stream
-            plex_streams_ext.remove(plex_stream)
-            break
-    # Pick subs based on codec alone (Plex does not detect "English" as en).
-    # Non-forced
-    for i, kodi_sub in enumerate(kodi_subs_file):
-        if order[i] is not None:
-            continue
-        for plex_stream in plex_streams_ext:
-            if not kodi_sub['codec'] == plex_stream.get('codec').lower():
-                continue
-            elif not (kodi_sub['forced'] is (plex_stream.get('forced') == '1')):
-                continue
-            elif plex_stream.get('languageTag') and kodi_sub['iso'] \
-                    and not plex_stream.get('languageTag') == kodi_sub['iso'][1]:
-                continue
-            # Pick the first matching result - even though it's a best guess
-            order[i] = plex_stream
-            plex_streams_ext.remove(plex_stream)
-            break
-    # Pick subs based on codec alone (Plex does not detect "English" as en).
-    # Even with miss-matching forced flag
-    for i, kodi_sub in enumerate(kodi_subs_file):
-        if order[i] is not None:
-            continue
-        for plex_stream in plex_streams_ext:
-            if not kodi_sub['codec'] == plex_stream.get('codec').lower():
-                continue
-            elif plex_stream.get('languageTag') and kodi_sub['iso'] \
-                    and not plex_stream.get('languageTag') == kodi_sub['iso'][1]:
-                continue
-            # Pick the first matching result - even though it's a best guess
-            order[i] = plex_stream
-            plex_streams_ext.remove(plex_stream)
-            break
+            for plex_stream in plex_streams_ext:
+                if not _plex_stream_matches(kodi_sub, plex_stream, pass_):
+                    continue
+                # Pick the first matching result - even though it's a best
+                # guess
+                order[i] = plex_stream
+                plex_streams_ext.remove(plex_stream)
+                break
     # Now lets add dummies for Kodi subs we could not match
     for i, kodi_sub in enumerate(kodi_subs_file):
         if order[i] is not None:
