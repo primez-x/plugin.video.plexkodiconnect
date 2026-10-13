@@ -41,24 +41,25 @@ class ImageCachingThread(backgroundthread.KillableThread):
         Main goal is to close DB connection between calls
         """
         offset = 0
-        i = 0
         while True:
             batch = []
+            rows = 0
             with kind(texture_db=True) as kodidb:
                 texture_db = KodiTextureDB(kodiconn=kodidb.kodiconn,
                                            artconn=kodidb.artconn,
                                            lock=False)
-                for i, url in enumerate(kodidb.artwork_generator(kodi_type,
-                                                                 BATCH_SIZE,
-                                                                 offset)):
+                for rows, url in enumerate(kodidb.artwork_generator(kodi_type,
+                                                                    BATCH_SIZE,
+                                                                    offset),
+                                           1):
                     if texture_db.url_not_yet_cached(url):
                         batch.append(url)
                         if len(batch) == BATCH_SIZE:
                             break
-            offset += i + 1
+            offset += rows
             for url in batch:
                 yield url
-            if i + 1 < BATCH_SIZE:
+            if rows < BATCH_SIZE:
                 break
 
     def run(self):
