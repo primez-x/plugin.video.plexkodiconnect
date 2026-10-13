@@ -43,6 +43,9 @@ class FullSync(common.LibrarySyncMixin, bg.KillableThread):
         # DB (including playstates and user ratings). Decides whether Kodi's views and widgets
         # need to be reloaded at the end
         self.changed = False
+        # ratingKeys whose playstate this sync already handled (watched pass)
+        self._playstates_seen = set()
+        self._last_progress = None
         self.repair = repair
         self.callback = callback
         # For progress dialog
@@ -69,6 +72,10 @@ class FullSync(common.LibrarySyncMixin, bg.KillableThread):
             progress = int(float(current) / float(section.number_of_items) * 100.0)
         except ZeroDivisionError:
             progress = 0
+        # Throttle: only talk to the GUI when the displayed percent changes
+        if (progress, title) == getattr(self, '_last_progress', None):
+            return
+        self._last_progress = (progress, title)
         self.dialog.update(progress,
                            '%s (%s)' % (section.name, section.section_type_text),
                            '%s %s/%s'
@@ -119,15 +126,23 @@ class FullSync(common.LibrarySyncMixin, bg.KillableThread):
         LOG.debug('threads finished work. successful: %s', self.successful)
 
     @utils.log_time
-    def processing_loop_playstates(self, section_queue):
+    def processing_loop_playstates(self, section_queue, skip_seen=False):
         while not self.should_cancel():
             section = section_queue.get()
             section_queue.task_done()
             if section is None:
                 break
-            self.playstate_per_section(section)
+            self.playstate_per_section(section, skip_seen=skip_seen)
 
-    def playstate_per_section(self, section):
+    @property
+    def _seen_playstates(self):
+        # Lazily created so partially constructed instances (tests) work
+        seen = self.__dict__.get('_playstates_seen')
+        if seen is None:
+            seen = self.__dict__['_playstates_seen'] = set()
+        return seen
+
+    def playstate_per_section(self, section, skip_seen=False):
         LOG.debug('Processing %s playstates for library section %s',
                   section.number_of_items, section)
         try:
@@ -140,7 +155,12 @@ class FullSync(common.LibrarySyncMixin, bg.KillableThread):
                 with section.context(self.current_time) as context:
                     for xml in section.iterator:
                         section.count += 1
-                        if not context.update_userdata(xml, section.plex_type):
+                        if skip_seen and int(xml.attrib['ratingKey']) in self._seen_playstates:
+                            # Already handled by the fast "watched" pass in
+                            # this same sync; only stamp last_sync below so
+                            # the item is not mistaken for deleted
+                            pass
+                        elif not context.update_userdata(xml, section.plex_type):
                             # Somehow did not sync this item yet
                             self.changed = True
                             context.add_update(xml,
@@ -153,6 +173,7 @@ class FullSync(common.LibrarySyncMixin, bg.KillableThread):
                             int(xml.attrib['ratingKey']),
                             section.plex_type,
                             self.current_time)
+                        self._seen_playstates.add(int(xml.attrib['ratingKey']))
                         self.update_progressbar(section, '', section.count - 1)
                         if section.count % PLAYSTATE_BATCH_SIZE == 0:
                             finished = False
@@ -303,7 +324,7 @@ class FullSync(common.LibrarySyncMixin, bg.KillableThread):
                           kinds,
                           section_queue,
                           items='all').start()
-        self.processing_loop_playstates(section_queue)
+        self.processing_loop_playstates(section_queue, skip_seen=True)
         if self.should_cancel() or not self.successful:
             return
 

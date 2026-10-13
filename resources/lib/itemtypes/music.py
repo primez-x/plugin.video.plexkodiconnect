@@ -41,9 +41,9 @@ class MusicMixin(object):
                                                  playcount,
                                                  lastplayed):
                 self.userdata_changed = True
-            self.kodidb.set_playcount(playcount,
-                                      lastplayed,
-                                      db_item['kodi_id'],)
+                self.kodidb.set_playcount(playcount,
+                                          lastplayed,
+                                          db_item['kodi_id'],)
         return True
 
     def remove(self, plex_id, plex_type=None):

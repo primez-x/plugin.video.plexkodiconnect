@@ -154,6 +154,8 @@ class UpdateUserdataChangeTests(unittest.TestCase):
 
         self.assertTrue(movie.update_userdata(xml, 'movie'))
         self.assertFalse(movie.userdata_changed)
+        # Unchanged playstate must not be rewritten to the Kodi DB
+        self.assertEqual(movie.kodidb.writes, [])
 
     def test_movie_with_new_playstate_is_a_change(self):
         movie = self.item('movies', 'Movie',
@@ -351,6 +353,8 @@ class UpdateUserdataChangeTests(unittest.TestCase):
         song = self.item('music', 'Song', db_item, {3: (4, '2026-10-01')})
         self.assertTrue(song.update_userdata(xml, 'song'))
         self.assertFalse(song.userdata_changed)
+        # Unchanged playcount must not be rewritten to the Kodi DB
+        self.assertEqual(song.kodidb.writes, [])
 
         song = self.item('music', 'Song', db_item, {3: (3, '2026-09-01')})
         self.assertTrue(song.update_userdata(xml, 'song'))

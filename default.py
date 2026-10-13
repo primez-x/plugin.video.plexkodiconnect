@@ -252,9 +252,12 @@ def play():
     """
     request = "%s&handle=%s" % (argv[2], int(argv[1]))
     # Put the request into the 'queue'
-    transfer.plex_command("PLAY-%s" % request)
+    posted = transfer.plex_command("PLAY-%s" % request)
     if int(argv[1]) == -1:
         # Handle -1 received, not waiting for main thread
+        return
+    if not posted:
+        xbmcplugin.setResolvedUrl(int(argv[1]), False, xbmcgui.ListItem())
         return
     # Wait for the result from the main PKC thread
     result = transfer.wait_for_transfer(source="main")
@@ -262,6 +265,9 @@ def play():
         xbmcplugin.setResolvedUrl(int(argv[1]), False, xbmcgui.ListItem())
         # Tell main thread that we're done
         transfer.send(True, target="main")
+    elif result is None:
+        # Main thread never answered (timeout/shutdown) - fail gracefully
+        xbmcplugin.setResolvedUrl(int(argv[1]), False, xbmcgui.ListItem())
     else:
         # Received a xbmcgui.ListItem()
         xbmcplugin.setResolvedUrl(int(argv[1]), True, result)

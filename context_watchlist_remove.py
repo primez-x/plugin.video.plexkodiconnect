@@ -5,9 +5,7 @@ and sends a request to our main Python instance
 """
 from urllib.parse import urlencode
 
-from xbmc import sleep
-from xbmcgui import Window
-
+from resources.lib import transfer
 from resources.lib.contextmenu.common import kodi_item_from_listitem
 
 
@@ -17,11 +15,7 @@ def main():
         'kodi_id': kodi_id,
         'kodi_type': kodi_type
     }
-    window = Window(10000)
-    while window.getProperty('plexkodiconnect.command'):
-        sleep(20)
-    window.setProperty('plexkodiconnect.command',
-                       'WATCHLIST_REMOVE?%s' % urlencode(args))
+    transfer.plex_command('WATCHLIST_REMOVE?%s' % urlencode(args))
 
 
 if __name__ == "__main__":

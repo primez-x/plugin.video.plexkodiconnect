@@ -136,15 +136,19 @@ class App(object):
         for thread in self.threads:
             thread.suspend()
         if block:
-            while True:
-                for thread in self.threads:
-                    if not thread.is_suspended():
-                        LOG.debug('Waiting for thread to suspend: %s', thread)
-                        # Send suspend signal again in case self.threads
-                        # changed
-                        thread.suspend(block=True)
-                else:
+            # thread.suspend(block=True) waits at most 35s per thread, so
+            # this loop cannot spin forever on a stuck thread; re-check
+            # once in case self.threads changed meanwhile
+            for _ in range(2):
+                pending = [t for t in self.threads if not t.is_suspended()]
+                if not pending:
                     break
+                for thread in pending:
+                    LOG.debug('Waiting for thread to suspend: %s', thread)
+                    thread.suspend(block=True)
+            else:
+                LOG.warn('Threads did not all suspend: %s',
+                         [t for t in self.threads if not t.is_suspended()])
         return self.monitor.abortRequested()
 
     def resume_threads(self):
@@ -166,10 +170,17 @@ class App(object):
         for thread in self.threads:
             thread.cancel()
         if block:
+            from time import monotonic
+            deadline = monotonic() + 15
             while self.threads:
                 LOG.debug('Waiting for threads to exit: %s', self.threads)
-                if xbmc.sleep(100):
+                # xbmc.sleep() returns None; waitForAbort tells us to stop
+                if self.monitor.waitForAbort(0.1):
                     return True
+                if monotonic() > deadline:
+                    LOG.warn('Threads did not exit within 15s: %s',
+                             self.threads)
+                    break
 
     def reload(self):
         # Number of items to fetch and display in widgets

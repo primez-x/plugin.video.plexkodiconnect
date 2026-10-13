@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 from logging import getLogger
+import threading
 
 from . import utils, clientinfo, app
 
@@ -72,9 +73,12 @@ class DownloadUtils(object):
     # Borg - multiple instances, shared state
     _shared_state = {}
 
-    # How many failed attempts before declaring PMS dead?
-    connection_attempts = 1
+    # How many consecutive connection failures (unreachable/timeout only,
+    # not SSL or HTTP errors) before declaring PMS dead? One slow response
+    # during a multi-threaded sync must not flip the whole add-on offline.
+    connection_attempts = 3
     count_error = 0
+    _count_lock = threading.Lock()
     # How many 401 returns before declaring unauthorized?
     unauthorized_attempts = 2
     count_unauthorized = 0
@@ -231,6 +235,7 @@ class DownloadUtils(object):
 
         # ACTUAL DOWNLOAD HAPPENING HERE
         success = False
+        connection_failed = False
         try:
             r = self._doDownload(s, action_type, **kwargs)
 
@@ -242,11 +247,13 @@ class DownloadUtils(object):
                 raise
         except exceptions.ConnectionError as e:
             # Connection error
+            connection_failed = True
             LOG.warn("Server unreachable at: %s", url)
             LOG.warn(e)
             if reraise:
                 raise
         except exceptions.Timeout as e:
+            connection_failed = True
             LOG.warn("Server timeout at: %s", url)
             LOG.warn(e)
             if reraise:
@@ -284,9 +291,10 @@ class DownloadUtils(object):
             success = True
             # We COULD contact the PMS, hence it ain't dead
             if authenticate is True:
-                self.count_error = 0
-                if r.status_code != 401:
-                    self.count_unauthorized = 0
+                with self._count_lock:
+                    self.count_error = 0
+                    if r.status_code != 401:
+                        self.count_unauthorized = 0
 
             if return_response is True:
                 # return the entire response object
@@ -365,11 +373,13 @@ class DownloadUtils(object):
                 return True
 
         finally:
-            if not success and authenticate:
-                # Deal with the consequences of the exceptions
-                # Make the addon aware of status
-                self.count_error += 1
-                if self.count_error >= self.connection_attempts:
+            if not success and authenticate and connection_failed:
+                # Only unreachable/timeout failures say anything about the
+                # PMS being dead; SSL/HTTP/parse errors do not
+                with self._count_lock:
+                    self.count_error += 1
+                    declare_dead = self.count_error >= self.connection_attempts
+                if declare_dead:
                     LOG.warn(
                         "Failed to connect to %s too many times. " "Declare PMS dead",
                         url,

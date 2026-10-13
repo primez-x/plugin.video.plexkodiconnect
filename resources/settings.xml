@@ -695,16 +695,6 @@
                         <close>true</close>
                     </control>
                 </setting>
-                <setting id="streamMusic" type="boolean" label="30510" help="" parent=""> <!-- Direct stream music library -->
-                    <level>0</level>
-                    <default>false</default>
-                    <dependencies>
-                        <dependency type="visible">
-                            <condition on="property" name="InfoBool">false</condition>
-                        </dependency>
-                    </dependencies>
-                    <control type="toggle" />
-                </setting>
                 <setting id="themoviedbAPIKey" type="string" help="">
                     <level>0</level>
                     <default>19c90103adb9e98f2172c6a6a3d85dc4</default>
@@ -728,16 +718,6 @@
                     <control type="edit" format="string">
                         <heading />
                     </control>
-                </setting>
-                <setting id="syncEmptyShows" type="boolean" label="30508" help=""> <!-- Sync empty TV Shows -->
-                    <level>0</level>
-                    <default>false</default>
-                    <dependencies>
-                        <dependency type="visible">
-                            <condition on="property" name="InfoBool">false</condition>
-                        </dependency>
-                    </dependencies>
-                    <control type="toggle" />
                 </setting>
                 <setting id="kodi_db_has_been_wiped_clean" type="boolean" label="31004" help=""><!-- PKC needs to completely clean the Kodi DB at least once, then reboot, to avoid Kodi error messages, e.g. OperationalError -->
                     <level>0</level>
@@ -1073,28 +1053,6 @@
                     </constraints>
                     <control type="spinner" format="string" />
                 </setting>
-                <setting id="ignoreSpecialsNextEpisodes" type="boolean" label="30527" help=""> <!-- Ignore specials in next episodes -->
-                    <level>0</level>
-                    <default>false</default>
-                    <control type="toggle" />
-                </setting>
-                <setting id="resumeJumpBack" type="integer" label="30521" help=""> <!-- Jump back on resume (in seconds) -->
-                    <level>0</level>
-                    <default>10</default>
-                    <constraints>
-                        <minimum>0</minimum>
-                        <step>1</step>
-                        <maximum>120</maximum>
-                    </constraints>
-                    <dependencies>
-                        <dependency type="visible">
-                            <condition on="property" name="InfoBool">false</condition>
-                        </dependency>
-                    </dependencies>
-                    <control type="slider" format="integer">
-                        <popup>false</popup>
-                    </control>
-                </setting>
             </group>
             <group id="2">
                 <setting id="playType" type="integer" label="30002" help=""> <!-- Preferred playback method -->
@@ -1235,36 +1193,6 @@
                 </setting>
             </group>
             <group id="3">
-                <setting id="offerDelete" type="boolean" label="30114" help=""> <!-- Offer delete after playback -->
-                    <level>0</level>
-                    <default>false</default>
-                    <dependencies>
-                        <dependency type="visible">
-                            <condition on="property" name="InfoBool">false</condition>
-                        </dependency>
-                    </dependencies>
-                    <control type="toggle" />
-                </setting>
-                <setting id="deleteTV" type="boolean" label="30115" help="" parent="offerDelete"> <!-- For Episodes -->
-                    <level>0</level>
-                    <default>false</default>
-                    <dependencies>
-                        <dependency type="visible">
-                            <condition operator="is" setting="offerDelete">true</condition>
-                        </dependency>
-                    </dependencies>
-                    <control type="toggle" />
-                </setting>
-                <setting id="deleteMovies" type="boolean" label="30116" help="" parent="offerDelete"> <!-- For Movies -->
-                    <level>0</level>
-                    <default>false</default>
-                    <dependencies>
-                        <dependency type="visible">
-                            <condition operator="is" setting="offerDelete">true</condition>
-                        </dependency>
-                    </dependencies>
-                    <control type="toggle" />
-                </setting>
                 <setting id="skipContextMenu" type="boolean" label="30520" help=""> <!-- Skip PMS delete confirmation (use at your own risk) -->
                     <level>0</level>
                     <default>false</default>
@@ -1291,18 +1219,6 @@
                         </dependency>
                     </dependencies>
                     <control type="toggle" />
-                </setting>
-                <setting id="failedCount" type="integer" help="">
-                    <level>0</level>
-                    <default>0</default>
-                    <dependencies>
-                        <dependency type="visible">
-                            <condition on="property" name="InfoBool">false</condition>
-                        </dependency>
-                    </dependencies>
-                    <control type="edit" format="integer">
-                        <heading />
-                    </control>
                 </setting>
             </group>
         </category>

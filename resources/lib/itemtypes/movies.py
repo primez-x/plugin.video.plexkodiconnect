@@ -234,8 +234,8 @@ class Movie(ItemBase):
         if not self.kodidb.playstate_matches(db_item['kodi_fileid'],
                                              *playstate):
             self.userdata_changed = True
-        # Write to Kodi DB
-        self.kodidb.set_resume(db_item['kodi_fileid'], *playstate)
+            # Write to Kodi DB
+            self.kodidb.set_resume(db_item['kodi_fileid'], *playstate)
         # update_userrating() returns True only if the rating differed
         if self.kodidb.update_userrating(db_item['kodi_id'],
                                          db_item['kodi_type'],

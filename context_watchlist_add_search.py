@@ -8,8 +8,9 @@ their Home-window monitor properties.
 
 from urllib.parse import urlencode
 
-from xbmc import sleep
 from xbmcgui import Window
+
+from resources.lib import transfer
 
 
 def main():
@@ -26,11 +27,7 @@ def main():
     if not tmdb_id:
         return
     args = {"tmdb_id": tmdb_id, "tmdb_type": tmdb_type}
-    while window.getProperty("plexkodiconnect.command"):
-        sleep(20)
-    window.setProperty(
-        "plexkodiconnect.command", "WATCHLIST_ADD_TMDB?%s" % urlencode(args)
-    )
+    transfer.plex_command("WATCHLIST_ADD_TMDB?%s" % urlencode(args))
 
 
 if __name__ == "__main__":

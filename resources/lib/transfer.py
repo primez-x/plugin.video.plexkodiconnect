@@ -6,6 +6,7 @@ and vice versa.
 """
 from logging import getLogger
 import json
+from time import monotonic
 
 import xbmc
 import xbmcgui
@@ -20,6 +21,12 @@ SIGNAL_SENDER = 'plugin.video.plexkodiconnect.SIGNAL'
 COMMAND_MESSAGE = 'pkc_command'
 # Polling cadence for window-property hand-offs between Python instances
 POLL_INTERVAL_MS = 20
+# Upper bounds so a dead or busy service cannot hang a plugin instance
+# forever. The transfer wait must outlast any playback dialog the service
+# might show the user (resume/version pickers), hence generous.
+COMMAND_TIMEOUT_SECONDS = 30.0
+TRANSFER_TIMEOUT_SECONDS = 300.0
+MONITOR = xbmc.Monitor()
 KODIVERSION = int(xbmc.getInfoLabel("System.BuildVersion")[:2])
 
 
@@ -80,15 +87,31 @@ def kodi_window(property, value=None, clear=False):
         return WINDOW.getProperty(property)
 
 
+def _wait_poll(deadline):
+    """Sleep one poll interval. Returns True while waiting should continue."""
+    if MONITOR.waitForAbort(POLL_INTERVAL_MS / 1000.0):
+        return False
+    return monotonic() < deadline
+
+
 def plex_command(value):
     """
     Used to funnel states between different Python instances. NOT really thread
     safe - let's hope the Kodi user can't click fast enough
+
+    Returns True if the command was posted, False if the previous command
+    was never picked up (service dead/busy) or Kodi is shutting down. A
+    dropped command is logged instead of overwriting the pending one.
     """
+    deadline = monotonic() + COMMAND_TIMEOUT_SECONDS
     while kodi_window(WINDOW_COMMAND):
-        xbmc.sleep(POLL_INTERVAL_MS)
+        if not _wait_poll(deadline):
+            LOG.error('Dropping command %r: previous command never picked '
+                      'up or Kodi is shutting down', value)
+            return False
     kodi_window(WINDOW_COMMAND, value=value)
     notify_service()
+    return True
 
 
 def notify_service():
@@ -150,22 +173,156 @@ def send(pkc_listitem, target='default'):
                 value=json.dumps(serialize(pkc_listitem)))
 
 
-def wait_for_transfer(source='main'):
+def wait_for_transfer(source='main', timeout=TRANSFER_TIMEOUT_SECONDS):
     """
     Set source='default' if you wait for data FROM another Python default.py
     instance, 'main' if your default.py needs to wait for the main thread
+
+    Returns None on timeout or when Kodi is shutting down; callers must
+    handle that like a failed hand-off.
     """
     LOG.debug('Waiting for transfer from %s', source)
     window = WINDOW_DOWNSTREAM if source == 'main' else WINDOW_UPSTREAM
-    result = ''
-    while not result:
+    deadline = monotonic() + timeout
+    while True:
         result = kodi_window(window)
         if result:
             kodi_window(window, clear=True)
             LOG.debug('Received')
-            result = json.loads(result)
-            return de_serialize(result)
-        xbmc.sleep(POLL_INTERVAL_MS)
+            return de_serialize(json.loads(result))
+        if not _wait_poll(deadline):
+            LOG.error('Timed out waiting for transfer from %s', source)
+            return None
+
+
+def _split_people(value):
+    if isinstance(value, (list, tuple)):
+        return [str(v) for v in value if v]
+    return [v for v in str(value).split(' / ') if v]
+
+
+def _apply_video_info(listitem, labels):
+    """Apply legacy video infoLabels via InfoTagVideo (setInfo is deprecated).
+    Mirrors the mapping widgets.create_listitem uses for real ListItems."""
+    tags = listitem.getVideoInfoTag()
+    labels = {k: v for k, v in labels.items() if v is not None}
+    int_labels = {
+        'dbid': tags.setDbId, 'year': tags.setYear, 'episode': tags.setEpisode,
+        'season': tags.setSeason, 'top250': tags.setTop250,
+        'tracknumber': tags.setTrackNumber, 'playcount': tags.setPlaycount,
+        'duration': tags.setDuration, 'votes': tags.setVotes,
+    }
+    float_labels = {'rating': tags.setRating}
+    str_labels = {
+        'mpaa': tags.setMpaa, 'plot': tags.setPlot,
+        'plotoutline': tags.setPlotOutline, 'title': tags.setTitle,
+        'originaltitle': tags.setOriginalTitle, 'sorttitle': tags.setSortTitle,
+        'tagline': tags.setTagLine, 'tvshowtitle': tags.setTvShowTitle,
+        'premiered': tags.setPremiered, 'status': tags.setTvShowStatus,
+        'set': tags.setSet, 'setoverview': tags.setSetOverview,
+        'imdbnumber': tags.setIMDBNumber, 'code': tags.setProductionCode,
+        'aired': tags.setFirstAired, 'lastplayed': tags.setLastPlayed,
+        'album': tags.setAlbum, 'trailer': tags.setTrailer,
+        'path': tags.setPath, 'filenameandpath': tags.setFilenameAndPath,
+        'dateadded': tags.setDateAdded, 'mediatype': tags.setMediaType,
+    }
+    list_labels = {
+        'artist': tags.setArtists, 'genre': tags.setGenres,
+        'country': tags.setCountries, 'director': tags.setDirectors,
+        'studio': tags.setStudios, 'writer': tags.setWriters,
+        'tag': tags.setTags,
+    }
+    for label, setter in int_labels.items():
+        if label in labels:
+            setter(int(labels[label]))
+    for label, setter in float_labels.items():
+        if label in labels:
+            setter(float(labels[label]))
+    for label, setter in str_labels.items():
+        if label in labels:
+            setter(str(labels[label]))
+    for label, setter in list_labels.items():
+        if label in labels:
+            setter(_split_people(labels[label]))
+    if 'cast' in labels:
+        tags.setCast([xbmc.Actor(str(name)) for name in _split_people(labels['cast'])])
+    if 'castandrole' in labels:
+        tags.setCast([xbmc.Actor(str(actor[0]), str(actor[1]))
+                      for actor in labels['castandrole']])
+
+
+def _apply_music_info(listitem, labels):
+    """Apply legacy music infoLabels via InfoTagMusic."""
+    tags = listitem.getMusicInfoTag()
+    labels = {k: v for k, v in labels.items() if v is not None}
+    if 'title' in labels:
+        tags.setTitle(str(labels['title']))
+    if 'album' in labels:
+        tags.setAlbum(str(labels['album']))
+    if 'artist' in labels:
+        artist = labels['artist']
+        tags.setArtist(' / '.join(_split_people(artist)) if isinstance(artist, (list, tuple)) else str(artist))
+    if 'genre' in labels:
+        tags.setGenres(_split_people(labels['genre']))
+    if 'year' in labels:
+        tags.setYear(int(labels['year']))
+    if 'tracknumber' in labels:
+        tags.setTrack(int(labels['tracknumber']))
+    if 'discnumber' in labels:
+        tags.setDisc(int(labels['discnumber']))
+    if 'duration' in labels:
+        tags.setDuration(int(labels['duration']))
+    if 'rating' in labels:
+        tags.setRating(float(labels['rating']))
+    if 'playcount' in labels:
+        tags.setPlayCount(int(labels['playcount']))
+    if 'lyrics' in labels:
+        tags.setLyrics(str(labels['lyrics']))
+    if 'lastplayed' in labels:
+        tags.setLastPlayed(str(labels['lastplayed']))
+    if 'date' in labels:
+        tags.setReleaseDate(str(labels['date']))
+    if 'mediatype' in labels:
+        tags.setMediaType(str(labels['mediatype']))
+
+
+def _apply_stream_info(listitem, stream):
+    ctype = stream.get('cType')
+    values = stream.get('dictionary') or {}
+    tags = listitem.getVideoInfoTag()
+    if ctype == 'video':
+        detail = xbmc.VideoStreamDetail()
+        if 'codec' in values:
+            detail.setCodec(str(values['codec']))
+        if 'aspect' in values:
+            detail.setAspect(round(float(values['aspect']), 2))
+        if 'width' in values:
+            detail.setWidth(int(values['width']))
+        if 'height' in values:
+            detail.setHeight(int(values['height']))
+        if 'duration' in values:
+            detail.setDuration(int(values['duration']))
+        if 'stereomode' in values:
+            detail.setStereoMode(str(values['stereomode']))
+        if 'language' in values:
+            detail.setLanguage(str(values['language']))
+        if 'hdrtype' in values:
+            detail.setHDRType(str(values['hdrtype']))
+        tags.addVideoStream(detail)
+    elif ctype == 'audio':
+        detail = xbmc.AudioStreamDetail()
+        if 'channels' in values:
+            detail.setChannels(int(values['channels']))
+        if 'codec' in values:
+            detail.setCodec(str(values['codec']))
+        if 'language' in values:
+            detail.setLanguage(str(values['language']))
+        tags.addAudioStream(detail)
+    elif ctype == 'subtitle':
+        detail = xbmc.SubtitleStreamDetail()
+        if 'language' in values:
+            detail.setLanguage(str(values['language']))
+        tags.addSubtitleStream(detail)
 
 
 def convert_pkc_to_listitem(pkc_listitem):
@@ -178,11 +335,28 @@ def convert_pkc_to_listitem(pkc_listitem):
                                 path=data.get('path'),
                                 offscreen=True)
     if data['info']:
-        listitem.setInfo(**data['info'])
+        try:
+            info_type = str(data['info'].get('type') or '').lower()
+            info_labels = data['info'].get('infoLabels') or {}
+            if info_type == 'video':
+                _apply_video_info(listitem, info_labels)
+            elif info_type == 'music':
+                _apply_music_info(listitem, info_labels)
+            else:
+                # Pictures (exif) has no InfoTag setters; keep legacy call
+                listitem.setInfo(**data['info'])
+        except Exception:
+            # Never break playback over metadata: fall back to the
+            # deprecated but still functional replay
+            LOG.exception('InfoTag conversion failed, falling back to setInfo')
+            listitem.setInfo(**data['info'])
     for stream in data['stream_info']:
-        # Kodi documentation up to date? CAREFUL as type= seems to be cType=
-        # and values= seems to be dictionary=
-        listitem.addStreamInfo(**stream)
+        try:
+            _apply_stream_info(listitem, stream)
+        except Exception:
+            LOG.exception('Stream detail conversion failed, falling back '
+                          'to addStreamInfo')
+            listitem.addStreamInfo(**stream)
     if data['art']:
         listitem.setArt(data['art'])
     for key, value in data['property'].items():

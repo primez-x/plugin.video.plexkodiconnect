@@ -1508,6 +1508,10 @@ msgctxt "#39251"
 msgid "Reset all existing cache data first?"
 msgstr ""
 
+msgctxt "#39252"
+msgid "Image Texture Cache"
+msgstr ""
+
 msgctxt "#39303"
 msgid "Problems trying to contact plex.tv. Try again later"
 msgstr ""

@@ -60,7 +60,10 @@ class KillableThread(threading.Thread):
         # Make sure thread wakes up in order to suspend
         self._is_not_asleep.set()
         if block:
-            self._suspension_reached.wait()
+            # Bounded so a thread stuck in a long blocking call (e.g. a
+            # 30s HTTP request) cannot hang the caller forever
+            if not self._suspension_reached.wait(35):
+                LOG.warn('Thread %s did not suspend within 35s', self)
 
     def resume(self):
         """

@@ -18,14 +18,37 @@ class FakeWindow(object):
     def setProperty(self, key, value):
         self.properties[key] = value
 
+    def clearProperty(self, key):
+        self.properties.pop(key, None)
+
+
+class FakeMonitor(object):
+    def waitForAbort(self, timeout=0):
+        return False
+
+    def abortRequested(self):
+        return False
+
 
 def run_context(filename, labels, window_properties=None):
-    for module_name in ("xbmc", "xbmcgui"):
+    for module_name in ("xbmc", "xbmcgui", "resources.lib.transfer"):
         sys.modules.pop(module_name, None)
+    # `from resources.lib import transfer` prefers the package attribute
+    # over sys.modules, so drop a stale one bound to another test's stubs
+    package = sys.modules.get("resources.lib")
+    if package is not None:
+        package.__dict__.pop("transfer", None)
+
+    def get_info_label(label):
+        if label == "System.BuildVersion":
+            return "21.3"
+        return labels.get(label, "")
 
     xbmc = types.ModuleType("xbmc")
-    xbmc.getInfoLabel = labels.get
+    xbmc.getInfoLabel = get_info_label
     xbmc.sleep = lambda milliseconds: None
+    xbmc.Monitor = FakeMonitor
+    xbmc.executeJSONRPC = lambda request: '{"result": "OK"}'
     sys.modules["xbmc"] = xbmc
 
     window = FakeWindow()

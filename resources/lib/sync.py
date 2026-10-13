@@ -60,10 +60,10 @@ class Sync(backgroundthread.KillableThread):
                              sound=False)
         elif app.SYNC.run_lib_scan == 'textures':
             LOG.info("Caching of images requested")
-            if not utils.yesno_dialog("Image Texture Cache", utils.lang(39250)):
+            if not utils.yesno_dialog(utils.lang(39252), utils.lang(39250)):
                 return
             # ask to reset all existing or not
-            if utils.yesno_dialog('Image Texture Cache', utils.lang(39251)):
+            if utils.yesno_dialog(utils.lang(39252), utils.lang(39251)):
                 kodi_db.reset_cached_images()
             self.start_image_cache_thread()
 
