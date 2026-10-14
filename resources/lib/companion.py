@@ -56,6 +56,36 @@ def convert_alexa_to_companion(dictionary):
             del dictionary[key]
 
 
+_COMMON_COMMANDS = {
+    'player/playback/play': 'play',
+    'player/playback/pause': 'pause',
+    'player/playback/stop': 'stop',
+    'player/playback/stepForward': 'smallforward',
+    'player/playback/stepBack': 'smallbackward',
+    'player/playback/skipNext': 'skipnext',
+    'player/playback/skipPrevious': 'skipprevious',
+    'player/navigation/moveUp': 'input_up',
+    'player/navigation/moveDown': 'input_down',
+    'player/navigation/moveLeft': 'input_left',
+    'player/navigation/moveRight': 'input_right',
+    'player/navigation/select': 'input_select',
+    'player/navigation/home': 'input_home',
+    'player/navigation/back': 'input_back',
+}
+
+
+def process_common_command(request_path, params):
+    """Dispatch playback and navigation commands shared by both gateways."""
+    if request_path == 'player/playback/seekTo':
+        js.seek_to(float(params.get('offset', 0.0)) / 1000.0)
+    else:
+        method = _COMMON_COMMANDS.get(request_path)
+        if method is None:
+            return False
+        getattr(js, method)()
+    return True
+
+
 def process_command(request_path, params):
     """
     queue: Queue() of PlexCompanion.py
@@ -83,44 +113,14 @@ def process_command(request_path, params):
             LOG.error('Unknown parameters for %s (%s params)',
                       request_path, len(params))
             return False
-    elif request_path == "player/playback/play":
-        js.play()
-    elif request_path == "player/playback/pause":
-        js.pause()
-    elif request_path == "player/playback/stop":
-        js.stop()
-    elif request_path == "player/playback/seekTo":
-        js.seek_to(float(params.get('offset', 0.0)) / 1000.0)
-    elif request_path == "player/playback/stepForward":
-        js.smallforward()
-    elif request_path == "player/playback/stepBack":
-        js.smallbackward()
-    elif request_path == "player/playback/skipNext":
-        js.skipnext()
-    elif request_path == "player/playback/skipPrevious":
-        js.skipprevious()
     elif request_path == "player/playback/skipTo":
         skip_to(params)
-    elif request_path == "player/navigation/moveUp":
-        js.input_up()
-    elif request_path == "player/navigation/moveDown":
-        js.input_down()
-    elif request_path == "player/navigation/moveLeft":
-        js.input_left()
-    elif request_path == "player/navigation/moveRight":
-        js.input_right()
-    elif request_path == "player/navigation/select":
-        js.input_select()
-    elif request_path == "player/navigation/home":
-        js.input_home()
-    elif request_path == "player/navigation/back":
-        js.input_back()
     elif request_path == "player/playback/setStreams":
         app.APP.companion_queue.put({
             'action': 'setStreams',
             'data': params
         })
-    else:
+    elif not process_common_command(request_path, params):
         LOG.error('Unknown request path: %s', request_path)
         return False
     return True

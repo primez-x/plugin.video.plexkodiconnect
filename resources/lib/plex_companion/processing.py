@@ -17,6 +17,7 @@ from .. import json_rpc as js
 from .. import variables as v
 from .. import app
 from .. import exceptions
+from .. import companion
 
 
 log = getLogger('PLEX.companion.processing')
@@ -196,38 +197,8 @@ def process_command(cmd=None, path=None, params=None):
             process_refresh(params.get('playQueueID'))
     elif path == '/player/playback/setParameters':
         js.set_volume(int(params.get('volume')))
-    elif path == '/player/playback/play':
-        js.play()
-    elif path == '/player/playback/pause':
-        js.pause()
-    elif path == '/player/playback/stop':
-        js.stop()
-    elif path == '/player/playback/seekTo':
-        js.seek_to(float(params.get('offset', 0.0)) / 1000.0)
-    elif path == '/player/playback/stepForward':
-        js.smallforward()
-    elif path == '/player/playback/stepBack':
-        js.smallbackward()
-    elif path == '/player/playback/skipNext':
-        js.skipnext()
-    elif path == '/player/playback/skipPrevious':
-        js.skipprevious()
     elif path == '/player/playback/skipTo':
         skip_to(params.get('playQueueItemID'), params.get('key'))
-    elif path == '/player/navigation/moveUp':
-        js.input_up()
-    elif path == '/player/navigation/moveDown':
-        js.input_down()
-    elif path == '/player/navigation/moveLeft':
-        js.input_left()
-    elif path == '/player/navigation/moveRight':
-        js.input_right()
-    elif path == '/player/navigation/select':
-        js.input_select()
-    elif path == '/player/navigation/home':
-        js.input_home()
-    elif path == '/player/navigation/back':
-        js.input_back()
     elif path == '/player/playback/setStreams':
         process_streams(params.get('type'),
                         cast(int, params.get('videoStreamID')),
@@ -236,6 +207,8 @@ def process_command(cmd=None, path=None, params=None):
     elif path == '/player/timeline/subscribe':
         pass
     elif path == '/player/timeline/unsubscribe':
+        pass
+    elif companion.process_common_command(path[1:], params):
         pass
     else:
         if cmd is None:
