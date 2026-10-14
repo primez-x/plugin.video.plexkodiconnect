@@ -62,7 +62,8 @@ def process_command(request_path, params):
     """
     if params.get('deviceName') == 'Alexa':
         convert_alexa_to_companion(params)
-    LOG.debug('Received request_path: %s, params: %s', request_path, params)
+    LOG.debug('Received request_path: %s (%s params)',
+              request_path, len(params))
     if request_path == 'player/playback/playMedia':
         # We need to tell service.py
         action = 'alexa' if params.get('deviceName') == 'Alexa' else 'playlist'
@@ -79,7 +80,8 @@ def process_command(request_path, params):
         if 'volume' in params:
             js.set_volume(int(params['volume']))
         else:
-            LOG.error('Unknown parameters: %s', params)
+            LOG.error('Unknown parameters for %s (%s params)',
+                      request_path, len(params))
             return False
     elif request_path == "player/playback/play":
         js.play()

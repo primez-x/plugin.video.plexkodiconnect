@@ -24,7 +24,7 @@ def get_pms_uri():
     else:
         uri = "ws%s" % uri[4:]
     uri += PMS_PATH
-    log.debug('uri to connect pms websocket: %s', uri)
+    log.debug('Connecting to PMS websocket')
     if app.ACCOUNT.pms_token:
         uri += '?X-Plex-Token=' + app.ACCOUNT.pms_token
     return uri
@@ -46,14 +46,14 @@ def pms_on_message(ws, message):
     try:
         message = json.loads(message)
     except ValueError as err:
-        log.error('Error decoding PMS websocket message: %s', err)
-        log.error('message: %s', message)
+        log.error('Error decoding PMS websocket message (%s)',
+                  type(err).__name__)
         return
     try:
         message = message['NotificationContainer']
         typus = message['type']
-    except KeyError:
-        log.error('Could not parse PMS message: %s', message)
+    except KeyError as err:
+        log.error('Could not parse PMS message (%s)', type(err).__name__)
         return
     # Triage
     if typus not in PMS_INTERESTING_MESSAGE_TYPES:
@@ -68,24 +68,23 @@ def alexa_on_message(ws, message):
     """
     Called when we receive a message from Alexa
     """
-    log.debug('alexa message received: %s', message)
+    log.debug('Alexa message received')
     try:
         message = utils.etree.fromstring(message)
     except Exception as err:
-        log.error('Error decoding message from Alexa: %s %s', type(err), err)
-        log.error('message from Alexa: %s', message)
+        log.error('Error decoding message from Alexa (%s)',
+                  type(err).__name__)
         return
     try:
         if message.attrib['command'] == 'processRemoteControlCommand':
             message = message[0]
         else:
-            log.error('Unknown Alexa message received: %s', message)
+            log.error('Unknown Alexa message received')
             return
         companion.process_command(message.attrib['path'][1:], message.attrib)
     except Exception as err:
-        log.exception('Could not parse Alexa message, error: %s %s',
-                      type(err), err)
-        log.error('message: %s', message)
+        log.error('Could not parse Alexa message (%s)',
+                  type(err).__name__)
 
 
 def on_error(ws, error):
@@ -107,13 +106,14 @@ def on_error(ws, error):
         utils.settings(ws.name + SETTINGS_STRING, value=utils.lang(15208))
     elif isinstance(error, websocket.WebSocketBadStatusException):
         # Most likely Alexa not connecting, throwing a 403
-        log.debug('%s: got a bad HTTP status: %s', ws.name, error)
+        log.debug('%s: got a bad HTTP status (%s)',
+                  ws.name, type(error).__name__)
         # Status = <value of exception>
         utils.settings(status, value=str(error))
         ws.sleep_cycle()
     elif isinstance(error, websocket.WebSocketException):
-        log.error('%s: got another websocket exception %s: %s',
-                  ws.name, type(error), error)
+        log.error('%s: got another websocket exception (%s)',
+                  ws.name, type(error).__name__)
         # Status = Error
         utils.settings(status, value=utils.lang(257))
         ws.sleep_cycle()
@@ -122,8 +122,8 @@ def on_error(ws, error):
         # Status = Not connected
         utils.settings(ws.name + SETTINGS_STRING, value=utils.lang(15208))
     else:
-        log.exception('%s: got an unexpected exception of type %s: %s',
-                      ws.name, type(error), error)
+        log.error('%s: got an unexpected exception (%s)',
+                  ws.name, type(error).__name__)
         # Status = Error
         utils.settings(status, value=utils.lang(257))
 
@@ -194,7 +194,8 @@ class PlexWebSocketApp(websocket.WebSocketApp,
         except RuntimeError:
             pass
         except Exception as err:
-            log.exception('Exception of type %s occured: %s', type(err), err)
+            log.error('%s: WebSocket run failed (%s)',
+                      self.name, type(err).__name__)
         finally:
             self.close()
             if self._enabled:
@@ -208,7 +209,8 @@ class PlexWebSocketApp(websocket.WebSocketApp,
                                value=message)
             except RuntimeError as err:
                 # PKC is being replaced (add-on update): its settings are gone
-                log.debug('Could not set the connection status: %s', err)
+                log.debug('%s: could not set the connection status (%s)',
+                          self.name, type(err).__name__)
             app.APP.deregister_thread(self)
             log.info("----===## %s stopped ##===----", self.name)
 
