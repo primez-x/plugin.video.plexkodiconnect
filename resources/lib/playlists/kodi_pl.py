@@ -7,7 +7,7 @@ from logging import getLogger
 import re
 
 from .common import Playlist, kodi_playlist_hash
-from . import db, pms
+from . import db
 
 from ..plex_api import API
 from .. import utils, path_ops, variables as v
@@ -21,20 +21,17 @@ IGNORE_KODI_PLAYLIST_CHANGE = list()
 ###############################################################################
 
 
-def create(plex_id):
+def create(xml_metadata, xml_playlist):
     """
     Creates a new Kodi playlist file. Will also add (or modify an existing)
     Plex playlist table entry.
     Assumes that the Plex playlist is indeed new. A NEW Kodi playlist will be
     created in any case (not replaced). Thus make sure that the "same" playlist
     is deleted from both disk and the Plex database.
-    Returns the playlist or raises PlaylistError
+    Use metadata and playlist contents fetched before the playlist lock.
+    Raises PlaylistError if the playlist cannot be saved.
     """
-    xml_metadata = pms.metadata(plex_id)
-    if xml_metadata is None:
-        LOG.error('Could not get Plex playlist metadata %s', plex_id)
-        raise PlaylistError('Could not get Plex playlist %s' % plex_id)
-    api = API(xml_metadata[0])
+    api = API(xml_metadata)
     playlist = Playlist()
     playlist.plex_id = api.plex_id
     playlist.kodi_type = v.KODI_PLAYLIST_TYPE_FROM_PLEX[api.playlist_type()]
@@ -62,10 +59,6 @@ def create(plex_id):
             path = '%s_%02d.m3u' % (basename, number)
     LOG.debug('Kodi playlist path: %s', path)
     playlist.kodi_path = path
-    xml_playlist = pms.get_playlist(plex_id)
-    if xml_playlist is None:
-        LOG.error('Could not get Plex playlist %s', plex_id)
-        raise PlaylistError('Could not get Plex playlist %s' % plex_id)
     IGNORE_KODI_PLAYLIST_CHANGE.append(playlist.kodi_path)
     try:
         _write_playlist_to_file(playlist, xml_playlist)

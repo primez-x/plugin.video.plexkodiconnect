@@ -74,5 +74,45 @@ class WidgetContainerSizeTests(unittest.TestCase):
         self.assertNotIn('X-Plex-Container-Size', query)
 
 
+class MalformedListingTests(unittest.TestCase):
+    def test_failed_items_are_omitted_from_library_and_discover_lists(self):
+        from library_sync import isolate_modules
+        isolate_modules(self)
+        for route in ('library', 'discover'):
+            with self.subTest(route=route):
+                entrypoint, calls, _, _ = load_entrypoint()
+                xml = ET.Element('MediaContainer')
+                for title in ('prepare-fails', 'create-fails', 'valid'):
+                    ET.SubElement(xml, 'Video', type='movie', title=title,
+                                  ratingKey=title, guid='plex://movie/' + title)
+                entrypoint.v.PLEX_TYPE_EPISODE = 'episode'
+                entrypoint.API = lambda child: types.SimpleNamespace(
+                    xml=child, plex_type='movie', tag='Video')
+                if route == 'library':
+                    entrypoint.mass_api = lambda children: [
+                        entrypoint.API(child) for child in children]
+                entrypoint.widgets.prepare_listitem = lambda item, *args: (
+                    None if item['title'] == 'prepare-fails' else item)
+                created_titles = []
+
+                def create(item):
+                    self.assertIsNotNone(item)
+                    created_titles.append(item['title'])
+                    if item['title'] == 'create-fails':
+                        return None
+                    return (item['file'], item, False)
+
+                entrypoint.widgets.create_listitem = create
+                if route == 'library':
+                    entrypoint.show_listing(xml)
+                else:
+                    entrypoint._provider_xmls = lambda *args: [xml]
+                    entrypoint.discover_hub('new-for-you')
+                self.assertEqual(created_titles, ['create-fails', 'valid'])
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(calls[0][2], 1)
+                self.assertEqual(calls[0][1][0][1]['title'], 'valid')
+
+
 if __name__ == '__main__':
     unittest.main()

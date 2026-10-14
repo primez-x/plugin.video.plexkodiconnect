@@ -93,6 +93,7 @@ class ItemBase(object):
         """
         Make sure DB changes are committed and connection to DB is closed.
         """
+        committed = False
         try:
             if exc_type:
                 # re-raise any exception
@@ -101,6 +102,7 @@ class ItemBase(object):
             self.kodiconn.commit()
             if self.artconn:
                 self.artconn.commit()
+            committed = True
             return self
         finally:
             self.plexconn.close()
@@ -110,6 +112,7 @@ class ItemBase(object):
             if self.lock:
                 PLEXDB_LOCK.release()
                 KODIDB_LOCK.release()
+            self.kodidb.finish_artwork_deletions(committed)
 
     def commit(self):
         self.plexconn.commit()

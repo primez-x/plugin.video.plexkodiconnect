@@ -218,7 +218,7 @@ class WebSocketApp(object):
                     http_no_proxy=None, http_proxy_auth=None,
                     skip_utf8_validation=False,
                     host=None, origin=None, dispatcher=None,
-                    suppress_origin=False, proxy_type=None):
+                    suppress_origin=False, proxy_type=None, socket_timeout=None):
         """
         Run event loop for WebSocket framework.
 
@@ -226,6 +226,9 @@ class WebSocketApp(object):
 
         Parameters
         ----------
+        socket_timeout: int or float
+            Per-connection timeout for connect and socket reads, in seconds.
+            None uses the library default.
         sockopt: tuple
             Values for socket.setsockopt.
             sockopt must be tuple
@@ -308,7 +311,8 @@ class WebSocketApp(object):
                 fire_cont_frame=self.on_cont_message is not None,
                 skip_utf8_validation=skip_utf8_validation,
                 enable_multithread=True)
-            self.sock.settimeout(getdefaulttimeout())
+            self.sock.settimeout(socket_timeout if socket_timeout is not None
+                                 else getdefaulttimeout())
             self.sock.connect(
                 self.url, header=self.header, cookie=self.cookie,
                 http_proxy_host=http_proxy_host,

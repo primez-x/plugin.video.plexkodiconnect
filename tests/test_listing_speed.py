@@ -217,6 +217,17 @@ class WidgetPrefetchTests(IsolatedTestCase):
         js.item_details = item_details
         self.widgets = load_widgets(js)
 
+    def test_season_landscape_fallback_preserves_poster(self):
+        self.widgets.artwork_urls.normalize_plex_artwork_url = lambda url: url
+        for media_type in ('episode', 'season'):
+            with self.subTest(media_type=media_type):
+                result = self.widgets.prepare_listitem({
+                    'type': media_type, 'file': '/video.mkv',
+                    'art': {'poster': 'poster.jpg',
+                            'season.landscape': 'landscape.jpg'}})
+                self.assertEqual(result['art']['poster'], 'poster.jpg')
+                self.assertEqual(result['art']['landscape'], 'landscape.jpg')
+
     def test_only_items_generate_item_looks_up_are_prefetched(self):
         apis = [
             FakeApi(1),

@@ -3,6 +3,7 @@
 from logging import getLogger
 import os
 import queue
+from time import monotonic
 
 import xbmcgui
 
@@ -120,7 +121,8 @@ class FullSync(common.LibrarySyncMixin, bg.KillableThread):
             t.join()
         LOG.debug('Download metadata threads finished')
         process_thread.join()
-        self.successful = process_thread.successful
+        if not process_thread.successful:
+            self.successful = False
         if getattr(process_thread, 'changed', True):
             self.changed = True
         LOG.debug('threads finished work. successful: %s', self.successful)
@@ -224,6 +226,7 @@ class FullSync(common.LibrarySyncMixin, bg.KillableThread):
                             updated_at=updated_at,
                             last_viewed_at=last_viewed_at)
                     except RuntimeError:
+                        self.successful = False
                         LOG.error('Sync at least partially unsuccessful!')
                         LOG.error('Error getting section iterator %s', section)
                     else:
@@ -233,6 +236,7 @@ class FullSync(common.LibrarySyncMixin, bg.KillableThread):
                             LOG.debug('Put section in queue with %s items: %s',
                                       section.number_of_items, section)
         except Exception:
+            self.successful = False
             utils.ERROR(notify=True)
         finally:
             # Sentinel for the section queue
@@ -296,7 +300,10 @@ class FullSync(common.LibrarySyncMixin, bg.KillableThread):
         # Sync Plex playlists to Kodi and vice-versa
         if common.PLAYLIST_SYNC_ENABLED:
             LOG.debug('Start playlist sync')
-            if self.show_dialog:
+            if self.dialog and app.APP.is_playing_video:
+                self.dialog.close()
+                self.dialog = None
+            if self.show_dialog and not app.APP.is_playing_video:
                 if self.dialog:
                     self.dialog.close()
                 self.dialog = xbmcgui.DialogProgressBG()
@@ -330,6 +337,9 @@ class FullSync(common.LibrarySyncMixin, bg.KillableThread):
 
         # Delete movies that are not on Plex anymore
         LOG.debug('Looking for items to delete')
+        if self.show_dialog and not self.dialog and not app.APP.is_playing_video:
+            self.dialog = xbmcgui.DialogProgressBG()
+            self.dialog.create(utils.lang(30052))
         kinds = [
             (v.PLEX_TYPE_MOVIE, itemtypes.Movie),
             (v.PLEX_TYPE_SHOW, itemtypes.Show),
@@ -343,6 +353,8 @@ class FullSync(common.LibrarySyncMixin, bg.KillableThread):
                 (v.PLEX_TYPE_SONG, itemtypes.Song)
             ])
         for plex_type, context in kinds:
+            deleted = 0
+            self.update_deletion_progress(plex_type, deleted)
             # Delete movies that are not on Plex anymore
             while True:
                 with context(self.current_time) as ctx:
@@ -356,10 +368,26 @@ class FullSync(common.LibrarySyncMixin, bg.KillableThread):
                         # Only items still in the Plex DB are returned
                         self.changed = True
                         ctx.remove(plex_id, plex_type)
+                        deleted += 1
+                        self.update_deletion_progress(plex_type, deleted)
                 if len(plex_ids) < DELETION_BATCH_SIZE:
                     break
+                self.sleep(DB_LOCK_YIELD_SECONDS)
         LOG.debug('Done looking for items to delete')
         return True
+
+    def update_deletion_progress(self, plex_type, deleted):
+        if not self.dialog:
+            return
+        if app.APP.is_playing_video:
+            self.dialog.close()
+            self.dialog = None
+            return
+        now = monotonic()
+        if deleted and now - getattr(self, '_last_deletion_progress', 0) < 1:
+            return
+        self._last_deletion_progress = now
+        self.dialog.update(0, utils.lang(30052), '%s: %s' % (plex_type, deleted))
 
     def needs_library_refresh(self, finished):
         """

@@ -517,7 +517,9 @@ def show_listing(xml, plex_type=None, section_id=None, synched=True, key=None):
         all_items.append(item)
     all_items = [widgets.prepare_listitem(item, key) for item in all_items]
     # fill that listing...
-    all_items = [widgets.create_listitem(item) for item in all_items]
+    all_items = [widgets.create_listitem(item) for item in all_items
+                 if item is not None]
+    all_items = [item for item in all_items if item is not None]
     listing_timer.mark("build")
     listing_timer.items(len(all_items))
     xbmcplugin.addDirectoryItems(int(sys.argv[1]), all_items, len(all_items))
@@ -1008,7 +1010,9 @@ def discover_hub(hub_id):
             item["IsPlayable"] = "false"
         all_items.append(item)
     all_items = [widgets.prepare_listitem(item) for item in all_items]
-    all_items = [widgets.create_listitem(item) for item in all_items]
+    all_items = [widgets.create_listitem(item) for item in all_items
+                 if item is not None]
+    all_items = [item for item in all_items if item is not None]
     listing_timer.mark("build")
     listing_timer.items(len(all_items))
     xbmcplugin.addDirectoryItems(int(sys.argv[1]), all_items, len(all_items))

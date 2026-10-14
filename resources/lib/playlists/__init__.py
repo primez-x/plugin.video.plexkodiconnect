@@ -107,7 +107,6 @@ def websocket(plex_id, status):
         * 6: 'analyzing'
         * 9: 'deleted'
     """
-    create = False
     plex_id = int(plex_id)
     with app.APP.lock_playlists:
         playlist = db.get_playlist(plex_id=plex_id)
@@ -125,33 +124,45 @@ def websocket(plex_id, status):
                 except PlaylistError:
                     pass
             return
-        xml = pms.metadata(plex_id)
-        if xml is None:
-            LOG.debug('Could not download playlist %s, probably deleted',
-                      plex_id)
+        if status == 9:
             return
-        if not sync_plex_playlist(xml=xml[0]):
+    xml = pms.metadata(plex_id)
+    if xml is None:
+        LOG.debug('Could not download playlist %s, probably deleted', plex_id)
+        return
+    _sync_plex_playlist(plex_id, playlist, xml[0])
+
+
+def _sync_plex_playlist(plex_id, previous, xml):
+    if should_cancel() or not sync_plex_playlist(xml=xml):
+        return
+    if previous is not None and previous.plex_updatedat == API(xml).updated_at():
+        return
+    xml_playlist = pms.get_playlist(plex_id)
+    if xml_playlist is None:
+        LOG.info('Could not download playlist contents for %s', plex_id)
+        return
+    expected = previous.key if previous is not None else None
+    with app.APP.lock_playlists:
+        playlist = db.get_playlist(plex_id=plex_id)
+        if (playlist.key if playlist is not None else None) != expected:
+            LOG.debug('Playlist %s changed during download, skipping', plex_id)
             return
-        api = API(xml[0])
+        if should_cancel() or not sync_plex_playlist(xml=xml):
+            return
+        if playlist is not None:
+            try:
+                if kodi_playlist_hash(playlist.kodi_path) != playlist.kodi_hash:
+                    return
+            except OSError:
+                # A local delete or move event still needs to reach the monitor.
+                return
         try:
-            if playlist:
-                if api.updated_at() == playlist.plex_updatedat:
-                    LOG.debug('Playlist with id %s already synced: %s',
-                              plex_id, playlist)
-                else:
-                    LOG.debug('Change of Plex playlist detected: %s',
-                              playlist)
-                    kodi_pl.delete(playlist)
-                    create = True
-            elif not playlist and not status == 9:
-                LOG.debug('Creation of new Plex playlist detected: %s',
-                          plex_id)
-                create = True
-            # To the actual work
-            if create:
-                kodi_pl.create(plex_id)
+            if playlist is not None:
+                kodi_pl.delete(playlist)
+            kodi_pl.create(xml, xml_playlist)
         except PlaylistError:
-            pass
+            LOG.info('Could not sync Plex playlist %s', plex_id)
 
 
 def full_sync():
@@ -170,105 +181,76 @@ def full_sync():
     """
     LOG.info('Starting playlist full sync')
     with app.APP.lock_playlists:
-        # Need to lock because we're messing with playlists
-        return _full_sync()
-
-
-def _full_sync():
-    # Get all Plex playlists
+        previous = {plex_id: db.get_playlist(plex_id=plex_id)
+                    for plex_id in db.plex_playlist_ids()}
     xml = pms.all_playlists()
     if xml is None:
         return False
-    # For each playlist, check Plex database to see whether we already synced
-    # before. If yes, make sure that hashes are identical. If not, sync it.
-    old_plex_ids = db.plex_playlist_ids()
     for xml_playlist in xml:
         if should_cancel():
             return False
         api = API(xml_playlist)
-        try:
-            old_plex_ids.remove(api.plex_id)
-        except ValueError:
-            pass
-        if not sync_plex_playlist(xml=xml_playlist):
-            continue
-        playlist = db.get_playlist(plex_id=api.plex_id)
-        if not playlist:
-            LOG.debug('New Plex playlist %s discovered: %s',
-                      api.plex_id, api.title())
-            try:
-                kodi_pl.create(api.plex_id)
-            except PlaylistError:
-                LOG.info('Skipping creation of playlist %s', api.plex_id)
-        elif playlist.plex_updatedat != api.updated_at():
-            LOG.debug('Detected changed Plex playlist %s: %s',
-                      api.plex_id, api.title())
-            # Since we are DELETING a playlist, we need to catch with path!
-            try:
-                kodi_pl.delete(playlist)
-            except PlaylistError:
-                LOG.info('Skipping recreation of playlist %s', api.plex_id)
-            else:
-                try:
-                    kodi_pl.create(api.plex_id)
-                except PlaylistError:
-                    LOG.info('Could not recreate playlist %s', api.plex_id)
-    # Get rid of old Plex playlists that were deleted on the Plex side
-    for plex_id in old_plex_ids:
-        if should_cancel():
-            return False
-        playlist = db.get_playlist(plex_id=plex_id)
-        LOG.debug('Removing outdated Plex playlist from Kodi: %s', playlist)
-        if playlist is None:
-            continue
-        try:
-            kodi_pl.delete(playlist)
-        except PlaylistError:
-            LOG.debug('Skipping deletion of playlist: %s', playlist)
-    # Look at all supported Kodi playlists. Check whether they are in the DB.
-    old_kodi_paths = db.kodi_playlist_paths()
-    for root, _, files in path_ops.walk(v.PLAYLIST_PATH):
-        for f in files:
+        playlist = previous.pop(api.plex_id, None)
+        _sync_plex_playlist(api.plex_id, playlist, xml_playlist)
+    # Only delete records present before the PMS list download and unchanged
+    # since that snapshot. A concurrent local save must survive.
+    with app.APP.lock_playlists:
+        for plex_id, old_playlist in previous.items():
             if should_cancel():
                 return False
-            path = path_ops.path.join(root, f)
+            playlist = db.get_playlist(plex_id=plex_id)
+            if playlist is None or old_playlist is None or playlist != old_playlist:
+                continue
             try:
-                old_kodi_paths.remove(path)
-            except ValueError:
-                pass
-            if not sync_kodi_playlist(path):
-                continue
-            kodi_hash = kodi_playlist_hash(path)
-            playlist = db.get_playlist(path=path)
-            if playlist and playlist.kodi_hash == kodi_hash:
-                continue
+                if kodi_playlist_hash(playlist.kodi_path) != playlist.kodi_hash:
+                    continue
+                kodi_pl.delete(playlist)
+            except (OSError, PlaylistError):
+                LOG.debug('Skipping deletion of playlist: %s', playlist)
+        # Look at all supported Kodi playlists. Check whether they are in the DB.
+        old_kodi_paths = db.kodi_playlist_paths()
+        for root, _, files in path_ops.walk(v.PLAYLIST_PATH):
+            for f in files:
+                if should_cancel():
+                    return False
+                path = path_ops.path.join(root, f)
+                try:
+                    old_kodi_paths.remove(path)
+                except ValueError:
+                    pass
+                if not sync_kodi_playlist(path):
+                    continue
+                kodi_hash = kodi_playlist_hash(path)
+                playlist = db.get_playlist(path=path)
+                if playlist and playlist.kodi_hash == kodi_hash:
+                    continue
+                if not playlist:
+                    LOG.debug('New Kodi playlist detected: %s', path)
+                    playlist = Playlist()
+                    playlist.kodi_path = path
+                    playlist.kodi_hash = kodi_hash
+                    try:
+                        plex_pl.create(playlist)
+                    except PlaylistError:
+                        LOG.info('Skipping Kodi playlist %s', path)
+                else:
+                    LOG.debug('Changed Kodi playlist detected: %s', path)
+                    plex_pl.delete(playlist)
+                    playlist.kodi_hash = kodi_hash
+                    try:
+                        plex_pl.create(playlist)
+                    except PlaylistError:
+                        LOG.info('Skipping Kodi playlist %s', path)
+        for kodi_path in old_kodi_paths:
+            if should_cancel():
+                return False
+            playlist = db.get_playlist(path=kodi_path)
             if not playlist:
-                LOG.debug('New Kodi playlist detected: %s', path)
-                playlist = Playlist()
-                playlist.kodi_path = path
-                playlist.kodi_hash = kodi_hash
-                try:
-                    plex_pl.create(playlist)
-                except PlaylistError:
-                    LOG.info('Skipping Kodi playlist %s', path)
-            else:
-                LOG.debug('Changed Kodi playlist detected: %s', path)
+                continue
+            try:
                 plex_pl.delete(playlist)
-                playlist.kodi_hash = kodi_hash
-                try:
-                    plex_pl.create(playlist)
-                except PlaylistError:
-                    LOG.info('Skipping Kodi playlist %s', path)
-    for kodi_path in old_kodi_paths:
-        if should_cancel():
-            return False
-        playlist = db.get_playlist(path=kodi_path)
-        if not playlist:
-            continue
-        try:
-            plex_pl.delete(playlist)
-        except PlaylistError:
-            LOG.debug('Skipping deletion of Plex playlist: %s', playlist)
+            except PlaylistError:
+                LOG.debug('Skipping deletion of Plex playlist: %s', playlist)
     LOG.info('Playlist full sync done')
     return True
 

@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 from logging import getLogger
 import json
+import socket
 
 from . import websocket
 from . import backgroundthread, app, variables as v, utils, companion
@@ -88,6 +89,8 @@ def alexa_on_message(ws, message):
 
 
 def on_error(ws, error):
+    if ws.should_cancel() or ws.should_suspend():
+        return
     status = ws.name + SETTINGS_STRING
     if isinstance(error, IOError):
         # We are probably offline
@@ -138,6 +141,9 @@ def on_close(ws):
 
 
 def on_open(ws):
+    if ws.should_cancel() or ws.should_suspend():
+        ws.close()
+        return
     log.debug('%s: connected', ws.name)
     # Status = Connected
     utils.settings(ws.name + SETTINGS_STRING, value=utils.lang(13296))
@@ -161,27 +167,41 @@ class PlexWebSocketApp(websocket.WebSocketApp,
         if self.sleeptime < 6:
             self.sleeptime += 1
 
-    def close(self, **kwargs):
-        """websocket.WebSocketApp is not yet thread-safe. close() might
-        encounter websockets that have already been closed"""
+    def sleep(self, timeout):
+        self._is_not_asleep.clear()
         try:
-            websocket.WebSocketApp.close(self, **kwargs)
-        except AttributeError:
+            # Check after clear so cancellation cannot lose the wake signal.
+            if not self.should_cancel() and not self._suspended:
+                self._is_not_asleep.wait(timeout)
+        finally:
+            self._is_not_asleep.set()
+
+    def close(self, **kwargs):
+        # Do not wait for a peer close frame. Wake selectors and partial reads,
+        # including the HTTP upgrade before WebSocket.connected becomes True.
+        self.keep_running = False
+        ws = self.sock
+        if ws is None:
+            return
+        try:
+            if ws.sock is not None:
+                ws.sock.shutdown(socket.SHUT_RDWR)
+        except (AttributeError, OSError):
+            pass
+        try:
+            ws.shutdown()
+        except (AttributeError, OSError):
             pass
 
     def suspend(self, block=False, timeout=None):
-        """
-        Call this method from another thread to suspend this websocket thread
-        """
+        backgroundthread.KillableThread.suspend(self, False, timeout)
         self.close()
-        backgroundthread.KillableThread.suspend(self, block, timeout)
+        if block and not self._suspension_reached.wait(35):
+            log.warning('Thread %s did not suspend within 35s', self.name)
 
     def cancel(self):
-        """
-        Call this method from another thread to cancel this websocket thread
-        """
-        self.close()
         backgroundthread.KillableThread.cancel(self)
+        self.close()
 
     def run(self):
         """
@@ -235,7 +255,14 @@ class PlexWebSocketApp(websocket.WebSocketApp,
             if not self.url:
                 self.sleep_cycle()
                 continue
-            self.run_forever()
+            try:
+                # Bound connect/upgrade reads and selector waits per connection.
+                self.run_forever(socket_timeout=3, ping_timeout=1)
+            finally:
+                self.close()
+                # Only the run thread discards the socket. A concurrent close
+                # must leave the in-flight connect available for cleanup.
+                self.sock = None
 
 
 class PMSWebsocketApp(PlexWebSocketApp):

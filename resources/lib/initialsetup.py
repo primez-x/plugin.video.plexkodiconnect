@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 from logging import getLogger
+from ipaddress import ip_address
+from urllib.parse import urlsplit
 
 from xbmc import executebuiltin
 
@@ -103,17 +105,29 @@ class InitialSetup(object):
         address = utils.dialog('input', utils.lang(39083))
         if not address:
             return False
+        address = address.strip()
+        try:
+            address = str(ip_address(address))
+        except ValueError:
+            try:
+                parsed = urlsplit(address if '://' in address else '//' + address)
+                address = parsed.hostname
+            except ValueError:
+                address = None
+        if not address:
+            utils.messageDialog(utils.lang(29999), utils.lang(39218))
+            return False
         port = utils.dialog('input', utils.lang(39084), '32400', type='{numeric}')
         if not port:
             return False
-        url = '%s:%s' % (address, port)
+        host = '[%s]' % address if ':' in address else address
+        url = '%s:%s' % (host, port)
         # "Use HTTPS (SSL) connections? Answer should probably be yes."
         https = utils.yesno_dialog(utils.lang(29999), utils.lang(39217))
         if https:
             url = 'https://%s' % url
         else:
             url = 'http://%s' % url
-        https = 'true' if https else 'false'
         # Try to connect first
         error = False
         try:

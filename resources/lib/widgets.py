@@ -476,7 +476,7 @@ def prepare_listitem(item, listing_key = None):
             if not art.get("poster") and art.get("season.poster"):
                 art["poster"] = art["season.poster"]
             if not art.get("landscape") and art.get("season.landscape"):
-                art["poster"] = art["season.landscape"]
+                art["landscape"] = art["season.landscape"]
             if not art.get("fanart") and art.get("tvshow.fanart"):
                 art["fanart"] = art.get("tvshow.fanart")
             if not art.get("poster") and art.get("tvshow.poster"):

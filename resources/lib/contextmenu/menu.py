@@ -75,10 +75,12 @@ class ContextMenu(object):
                 and self.api
                 and self.api.extras()):
             options.append(OPTIONS['Extras'])
-        if app.SYNC.direct_paths and self.kodi_type in v.KODI_VIDEOTYPES:
+        if (self.api is not None and app.SYNC.direct_paths
+                and self.kodi_type in v.KODI_VIDEOTYPES):
             options.append(OPTIONS['PMS_Play'])
         if self.kodi_type in v.KODI_VIDEOTYPES:
-            options.append(OPTIONS['Transcode'])
+            if self.api is not None:
+                options.append(OPTIONS['Transcode'])
             options.append(OPTIONS['Analyze'])
 
         # Delete item, only if the Plex Home main user is logged in
@@ -103,6 +105,8 @@ class ContextMenu(object):
         Do whatever the user selected to do
         """
         selected = self._selected_option
+        if self.api is None and selected in (OPTIONS['Transcode'], OPTIONS['PMS_Play']):
+            return
         if selected == OPTIONS['Transcode']:
             app.PLAYSTATE.force_transcode = True
             self._PMS_play()

@@ -25,6 +25,7 @@ class KodiDBBase(object):
         self.artconn = artconn
         self.artcursor = self.artconn.cursor() if self.artconn else None
         self._has_video_version_table = None
+        self._artwork_to_delete = set()
 
     def __enter__(self):
         if self.lock:
@@ -49,6 +50,7 @@ class KodiDBBase(object):
         return self
 
     def __exit__(self, e_typ, e_val, trcbak):
+        committed = False
         try:
             if e_typ:
                 # re-raise any exception
@@ -56,12 +58,14 @@ class KodiDBBase(object):
             self.kodiconn.commit()
             if self.artconn:
                 self.artconn.commit()
+            committed = True
         finally:
             self.kodiconn.close()
             if self.artconn:
                 self.artconn.close()
             if self.lock:
                 KODIDB_LOCK.release()
+            self.finish_artwork_deletions(committed)
 
     def art_urls(self, kodi_id, kodi_type):
         return (x[0] for x in
@@ -151,9 +155,19 @@ class KodiDBBase(object):
             # Delete thumbnail as well as the entry
             path = path_ops.translate_path("special://thumbnails/%s"
                                            % cachedurl)
-            if path_ops.exists(path):
-                path_ops.rmtree(path, ignore_errors=True)
+            self._artwork_to_delete.add(path)
             self.artcursor.execute("DELETE FROM texture WHERE url = ?", (url, ))
+
+    def finish_artwork_deletions(self, committed):
+        # Both DB context owners call after the database locks are released.
+        paths, self._artwork_to_delete = self._artwork_to_delete, set()
+        if not committed:
+            return
+        for path in paths:
+            try:
+                path_ops.remove(path)
+            except OSError:
+                pass
 
     @db.catch_operationalerrors
     def wipe(self):

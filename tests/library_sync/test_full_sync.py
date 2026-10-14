@@ -1,6 +1,7 @@
 import unittest
 import xml.etree.ElementTree as ET
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from . import fakes, isolate_modules, load_library_sync_module
 
@@ -116,6 +117,7 @@ class FullSyncLibraryRefreshTests(unittest.TestCase):
         self.playstate_changed = False
         self.unsynced_playstate_items = False
         self.playstate_error = None
+        self.iterator_error_pass = None
         self.stale_plex_ids = {}
         self.removed = []
         self.cancel_after_processing = False
@@ -182,6 +184,10 @@ class FullSyncLibraryRefreshTests(unittest.TestCase):
 
         def get_section_iterator(section_id, plex_type, updated_at,
                                  last_viewed_at):
+            phase = ('updated' if updated_at is not None else
+                     'watched' if last_viewed_at is not None else 'all')
+            if test.iterator_error_pass == phase:
+                raise RuntimeError('First PMS page failed')
             # New and changed items are reported via ProcessMetadataThread
             if last_viewed_at is None and updated_at is not None:
                 return FakeIterator([])
@@ -232,7 +238,7 @@ class FullSyncLibraryRefreshTests(unittest.TestCase):
                 else 'false',
                 'ERROR': lambda **kwargs: None,
                 'dialog': lambda *args, **kwargs: None,
-                'lang': lambda string_id: ''},
+                'lang': lambda string_id: str(string_id)},
             'resources.lib.timing': {'plex_now': lambda: 2000},
             'resources.lib.backgroundthread': {
                 'KillableThread': fakes.KillableThread,
@@ -271,6 +277,51 @@ class FullSyncLibraryRefreshTests(unittest.TestCase):
     def run_sync(self):
         self.sync._run()
         return self.refreshes
+
+    def test_iterator_creation_failure_prevents_deletion_in_every_pass(self):
+        for phase in ('updated', 'watched', 'all'):
+            with self.subTest(phase=phase):
+                self.iterator_error_pass = phase
+                self.sync.successful = True
+                self.stale_plex_ids = {'movie': [7], 'episode': [8]}
+                self.results.clear()
+                self.run_sync()
+                self.assertFalse(self.sync.successful)
+                self.assertEqual(self.results, [False])
+                self.assertEqual(self.removed, [])
+
+    def test_unexpected_iterator_creation_error_prevents_deletion(self):
+        self.stale_plex_ids = {'movie': [7]}
+        with patch.object(self.module.PF, 'get_section_iterator',
+                          side_effect=ValueError('Malformed PMS page')):
+            self.run_sync()
+        self.assertEqual(self.removed, [])
+        self.assertEqual(self.results, [False])
+
+    def test_deletion_reports_phase_and_count_between_batches(self):
+        updates = []
+        self.sync.show_dialog_userdata = True
+        self.sync.dialog = SimpleNamespace(
+            update=lambda *args: updates.append(args), close=lambda: None)
+        self.stale_plex_ids = {'movie': [7, 8]}
+        with patch.object(self.module, 'monotonic', create=True,
+                          side_effect=range(100)):
+            self.run_sync()
+        deletion_updates = [args for args in updates if args[1] == '30052']
+        self.assertTrue(deletion_updates)
+        self.assertTrue(any('2' in args[2] for args in deletion_updates))
+        self.assertEqual(self.removed, [(7, 'movie'), (8, 'movie')])
+
+    def test_playlist_phase_does_not_open_dialog_over_video(self):
+        self.module.common.PLAYLIST_SYNC_ENABLED = True
+        self.module.playlists = SimpleNamespace(full_sync=lambda: True)
+        self.module.playlist_snapshot = lambda: {}
+        self.app.APP.is_playing_video = True
+        self.sync.show_dialog = True
+        with patch.object(self.module.xbmcgui, 'DialogProgressBG', create=True,
+                          side_effect=AssertionError('Dialog over video')):
+            self.run_sync()
+        self.assertEqual(self.results, [True])
 
     def test_shared_episode_playstates_are_fetched_before_each_playstate_pass(self):
         # Before the DB locks are taken: before adding items, before the
