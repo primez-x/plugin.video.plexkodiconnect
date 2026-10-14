@@ -63,7 +63,7 @@ class Polling(backgroundthread.KillableThread):
         if req:
             log_error(log.error, 'Error while contacting the PMS', req)
         if error:
-            log.error('Error encountered: %s: %s', type(error), error)
+            log.error('Error encountered: %s', type(error).__name__)
         self.sleep(2 ** self._sleep_timer)
         if self._sleep_timer < MAX_TIMEOUT:
             self._sleep_timer += 1
@@ -71,9 +71,11 @@ class Polling(backgroundthread.KillableThread):
     def ok_message(self, command_id):
         url = f'{app.CONN.server}/player/proxy/response?commandID={command_id}'
         try:
-            req = communicate(self.s.post, url, data=self.ok_msg)
+            req = communicate(self.s.post, url, data=self.ok_msg,
+                              timeout=TIMEOUT)
         except (requests.RequestException, SystemExit) as error:
-            log.debug('Error replying with an OK message: %s', error)
+            log.debug('Error replying with an OK message (%s)',
+                      type(error).__name__)
             return
         if not req.ok:
             log_error(log.error, 'Error replying with OK message', req)
@@ -158,7 +160,6 @@ class Polling(backgroundthread.KillableThread):
 
             # Do the work
             log.debug('Received a Plex Companion command from the PMS:')
-            utils.log_xml(xml, log.debug, logging.DEBUG)
             self.playstate_mgr.check_subscriber(cmd)
             if process_command(cmd):
                 self.ok_message(cmd.get('commandID'))

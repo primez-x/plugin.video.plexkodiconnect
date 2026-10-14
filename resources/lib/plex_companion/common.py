@@ -29,9 +29,7 @@ CONTROLLABLE = {
 
 
 def log_error(logger, error_message, response):
-    logger('%s: %s: %s', error_message, response.status_code, response.reason)
-    logger('headers received from the PMS: %s', response.headers)
-    logger('Message received from the PMS: %s', response.text)
+    logger('%s: HTTP %s', error_message, response.status_code)
 
 
 def proxy_headers():
@@ -278,17 +276,17 @@ class Subscriber(object):
         self.s.params['state'] = state
         self.s.params['commandID'] = self.command_id + 1
         # Send update
-        log.debug('Sending timeline update to %s with params %s',
-                  self.uuid, self.s.params)
-        utils.log_xml(message, log.debug, logging.DEBUG)
+        log.debug('Sending timeline update to %s with state %s '
+                  'and command ID %s',
+                  self.uuid, state, self.command_id + 1)
         try:
             req = communicate(self.s.post,
                               self.url,
                               data=etree.tostring(message, encoding='utf8'),
                               timeout=TIMEOUT)
         except requests.RequestException as error:
-            log.warn('Error sending timeline to Subscriber %s: %s: %s',
-                     self.uuid, self.url, error)
+            log.warn('Error sending timeline to Subscriber %s: %s',
+                     self.uuid, type(error).__name__)
             self._on_error()
             return
         except SystemExit:
@@ -296,7 +294,7 @@ class Subscriber(object):
         if not req.ok:
             log_error(log.error,
                       'Unexpected Companion timeline response for player '
-                      f'{self.uuid}: {self.url}',
+                      f'{self.uuid}',
                       req)
             self._on_error()
 
