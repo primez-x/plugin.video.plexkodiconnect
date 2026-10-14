@@ -44,12 +44,13 @@ def CompanionHandlerClassFactory(playstate_mgr):
                 super().handle_one_request()
             except ConnectionError as error:
                 # Catches e.g. ConnectionResetError: [WinError 10054]
-                log.debug('Silencing error: %s: %s', type(error), error)
+                log.debug('Silencing connection error: %s',
+                          type(error).__name__)
                 self.close_connection = True
             except Exception as error:
                 # Catch anything in order to not let our web server crash
-                log.error('Webserver ignored the following exception: %s, %s',
-                          type(error), error)
+                log.error('Webserver ignored exception of type %s',
+                          type(error).__name__)
                 self.close_connection = True
 
         def do_HEAD(self):
@@ -92,7 +93,7 @@ def CompanionHandlerClassFactory(playstate_mgr):
             self.response(self.ok_msg, code=200)
 
         def nok_message(self, error_message, code):
-            log.warn('Sending Not OK message: %s', error_message)
+            log.warn('Sending Not OK response with status %s', code)
             self.response(f'Failure: {error_message}'.encode('utf8'),
                           code=code)
 
@@ -133,8 +134,8 @@ def CompanionHandlerClassFactory(playstate_mgr):
             protocol = params.get('protocol')
             port = params.get('port')
             if protocol is None or port is None:
-                log.error('Received invalid params for subscription: %s',
-                          params)
+                log.error('Received invalid subscription params (%s fields)',
+                          len(params))
                 return False
             url = f"{protocol}://{self.client_address[0]}:{port}"
             playstate_mgr.subscribe(self.uuid, self.command_id, url)
@@ -148,9 +149,9 @@ def CompanionHandlerClassFactory(playstate_mgr):
             params = {}
             for key in paramarrays:
                 params[key] = paramarrays[key][0]
-            log.debug('remote request_path: %s, received from %s. headers: %s',
-                      request_path, self.client_address, self.headers.items())
-            log.debug('params received from remote: %s', params)
+            log.debug('Remote %s request_path: %s (%s headers, %s params)',
+                      self.command, request_path, len(self.headers),
+                      len(params))
 
             conntype = self.headers.get('Connection', '')
             if conntype.lower() == 'keep-alive':

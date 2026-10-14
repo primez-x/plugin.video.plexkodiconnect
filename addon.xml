@@ -135,7 +135,7 @@
     <disclaimer lang="ko_KR">자신의 책임하에 사용</disclaimer>
     <news>v3.14.3
 - Bound Companion acknowledgement requests with the existing timeout.
-- Keep Plex tokens out of Companion connection error logs.
+- Keep Plex tokens and request payloads out of Companion logs.
 
 v3.14.2
 - Close the Companion listener before the next service start.

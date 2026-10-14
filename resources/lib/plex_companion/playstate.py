@@ -152,10 +152,10 @@ class PlaystateMgr(backgroundthread.KillableThread):
         with app.APP.lock_subscriber:
             if cmd.get('path') == '/player/timeline/unsubscribe':
                 if uuid in self.subscribers:
-                    log.debug('Stop Plex Companion subscription for %s', uuid)
+                    log.debug('Stop Plex Companion subscription')
                     del self.subscribers[uuid]
             elif uuid not in self.subscribers:
-                log.debug('Start new Plex Companion subscription for %s', uuid)
+                log.debug('Start new Plex Companion subscription')
                 self.subscribers[uuid] = Subscriber(self, cmd=cmd)
             else:
                 try:
@@ -164,7 +164,7 @@ class PlaystateMgr(backgroundthread.KillableThread):
                     pass
 
     def subscribe(self, uuid, command_id, url):
-        log.debug('New Plex Companion subscriber %s: %s', uuid, url)
+        log.debug('New Plex Companion subscriber')
         with app.APP.lock_subscriber:
             self.subscribers[UUIDStr(uuid)] = Subscriber(self,
                                                          cmd=None,
@@ -173,7 +173,7 @@ class PlaystateMgr(backgroundthread.KillableThread):
                                                          url=url)
 
     def unsubscribe(self, uuid):
-        log.debug('Unsubscribing Plex Companion client %s', uuid)
+        log.debug('Unsubscribing Plex Companion client')
         with app.APP.lock_subscriber:
             try:
                 del self.subscribers[UUIDStr(uuid)]
@@ -218,9 +218,8 @@ class PlaystateMgr(backgroundthread.KillableThread):
             # its new position instead of being suppressed by stale state.
             rearmed_paused_item = pause_state.observe(current)
             if rearmed_paused_item is not None:
-                log.info('Observed %s timeline for player %s item %s; '
-                         're-armed pause reporting',
-                         current_state, playerid, rearmed_paused_item)
+                log.info('Observed %s timeline; re-armed pause reporting',
+                         current_state)
         throttle = self.playing_timeline_throttle.setdefault(
             playerid, PlayingTimelineThrottle()
         )
@@ -245,7 +244,8 @@ class PlaystateMgr(backgroundthread.KillableThread):
                               timeout=TIMEOUT,
                               params=params)
         except requests.RequestException as error:
-            log.error('Could not send the PMS timeline: %s', error)
+            log.error('Could not send the PMS timeline (%s)',
+                      type(error).__name__)
             return
         except SystemExit:
             return
@@ -257,12 +257,10 @@ class PlaystateMgr(backgroundthread.KillableThread):
             throttle.record_success(params, now)
         if current_state == 'paused':
             pause_state.record_success(current)
-            log.info('Reported paused playback once for player %s item %s; '
-                     'suppressing repeats until playback state changes',
-                     playerid, params.get('ratingKey'))
+            log.info('Reported paused playback once; suppressing repeats '
+                     'until playback state changes')
         elif current_state == 'playing' and rearmed_paused_item is not None:
-            log.info('Reported resumed playback to PMS for player %s item %s',
-                     playerid, rearmed_paused_item)
+            log.info('Reported resumed playback to PMS')
 
     def pms_timeline(self, players, message):
         if utils.cached_setting('enablePMSTimeline') == 'false':
@@ -385,6 +383,7 @@ class PlaystateMgr(backgroundthread.KillableThread):
                 error = (type(err), str(err))
                 now = timing.unix_timestamp()
                 if error != last_error or now - last_error_logged > 60:
-                    log.exception('Error in playstate loop, continuing')
+                    log.error('Error in playstate loop (%s), continuing',
+                              type(err).__name__)
                     last_error, last_error_logged = error, now
                 self.sleep(1)

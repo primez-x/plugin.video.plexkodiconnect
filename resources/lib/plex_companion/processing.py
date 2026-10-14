@@ -35,9 +35,7 @@ def update_playqueue_from_PMS(playqueue,
     repeat = 0, 1, 2
     offset = time offset in Plextime (milliseconds)
     """
-    log.info('New playqueue %s received from Plex companion with offset '
-             '%s, repeat %s, start_plex_id %s',
-             playqueue_id, offset, repeat, start_plex_id)
+    log.info('New playqueue received from Plex companion')
     # Safe transient token from being deleted
     if transient_token is None:
         transient_token = playqueue.plex_transient_token
@@ -45,7 +43,7 @@ def update_playqueue_from_PMS(playqueue,
         try:
             xml = PL.get_PMS_playlist(playqueue, playqueue_id)
         except exceptions.PlaylistError:
-            log.error('Could now download playqueue %s', playqueue_id)
+            log.error('Could not download playqueue')
             return
         if playqueue.id == playqueue_id:
             # This seems to be happening ONLY if a Plex Companion device
@@ -58,7 +56,7 @@ def update_playqueue_from_PMS(playqueue,
         try:
             PL.get_playlist_details_from_xml(playqueue, xml)
         except exceptions.PlaylistError:
-            log.error('Could not get playqueue ID %s', playqueue_id)
+            log.error('Could not get playqueue details')
             return
         playqueue.repeat = 0 if not repeat else int(repeat)
         playqueue.plex_transient_token = transient_token
@@ -146,8 +144,7 @@ def skip_to(playqueue_item_id, key):
     Does not seem to be implemented yet by Plex!
     """
     _, plex_id = PF.GetPlexKeyNumber(key)
-    log.debug('Skipping to playQueueItemID %s, plex_id %s',
-              playqueue_item_id, plex_id)
+    log.debug('Skipping to requested playqueue item')
     found = True
     for player in list(js.get_players().values()):
         playqueue = app.PLAYQUEUES[player['playerid']]
@@ -242,9 +239,10 @@ def process_command(cmd=None, path=None, params=None):
         pass
     else:
         if cmd is None:
-            log.error('Unknown request_path: %s with params %s', path, params)
+            log.error('Unknown request_path: %s (%s params)',
+                      path, len(params))
         else:
-            log.error('Unknown Plex companion path/command: %s: %s',
-                      cmd.tag, cmd.attrib)
+            log.error('Unknown Plex companion command: %s (%s attributes)',
+                      cmd.tag, len(cmd.attrib))
         return False
     return True
