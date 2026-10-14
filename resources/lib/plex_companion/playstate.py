@@ -32,6 +32,9 @@ TIMEOUT = (5, 5)
 # How many seconds do we wait until we check again whether we are registered
 # as a GDM Plex Companion Client?
 GDM_COMPANION_CHECK = 120
+# Seconds between attempts to bind the Companion port while another process
+# (e.g. the previous PKC instance during an add-on update) still holds it
+WEBSERVER_RETRY_DELAY = 10
 
 
 def update_player_info(players):
@@ -88,14 +91,25 @@ class PlaystateMgr(backgroundthread.KillableThread):
         # stays as accurate as with 1s reporting.
         self.last_observed_pms_msg = {}
         self.last_playlist_poll = None
+        self.webserver_retry_at = None
         super().__init__()
 
     def _start_webserver(self):
         if self.httpd is None and self.companion_enabled:
+            if self.webserver_retry_at is not None and \
+                    monotonic() < self.webserver_retry_at:
+                return
             log.debug('Starting PKC Companion webserver on port %s', v.COMPANION_PORT)
             server_address = ('', v.COMPANION_PORT)
             HandlerClass = CompanionHandlerClassFactory(self)
-            self.httpd = ThreadedHTTPServer(server_address, HandlerClass)
+            try:
+                self.httpd = ThreadedHTTPServer(server_address, HandlerClass)
+            except OSError as err:
+                log.warning('Companion port %s is busy (%s), retrying in %ss',
+                            v.COMPANION_PORT, err, WEBSERVER_RETRY_DELAY)
+                self.webserver_retry_at = monotonic() + WEBSERVER_RETRY_DELAY
+                return
+            self.webserver_retry_at = None
             self.httpd.timeout = 10.0
             self.httpd_thread = Thread(target=self.httpd.serve_forever)
             self.httpd_thread.start()
@@ -282,12 +296,15 @@ class PlaystateMgr(backgroundthread.KillableThread):
         try:
             self._run()
         finally:
-            # Make sure we're telling the PMS that playback will stop
-            self.send_stop()
-            # Cleanup
-            self.close_connections()
-            app.APP.deregister_thread(self)
-            log.info("----===## PlaystateMgr stopped ##===----")
+            try:
+                # Make sure we're telling the PMS that playback will stop
+                self.send_stop()
+            finally:
+                # Close the webserver even if the report failed (e.g. during
+                # an add-on update), or the port stays taken for the new PKC
+                self.close_connections()
+                app.APP.deregister_thread(self)
+                log.info("----===## PlaystateMgr stopped ##===----")
 
     def _should_poll_playlists(self, idle):
         return playlist_poll_due(getattr(app.APP, 'kodi_playlists_changed', None),
@@ -324,6 +341,8 @@ class PlaystateMgr(backgroundthread.KillableThread):
                     self.close_connections()
                     if self.wait_while_suspended():
                         break
+                # Bind the Companion port if an earlier attempt found it busy
+                self._start_webserver()
                 # Check for Kodi playlist changes first
                 if self._should_poll_playlists(idle=signaled_playback_stop):
                     self._poll_playlists()

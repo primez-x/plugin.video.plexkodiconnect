@@ -187,6 +187,54 @@ class CompanionPlaystateTimelineTests(unittest.TestCase):
                     if server is not None and server.socket.fileno() >= 0:
                         server.server_close()
 
+    def test_busy_port_is_retried_instead_of_ending_the_thread(self):
+        holder = socket.socket()
+        holder.bind(('127.0.0.1', 0))
+        holder.listen()
+        port = holder.getsockname()[1]
+        manager = self.playstate.PlaystateMgr(companion_enabled=True)
+
+        with patch.object(self.playstate, 'ThreadedHTTPServer', HTTPServer), \
+                patch.object(self.playstate, 'CompanionHandlerClassFactory',
+                             return_value=BaseHTTPRequestHandler), \
+                patch.object(self.playstate.v, 'COMPANION_PORT', port,
+                             create=True):
+            try:
+                manager._start_webserver()
+                self.assertIsNone(manager.httpd)
+
+                holder.close()
+                manager._start_webserver()
+                self.assertIsNone(manager.httpd, 'retried before the delay')
+
+                self.clock[0] += self.playstate.WEBSERVER_RETRY_DELAY
+                manager._start_webserver()
+                self.assertIsNotNone(manager.httpd)
+                with socket.create_connection(('127.0.0.1', port),
+                                              timeout=1):
+                    pass
+            finally:
+                holder.close()
+                server = manager.httpd
+                manager._stop_webserver()
+                if server is not None and server.socket.fileno() >= 0:
+                    server.server_close()
+
+    def test_failed_stop_report_still_closes_the_webserver(self):
+        self.playstate.app.APP.register_thread = lambda thread: None
+        self.playstate.app.APP.deregister_thread = lambda thread: None
+        closed = []
+        self.mgr._run = lambda: None
+        self.mgr.close_connections = lambda: closed.append(True)
+
+        def failing_stop():
+            raise RuntimeError("Unknown addon id 'plugin.video.plexkodiconnect'.")
+        self.mgr.send_stop = failing_stop
+
+        with self.assertRaises(RuntimeError):
+            self.mgr.run()
+        self.assertEqual(closed, [True])
+
 
 if __name__ == '__main__':
     unittest.main()
