@@ -44,7 +44,7 @@ def list_page(nodes=(), next_page=False, cursor=None, count=0):
 
 class CommunityTests(unittest.TestCase):
     def test_foreground_membership_miss_never_waits_for_provider_pages(self):
-        self.client.save_selected_list(SELECTION)
+        self.client.save_selected_list(SELECTION, self.cache.active_account_hash())
         self.assertIsNone(self.client.favourite_membership(cached_only=True))
         self.assertEqual(self.calls, [])
 
@@ -368,23 +368,48 @@ class CommunityTests(unittest.TestCase):
                                   "slug": "selected", "itemCount": 2,
                                   **connection(nodes)})
 
+    def test_save_rejects_an_account_change_during_selection_read(self):
+        expected = self.cache.active_account_hash()
+        original = self.client._selections
+        def switch():
+            result = original()
+            self.properties["plex_token"] = "account-two"
+            return result
+        self.client._selections = switch
+        self.assertFalse(self.client.save_selected_list(SELECTION, expected))
+        self.assertEqual(self.settings, {})
+
+    def test_save_rejects_changed_or_missing_expected_account(self):
+        original = self.cache.active_account_hash()
+        self.properties["plex_token"] = "account-two"
+        current = self.cache.active_account_hash()
+        self.settings["plex_favourite_lists"] = json.dumps({current: SELECTION})
+        before = dict(self.settings)
+        for selection in (None, SELECTION):
+            for expected in (original, None, ""):
+                self.assertFalse(self.client.save_selected_list(selection, expected))
+                self.assertEqual(self.settings, before)
+        self.properties.clear()
+        self.assertFalse(self.client.save_selected_list(SELECTION, original))
+        self.assertEqual(self.settings, before)
+
     def test_selected_list_is_validated_and_scoped_without_account_network(self):
-        self.assertTrue(self.client.save_selected_list(SELECTION))
+        self.assertTrue(self.client.save_selected_list(SELECTION, self.cache.active_account_hash()))
         self.assertEqual(self.client.selected_list(), SELECTION)
         self.properties["plex_token"] = "account-two"
         self.assertIsNone(self.client.selected_list())
         second = dict(SELECTION, id="list-two", slug="second")
-        self.assertTrue(self.client.save_selected_list(second))
-        self.assertTrue(self.client.save_selected_list(None))
+        self.assertTrue(self.client.save_selected_list(second, self.cache.active_account_hash()))
+        self.assertTrue(self.client.save_selected_list(None, self.cache.active_account_hash()))
         self.properties["plex_token"] = "account-one"
         self.assertEqual(self.client.selected_list(), SELECTION)
         self.assertFalse(self.calls)
 
     def test_malformed_selections_are_rejected_without_destroying_other_accounts(self):
-        self.client.save_selected_list(SELECTION)
+        self.client.save_selected_list(SELECTION, self.cache.active_account_hash())
         for value in ({}, [], dict(SELECTION, id=""), dict(SELECTION, slug="../path"),
                       dict(SELECTION, username=""), dict(SELECTION, name="\n")):
-            self.assertFalse(self.client.save_selected_list(value))
+            self.assertFalse(self.client.save_selected_list(value, self.cache.active_account_hash()))
             self.assertEqual(self.client.selected_list(), SELECTION)
         key = self.cache.active_account_hash()
         self.settings["plex_favourite_lists"] = json.dumps({key: {"id": "bad"}})
@@ -393,7 +418,7 @@ class CommunityTests(unittest.TestCase):
         self.assertIsNone(self.client.selected_list())
 
     def test_complete_membership_fetches_all_pages_and_caches_complete_set(self):
-        self.client.save_selected_list(SELECTION)
+        self.client.save_selected_list(SELECTION, self.cache.active_account_hash())
         self.respond(list_page([{"id": KEY, "type": "MOVIE", "title": "One"}],
                                True, "next", 2))
         self.respond(list_page([{"id": OTHER, "type": "EPISODE", "title": "Two"}], count=2))
@@ -402,7 +427,7 @@ class CommunityTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 2)
 
     def test_membership_failure_and_count_mismatch_never_confirm_absence(self):
-        self.client.save_selected_list(SELECTION)
+        self.client.save_selected_list(SELECTION, self.cache.active_account_hash())
         self.respond(list_page([{"id": KEY, "type": "MOVIE", "title": "One"}],
                                True, "next", 2))
         self.respond({}, 503)
@@ -411,7 +436,7 @@ class CommunityTests(unittest.TestCase):
         self.assertIsNone(self.client.favourite_membership())
 
     def test_membership_rejects_cursor_cycles_and_page_limit(self):
-        self.client.save_selected_list(SELECTION)
+        self.client.save_selected_list(SELECTION, self.cache.active_account_hash())
         for index, cursor in enumerate(("one", "two", "one")):
             self.respond(list_page([{"id": "%024x" % (index + 1), "type": "MOVIE",
                                      "title": "Node"}], True, cursor, 30))
@@ -425,12 +450,12 @@ class CommunityTests(unittest.TestCase):
 
     def test_membership_empty_is_confirmed_only_for_complete_empty_list(self):
         self.assertIsNone(self.client.favourite_membership())
-        self.client.save_selected_list(SELECTION)
+        self.client.save_selected_list(SELECTION, self.cache.active_account_hash())
         self.respond(list_page())
         self.assertEqual(self.client.favourite_membership(), set())
 
     def test_membership_rejects_duplicates_wrong_list_and_changed_account(self):
-        self.client.save_selected_list(SELECTION)
+        self.client.save_selected_list(SELECTION, self.cache.active_account_hash())
         duplicate = {"id": KEY, "type": "MOVIE", "title": "One"}
         self.respond(list_page([duplicate, duplicate], count=2))
         self.assertIsNone(self.client.favourite_membership())
@@ -449,7 +474,7 @@ class CommunityTests(unittest.TestCase):
         self.assertIsNone(self.client.favourite_membership())
 
     def test_stale_complete_membership_cannot_confirm_absence(self):
-        self.client.save_selected_list(SELECTION)
+        self.client.save_selected_list(SELECTION, self.cache.active_account_hash())
         self.respond(list_page())
         self.assertEqual(self.client.favourite_membership(), set())
         self.clock += 100000

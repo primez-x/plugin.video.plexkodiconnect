@@ -165,40 +165,56 @@ def _review_card(record, rating_key, after=None, critic=False):
 
 def discover_reviews(params):
     """List Plex user and critic reviews under the account's visibility choice."""
+    account_hash = discover_cache.active_account_hash()
+    if not discover_cache.account_matches(account_hash):
+        return
     preference = _community().review_preference()
+    if not discover_cache.account_matches(account_hash):
+        return
     if preference == 3:
         return
     if preference not in (0, 1, 2):
         raise ListingException
     rating_key = _review_rating_key(params)
-    if not rating_key:
+    if not rating_key or not discover_cache.account_matches(account_hash):
         raise ListingException
     after = params.get("after") or None
     cards = []
     if preference in (0, 1):
         page = _community().reviews(rating_key, after)
-        if page is None:
+        if page is None or not discover_cache.account_matches(account_hash):
             raise ListingException
         cards.extend(_review_card(record, rating_key, after) for record in page["nodes"])
         _community_more(cards, "discover_reviews", page, rating_key=rating_key)
     if preference in (0, 2) and after is None:
+        if not discover_cache.account_matches(account_hash):
+            raise ListingException
         critics = _critic_reviews(rating_key)
-        if critics is None:
+        if critics is None or not discover_cache.account_matches(account_hash):
             raise ListingException
         cards.extend(_review_card(record, rating_key, critic=True) for record in critics)
+    if not discover_cache.account_matches(account_hash):
+        raise ListingException
     xbmcplugin.setPluginCategory(int(sys.argv[1]), "Plex reviews")
     xbmcplugin.setContent(int(sys.argv[1]), "files")
+    if not discover_cache.account_matches(account_hash):
+        raise ListingException
     _add_community_cards(cards)
 
 
 def discover_review_show(params):
     """Open one review, with explicit consent before a spoiler becomes visible."""
+    account_hash = discover_cache.active_account_hash()
+    if not discover_cache.account_matches(account_hash):
+        return
     preference = _community().review_preference()
+    if not discover_cache.account_matches(account_hash):
+        return
     critic = params.get("critic") == "true"
     if preference not in ((0, 2) if critic else (0, 1)):
         return
     rating_key = _review_rating_key(params)
-    if not rating_key:
+    if not rating_key or not discover_cache.account_matches(account_hash):
         return
     if critic:
         records = _critic_reviews(rating_key)
@@ -206,10 +222,12 @@ def discover_review_show(params):
         page = _community().reviews(rating_key, params.get("after") or None)
         records = page["nodes"] if page else None
     record = next((record for record in records or [] if record["id"] == params.get("review_id")), None)
-    if record is None:
+    if record is None or not discover_cache.account_matches(account_hash):
         return
     dialog = xbmcgui.Dialog()
     if record.get("hasSpoilers") and not dialog.yesno("Plex review", "Show the spoiler in this review?"):
+        return
+    if not discover_cache.account_matches(account_hash):
         return
     author = record.get("userV2", {}).get("displayName") or "Plex review"
     dialog.textviewer(author, record.get("message", ""))
@@ -217,8 +235,11 @@ def discover_review_show(params):
 
 def discover_lists(after=None):
     """Browse the current Plex account's custom Lists."""
+    account_hash = discover_cache.active_account_hash()
+    if not discover_cache.account_matches(account_hash):
+        raise ListingException
     page = _community().lists(after)
-    if page is None:
+    if page is None or not discover_cache.account_matches(account_hash):
         raise ListingException
     cards = []
     for node in page["nodes"]:
@@ -227,15 +248,22 @@ def discover_lists(after=None):
         card.setLabel2(str(node.get("itemCount", 0)))
         cards.append((path, card, True))
     _community_more(cards, "discover_lists", page)
+    if not discover_cache.account_matches(account_hash):
+        raise ListingException
     xbmcplugin.setPluginCategory(int(sys.argv[1]), "My Plex Lists")
     xbmcplugin.setContent(int(sys.argv[1]), "files")
+    if not discover_cache.account_matches(account_hash):
+        raise ListingException
     _add_community_cards(cards)
 
 
 def discover_list(slug, username, after=None):
     """Keep custom List order while matching cloud metadata to local playback."""
+    account_hash = discover_cache.active_account_hash()
+    if not discover_cache.account_matches(account_hash):
+        raise ListingException
     page = _community().list_items(slug, username, after)
-    if page is None:
+    if page is None or not discover_cache.account_matches(account_hash):
         raise ListingException
     nodes = page["nodes"]
     metadata = []
@@ -245,13 +273,15 @@ def discover_list(slug, username, after=None):
             raise ListingException
         url = plex_discover.METADATA_ITEM_URL % ",".join(keys)
         xmls = _provider_xmls(url, (plex_discover.METADATA_PROVIDER_HOST,), "detail")
-        if not xmls:
+        if not xmls or not discover_cache.account_matches(account_hash):
             raise ListingException
         by_key = {child.get("ratingKey"): child for xml in xmls for child in xml}
         metadata = [by_key[key] for key in keys if key in by_key]
     else:
         url = ""
-    cards = _discover_cards(metadata, url)
+    cards = _discover_cards(metadata, url, account_hash=account_hash)
+    if not discover_cache.account_matches(account_hash):
+        raise ListingException
     by_key = {item[1].get("extraproperties", {}).get("ratingKey"): item for item in cards}
     ordered = []
     for node in nodes:
@@ -269,16 +299,27 @@ def discover_list(slug, username, after=None):
             item = ("", card, False)
         ordered.append(item)
     _community_more(ordered, "discover_list", page, slug=slug, username=username)
+    if not discover_cache.account_matches(account_hash):
+        raise ListingException
     xbmcplugin.setPluginCategory(int(sys.argv[1]), page["name"])
     xbmcplugin.setContent(int(sys.argv[1]), "files")
+    if not discover_cache.account_matches(account_hash):
+        raise ListingException
     _add_community_cards(ordered)
 
 
 def discover_favourites_select():
     """Select an existing Plex List for favourite badges without a cloud mutation."""
+    account_hash = discover_cache.active_account_hash()
+    if not discover_cache.account_matches(account_hash):
+        return
     nodes, after = [], None
     for _ in range(20):
+        if not discover_cache.account_matches(account_hash):
+            return
         page = _community().lists(after)
+        if not discover_cache.account_matches(account_hash):
+            return
         if page is None:
             xbmcgui.Dialog().notification("My Plex Lists", "Plex Lists are unavailable.")
             return
@@ -289,18 +330,24 @@ def discover_favourites_select():
     else:
         xbmcgui.Dialog().notification("My Plex Lists", "The List selection could not load every page.")
         return
+    if not discover_cache.account_matches(account_hash):
+        return
     choice = xbmcgui.Dialog().select("Favourite Plex List", ["None"] + [node["name"] for node in nodes])
-    if choice < 0:
+    if choice < 0 or not discover_cache.account_matches(account_hash):
         return
     selection = nodes[choice - 1] if choice else None
-    if _community().save_selected_list(selection):
-        from . import plex_membership
-
-        plex_membership.publish_keys("favourites", None)
+    if (_community().save_selected_list(selection, account_hash)
+            and discover_cache.account_matches(account_hash)):
+        plex_membership.publish_keys("favourites", None, account_hash=account_hash)
+        if not discover_cache.account_matches(account_hash):
+            return
         utils.window("PKC.Favourites.ListName", value=selection["name"] if selection else "")
+        if not discover_cache.account_matches(account_hash):
+            return
         if selection:
             discover_cache.enqueue_refresh("https://community.plex.tv/api/favourites", "community_membership")
-        xbmc.executebuiltin("Container.Refresh")
+        if discover_cache.account_matches(account_hash):
+            xbmc.executebuiltin("Container.Refresh")
 
 
 def _download_provider_xmls(url, allowed_redirect_hosts):
@@ -1232,9 +1279,10 @@ def discover_hub(hub_id):
     listing_timer.mark("add")
 
 
-def _discover_cards(metadata, url):
+def _discover_cards(metadata, url, account_hash=None):
     """Build ordered provider cards with exact local playback matches."""
-    if not metadata:
+    account_hash = discover_cache.active_account_hash() if account_hash is None else account_hash
+    if not metadata or not discover_cache.account_matches(account_hash):
         return []
     first_api = API(metadata[0])
     plex_type = first_api.plex_type
@@ -1270,7 +1318,7 @@ def _discover_cards(metadata, url):
         local_api or provider_api for provider_api, local_api in tiles
     )
     listing_timer.mark("details")
-    favourite_keys, account_hash = _listing_favourites()
+    favourite_keys, account_hash = _listing_favourites(account_hash)
     all_items = []
     for provider_api, local_api in tiles:
         child = provider_api.xml
@@ -1304,8 +1352,11 @@ def _discover_cards(metadata, url):
     return [(item["file"], item, item.get("isFolder", False)) for item in all_items]
 
 
-def _listing_favourites():
+def _listing_favourites(account_hash=None):
     """Load one complete favourite membership set before a provider row renders."""
+    account_hash = discover_cache.active_account_hash() if account_hash is None else account_hash
+    if not discover_cache.account_matches(account_hash):
+        return None, None
     try:
         selections = json.loads(utils.settings("plex_favourite_lists") or "{}")
     except (TypeError, ValueError):
@@ -1313,12 +1364,15 @@ def _listing_favourites():
     if not isinstance(selections, dict) or not selections:
         return None, None
     generation = plex_membership.generation()
-    account_hash = discover_cache.active_account_hash()
+    if not discover_cache.account_matches(account_hash):
+        return None, None
     keys = _community().favourite_membership(cached_only=True)
     if not discover_cache.account_matches(account_hash):
         return None, None
     plex_membership.publish_keys("favourites", keys, account_hash=account_hash, generation=generation)
-    if keys is None and _community().selected_list() is not None:
+    if (keys is None and discover_cache.account_matches(account_hash)
+            and _community().selected_list() is not None
+            and discover_cache.account_matches(account_hash)):
         discover_cache.enqueue_refresh("https://community.plex.tv/api/favourites", "community_membership")
     return keys, account_hash
 

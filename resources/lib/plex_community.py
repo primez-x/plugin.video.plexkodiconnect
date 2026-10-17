@@ -401,9 +401,8 @@ def selected_list():
     return result if _active(account_hash) else None
 
 
-def save_selected_list(selection_or_none):
-    """Save or clear one account selection without changing other accounts."""
-    account_hash = discover_cache.active_account_hash()
+def save_selected_list(selection_or_none, account_hash):
+    """Save or clear a selection only for the original operation account."""
     if not _active(account_hash):
         return False
     selection = _selection(selection_or_none)
