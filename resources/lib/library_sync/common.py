@@ -3,7 +3,7 @@
 from logging import getLogger
 import xbmc
 
-from .. import utils, app, variables as v, gui_refresh
+from .. import utils, app, variables as v, gui_refresh, plex_membership
 
 LOG = getLogger('PLEX.sync')
 
@@ -45,6 +45,7 @@ def update_kodi_library(video=True, music=True, changed_items=None):
     changed item is relevant to the visible content.
     """
     if video:
+        plex_membership.invalidate_library()
         if not xbmc.getCondVisibility('Window.IsMedia'):
             xbmc.executebuiltin('UpdateLibrary(video)')
         else:

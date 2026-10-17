@@ -149,5 +149,26 @@ class GuiRefreshTests(unittest.TestCase):
         ])
 
 
+
+class MembershipRefreshLifecycleTests(unittest.TestCase):
+    def test_video_sync_invalidates_ids_before_the_existing_gui_refresh(self):
+        from library_sync import isolate_modules, load_library_sync_module
+        isolate_modules(self)
+        events = []
+        common = load_library_sync_module('common', {
+            'xbmc': {'getCondVisibility': lambda query: False, 'executebuiltin': events.append},
+            'resources.lib.utils': {'settings': lambda key: 'false'},
+            'resources.lib.app': {'APP': SimpleNamespace(update_widgets=False)},
+            'resources.lib.variables': {'DEVICE': 'Linux'},
+            'resources.lib.gui_refresh': {},
+            'resources.lib.plex_membership': {'invalidate_library': lambda: events.append('invalidate')},
+        })
+        common.update_kodi_library(video=True, music=False)
+        self.assertEqual(events, ['invalidate', 'UpdateLibrary(video)'])
+        events.clear()
+        common.update_kodi_library(video=False, music=True)
+        self.assertEqual(events, ['UpdateLibrary(music)'])
+
+
 if __name__ == '__main__':
     unittest.main()

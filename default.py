@@ -11,6 +11,21 @@ import xbmc  # noqa: E402
 import xbmcgui  # noqa: E402
 import xbmcplugin  # noqa: E402
 
+if __name__ == "__main__":
+    import os
+    import sys
+    import xbmcaddon
+
+    current_version = xbmcaddon.Addon("plugin.video.plexkodiconnect").getAddonInfo("version")
+    if getattr(sys, "_pkc_invoker_version", None) != current_version:
+        # Kodi can retain imported modules in a reused invoker after an add-on update.
+        source_prefix = os.path.dirname(os.path.abspath(__file__)) + os.sep
+        for module_name, module in tuple(sys.modules.items()):
+            module_file = getattr(module, "__file__", None)
+            if module_name != "__main__" and isinstance(module_file, str) and module_file.startswith(source_prefix):
+                sys.modules.pop(module_name, None)
+        sys._pkc_invoker_version = current_version
+
 from resources.lib import utils, transfer, variables as v, loghandler  # noqa: E402
 from resources.lib import listing_timer  # noqa: E402
 
@@ -47,7 +62,20 @@ def _enqueue_watchlist_detail(command, request):
 
 
 def triage(mode, params, path, arguments, itemid):
-    if mode == "play":
+    if mode in ("discover_reviews", "discover_lists", "discover_list",
+                "discover_review_show", "discover_favourites_select"):
+        from resources.lib import app
+
+        app.init(entrypoint=True)
+    if mode in ("discover_review_show", "discover_favourites_select"):
+        from resources.lib import entrypoint
+
+        if mode == "discover_review_show":
+            entrypoint.discover_review_show(params)
+        else:
+            entrypoint.discover_favourites_select()
+        return
+    elif mode == "play":
         play()
         return
     elif mode == "plex_node":
@@ -195,6 +223,12 @@ def triage(mode, params, path, arguments, itemid):
             entrypoint.discover_hubs()
         elif mode == "discover_hub":
             entrypoint.discover_hub(params.get("hub_id"))
+        elif mode == "discover_reviews":
+            entrypoint.discover_reviews(params)
+        elif mode == "discover_lists":
+            entrypoint.discover_lists(params.get("after"))
+        elif mode == "discover_list":
+            entrypoint.discover_list(params.get("slug"), params.get("username"), params.get("after"))
         elif mode == "channels":
             entrypoint.browse_plex(key="/channels/all")
         elif mode == "search":

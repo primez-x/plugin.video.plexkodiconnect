@@ -74,6 +74,11 @@ def load_entrypoint():
 
 
 class WatchlistListingTests(unittest.TestCase):
+    def test_truncated_watchlist_never_becomes_complete_membership(self):
+        entrypoint = load_entrypoint()
+        entrypoint.DU = lambda: DownloadRecorder([watchlist_page(20, 0)])
+        self.assertIsNone(entrypoint._download_watchlist())
+
     def test_downloads_and_merges_every_provider_page_at_its_100_item_limit(self):
         entrypoint = load_entrypoint()
         downloader = DownloadRecorder([watchlist_page(101, 100), watchlist_page(101, 1)])

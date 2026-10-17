@@ -7,7 +7,7 @@ from time import monotonic, time
 import xbmc
 import xbmcvfs
 
-from . import utils, clientinfo, discover_cache
+from . import utils, clientinfo, discover_cache, plex_community, plex_membership
 from . import initialsetup
 from . import kodimonitor
 from . import sync, library_sync
@@ -694,10 +694,23 @@ class Service(object):
             ):
                 discover_cache.finish_refresh(request, False)
                 return False
-            freshness, _ = discover_cache.read_xml(request["url"], request["kind"])
+            if request["kind"] == "community_membership":
+                from . import entrypoint
+
+                success = entrypoint._refresh_favourites(account_hash)
+                discover_cache.finish_refresh(request, success)
+                return success
+            membership_generation = plex_membership.generation() if request["kind"] == "watchlist" else None
+            freshness, cached_xmls = discover_cache.read_xml(request["url"], request["kind"])
             if freshness == discover_cache.CACHE_FRESH:
-                discover_cache.finish_refresh(request, True)
-                return True
+                success = True
+                if request["kind"] == "watchlist":
+                    from . import entrypoint
+
+                    success = bool(cached_xmls) and entrypoint._publish_membership(
+                        "watchlist", list(cached_xmls[0]), account_hash, generation=membership_generation)
+                discover_cache.finish_refresh(request, success)
+                return success
             if not discover_cache.account_matches(account_hash):
                 discover_cache.finish_refresh(request, False)
                 return False
@@ -723,6 +736,11 @@ class Service(object):
                 request["kind"],
                 account_hash=account_hash,
                 generation=generation,
+            ):
+                discover_cache.finish_refresh(request, False)
+                return False
+            if request["kind"] == "watchlist" and not entrypoint._publish_membership(
+                "watchlist", list(xmls[0]), account_hash, generation=membership_generation
             ):
                 discover_cache.finish_refresh(request, False)
                 return False
@@ -797,7 +815,7 @@ class Service(object):
         )
 
     def _schedule_watchlist_warm(self):
-        """Queue one low-priority Watchlist refresh when due.
+        """Queue account membership refreshes through the existing warm schedule.
 
         The refresh worker skips a still fresh copy and owns the retry
         backoff, so this costs at most one Watchlist download per interval.
@@ -813,11 +831,18 @@ class Service(object):
         ):
             self.next_watchlist_warm = now + WATCHLIST_WARM_RECHECK_SECONDS
             return
-        if discover_cache.enqueue_refresh(
+        queued = discover_cache.enqueue_refresh(
             discover_cache.WATCHLIST_URL,
             "watchlist",
             priority=discover_cache.REFRESH_PRIORITY_PREFETCH,
-        ):
+        )
+        if plex_community.selected_list() is not None:
+            queued = discover_cache.enqueue_refresh(
+                "https://community.plex.tv/api/favourites",
+                "community_membership",
+                priority=discover_cache.REFRESH_PRIORITY_PREFETCH,
+            ) and queued
+        if queued:
             self.next_watchlist_warm = now + WATCHLIST_WARM_INTERVAL_SECONDS
         else:
             # Contended lock or a full queue: try again on the slow fallback

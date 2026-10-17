@@ -270,6 +270,12 @@ def change(api_type, rating_key):
                         discover_cache.record_watchlist_state(
                             rating_key, observed_state, account_hash
                         )
+                        if utils.window("PKC.Account.Hash"):
+                            from . import plex_membership
+
+                            plex_membership.update_watchlist(
+                                rating_key, observed_state, account_hash
+                            )
                         return True, observed_state
                     if attempt + 1 < WATCHLIST_VERIFY_ATTEMPTS:
                         xbmc.sleep(WATCHLIST_VERIFY_SLEEP_MS)

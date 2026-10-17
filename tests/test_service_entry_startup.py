@@ -2,9 +2,11 @@ import importlib
 import sys
 import types
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from threading import Event
 from time import monotonic
+from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -36,6 +38,7 @@ def load_service_entry():
         'xbmc',
         'xbmcvfs',
         'resources.lib.service_entry',
+        'resources.lib.plex_community',
         'resources.lib.utils',
         'resources.lib.clientinfo',
         'resources.lib.initialsetup',
@@ -208,7 +211,10 @@ class ServiceEntryStartupTests(unittest.TestCase):
         service = object.__new__(service_entry.Service)
         completed = []
         stored = []
-        watchlist_xml = object()
+        projected = []
+        epoch = ["before-request"]
+        service_entry.plex_membership = types.SimpleNamespace(generation=lambda: epoch[0])
+        watchlist_xml = ET.Element("MediaContainer")
         service_entry.app.ACCOUNT = types.SimpleNamespace(authenticated=True)
         service_entry.discover_cache = types.SimpleNamespace(
             account_matches=lambda account_hash: account_hash == "account-a",
@@ -220,7 +226,11 @@ class ServiceEntryStartupTests(unittest.TestCase):
             finish_refresh=lambda request, success: completed.append(success) or True,
         )
         entrypoint = types.ModuleType('resources.lib.entrypoint')
-        entrypoint._download_watchlist = lambda: watchlist_xml
+        def download_watchlist():
+            epoch[0] = "after-mutation"
+            return watchlist_xml
+        entrypoint._download_watchlist = download_watchlist
+        entrypoint._publish_membership = lambda *args, **kwargs: projected.append(kwargs) or True
 
         def unexpected(*args):
             raise AssertionError("watchlist must use the paged downloader")
@@ -250,6 +260,36 @@ class ServiceEntryStartupTests(unittest.TestCase):
 
         self.assertEqual(stored, [(url, [watchlist_xml], 'watchlist')])
         self.assertEqual(completed, [True])
+
+        self.assertEqual(projected, [{"generation": "before-request"}])
+
+    def test_watchlist_refresh_retries_a_rejected_membership_publication(self):
+        for freshness in ("fresh", "stale"):
+            with self.subTest(freshness=freshness):
+                service_entry = load_service_entry()
+                service = object.__new__(service_entry.Service)
+                completed = []
+                xml = ET.Element("MediaContainer")
+                service_entry.app.ACCOUNT = types.SimpleNamespace(authenticated=True)
+                service_entry.plex_membership = types.SimpleNamespace(generation=lambda: "before")
+                service_entry.discover_cache = types.SimpleNamespace(
+                    account_matches=lambda account_hash: account_hash == "account-a",
+                    read_xml=lambda *args: (freshness, [xml]),
+                    CACHE_FRESH="fresh",
+                    watchlist_generation=lambda: "watchlist-generation",
+                    put_xml=lambda *args, **kwargs: True,
+                    finish_refresh=lambda request, success: completed.append(success) or True,
+                )
+                entrypoint = types.ModuleType("resources.lib.entrypoint")
+                entrypoint._download_watchlist = lambda: xml
+                entrypoint._publish_membership = lambda *args, **kwargs: False
+                with patch.dict(sys.modules, {"resources.lib.entrypoint": entrypoint}), patch.object(
+                    sys.modules["resources.lib"], "entrypoint", entrypoint, create=True
+                ):
+                    self.assertFalse(service._refresh_discover_cache(
+                        {"url": WATCHLIST_URL, "kind": "watchlist", "_account_hash": "account-a"}
+                    ))
+                self.assertEqual([False], completed)
 
     def test_fresh_prefetch_snapshot_is_acknowledged_without_cloud_io(self):
         service_entry = load_service_entry()
@@ -403,6 +443,7 @@ class ServiceEntryStartupTests(unittest.TestCase):
         service_entry.app.ACCOUNT = types.SimpleNamespace(
             authenticated=authenticated)
         service_entry.app.APP = types.SimpleNamespace(is_playing=playing)
+        service_entry.plex_community = types.SimpleNamespace(selected_list=lambda: None)
         queued = []
         service_entry.discover_cache = types.SimpleNamespace(
             WATCHLIST_URL=WATCHLIST_URL,
@@ -428,6 +469,33 @@ class ServiceEntryStartupTests(unittest.TestCase):
         service._schedule_watchlist_warm()
         self.assertEqual(len(queued), 2)
         self.assertEqual(service_entry.WATCHLIST_WARM_INTERVAL_SECONDS, 600)
+
+    def test_saved_favourite_list_warms_without_a_provider_directory(self):
+        service_entry, service, queued, clock, _ = self._watchlist_warm_service()
+        service_entry.plex_community.selected_list = lambda: {'id': 'selected-list'}
+
+        service._schedule_watchlist_warm()
+        self.assertEqual(queued, [
+            ((WATCHLIST_URL, 'watchlist'), {'priority': 1}),
+            (('https://community.plex.tv/api/favourites', 'community_membership'), {'priority': 1}),
+        ])
+        clock['now'] += service_entry.WATCHLIST_WARM_INTERVAL_SECONDS - 1
+        service._schedule_watchlist_warm()
+        self.assertEqual(len(queued), 2)
+
+    def test_failed_favourite_enqueue_uses_the_existing_retry_schedule(self):
+        service_entry, service, queued, clock, _ = self._watchlist_warm_service()
+        service_entry.plex_community.selected_list = lambda: {'id': 'selected-list'}
+
+        def enqueue(*args, **kwargs):
+            queued.append((args, kwargs))
+            return args[1] != 'community_membership'
+
+        service_entry.discover_cache.enqueue_refresh = enqueue
+        service._schedule_watchlist_warm()
+        clock['now'] += service_entry.DISCOVER_WAKE_FALLBACK_SECONDS
+        service._schedule_watchlist_warm()
+        self.assertEqual(len(queued), 4)
 
     def test_watchlist_warm_up_queues_the_url_the_listing_caches(self):
         service_entry, service, _, _, _ = self._watchlist_warm_service()

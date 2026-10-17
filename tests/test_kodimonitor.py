@@ -545,6 +545,15 @@ class KodiMonitorTests(unittest.TestCase):
         self.assertTrue(kodimonitor.app.APP.command_event.is_set())
         self.assertFalse(kodimonitor.app.APP.discover_refresh_event.is_set())
 
+    def test_library_changes_invalidate_native_membership_ids(self):
+        kodimonitor, _, _, _ = load_kodimonitor()
+        invalidations = []
+        kodimonitor.plex_membership = SimpleNamespace(invalidate_library=lambda: invalidations.append(True))
+        monitor = kodimonitor.KodiMonitor()
+        for method in ('VideoLibrary.OnRemove', 'VideoLibrary.OnScanFinished', 'VideoLibrary.OnCleanFinished'):
+            monitor.onNotification('xbmc', method, '')
+        self.assertEqual(invalidations, [True, True, True])
+
     def test_settings_change_invalidates_cached_service_settings(self):
         kodimonitor, _, _, _ = load_kodimonitor()
 

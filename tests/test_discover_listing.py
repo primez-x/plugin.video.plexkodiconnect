@@ -73,6 +73,7 @@ def load_entrypoint():
     xbmcplugin = types.ModuleType("xbmcplugin")
     xbmcplugin.SORT_METHOD_UNSORTED = 0
     xbmcplugin.setContent = lambda *args, **kwargs: None
+    xbmcplugin.setPluginCategory = lambda *args, **kwargs: None
     xbmcplugin.addDirectoryItems = lambda *args, **kwargs: directory_calls.append(args)
     xbmcplugin.addSortMethod = lambda *args, **kwargs: None
     sys.modules["xbmcplugin"] = xbmcplugin
@@ -103,6 +104,8 @@ def load_entrypoint():
     variables.CONTENT_FROM_PLEX_TYPE = {"movie": "movies", "show": "tvshows"}
 
     cache = modules["resources.lib.discover_cache"]
+    cache.active_account_hash = lambda: "account-a"
+    cache.account_matches = lambda account: account == "account-a"
     cache.CACHE_FRESH = "fresh"
     cache.CACHE_STALE = "stale"
     cache.read_xml = lambda *args, **kwargs: ("miss", None)
@@ -172,6 +175,8 @@ class DiscoverListingTests(unittest.TestCase):
         calls = []
 
         class Cache(object):
+            active_account_hash = staticmethod(lambda: "account-a")
+            account_matches = staticmethod(lambda account: account == "account-a")
             CACHE_STALE = "stale"
 
             @staticmethod
@@ -180,7 +185,7 @@ class DiscoverListingTests(unittest.TestCase):
                 return "fresh", cached
 
             @staticmethod
-            def put_xml(url, xmls, cache_kind):
+            def put_xml(url, xmls, cache_kind, **kwargs):
                 raise AssertionError("a cache hit must not be written or fetched")
 
             @staticmethod
@@ -204,6 +209,8 @@ class DiscoverListingTests(unittest.TestCase):
         stored = []
 
         class Cache(object):
+            active_account_hash = staticmethod(lambda: "account-a")
+            account_matches = staticmethod(lambda account: account == "account-a")
             CACHE_STALE = "stale"
 
             @staticmethod
@@ -211,7 +218,7 @@ class DiscoverListingTests(unittest.TestCase):
                 return "miss", None
 
             @staticmethod
-            def put_xml(url, xmls, cache_kind):
+            def put_xml(url, xmls, cache_kind, **kwargs):
                 stored.append((url, list(xmls), cache_kind))
                 return True
 
@@ -253,6 +260,8 @@ class DiscoverListingTests(unittest.TestCase):
         refreshes = []
 
         class Cache(object):
+            active_account_hash = staticmethod(lambda: "account-a")
+            account_matches = staticmethod(lambda account: account == "account-a")
             CACHE_STALE = "stale"
 
             @staticmethod
@@ -265,7 +274,7 @@ class DiscoverListingTests(unittest.TestCase):
                 return True
 
             @staticmethod
-            def put_xml(url, xmls, cache_kind):
+            def put_xml(url, xmls, cache_kind, **kwargs):
                 raise AssertionError("a stale cache must not block on a foreground write")
 
         entrypoint.discover_cache = Cache()
@@ -349,7 +358,7 @@ class DiscoverListingTests(unittest.TestCase):
         entrypoint.discover_cache.read_xml = read_xml
         entrypoint.discover_cache.watchlist_generation = lambda: "generation"
         entrypoint.discover_cache.put_xml = (
-            lambda url, xmls, kind, generation=None: calls["put"].append(
+            lambda url, xmls, kind, generation=None, **kwargs: calls["put"].append(
                 (url, xmls, kind, generation)
             )
             or True

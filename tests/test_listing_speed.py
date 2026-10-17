@@ -197,6 +197,33 @@ def load_widgets(js):
 
 
 class WidgetPrefetchTests(IsolatedTestCase):
+    def test_provider_identity_reaches_the_native_video_tag(self):
+        class Tag:
+            unique_ids = None
+
+            def setUniqueIDs(self, values):
+                self.unique_ids = values
+
+            def __getattr__(self, name):
+                return lambda *args, **kwargs: None
+
+        tag = Tag()
+        class Item:
+            def __init__(self, **kwargs):
+                pass
+
+            def getVideoInfoTag(self):
+                return tag
+
+            def __getattr__(self, name):
+                return lambda *args, **kwargs: None
+
+        self.widgets.xbmcgui.ListItem = Item
+        identities = {'plex': 'plex://movie/5d7768244de0ee001fcc7fed', 'imdb': 'tt0088763'}
+        item = {'type': 'movie', 'file': '', 'extraproperties': {}, 'uniqueid': identities}
+        self.assertIsNotNone(self.widgets.create_listitem(item, as_tuple=False, listitem=Item))
+        self.assertEqual(tag.unique_ids, identities)
+
     def setUp(self):
         super().setUp()
         self.batches = []
@@ -216,6 +243,104 @@ class WidgetPrefetchTests(IsolatedTestCase):
         js.items_details = items_details
         js.item_details = item_details
         self.widgets = load_widgets(js)
+
+    def test_null_optional_stream_values_do_not_reach_native_setters(self):
+        class Detail:
+            def __init__(self):
+                self.values = {}
+
+            def __getattr__(self, name):
+                return lambda value: self.values.__setitem__(name, value)
+
+        cases = (
+            ('Video', ('codec', 'aspect', 'width', 'height', 'duration', 'stereomode', 'language', 'hdrtype')),
+            ('Audio', ('channels', 'codec', 'language')),
+            ('Subtitle', ('language',)),
+        )
+        for kind, fields in cases:
+            setattr(self.widgets.xbmc, kind + 'StreamDetail', Detail)
+            create = getattr(self.widgets, '_create_' + kind + 'StreamDetail')
+            for field in fields:
+                with self.subTest(kind=kind, field=field):
+                    detail = create({field: None})
+                    self.assertEqual(detail.values, {})
+        detail = self.widgets._create_VideoStreamDetail({'aspect': 1.777, 'width': 1920, 'duration': 0})
+        self.assertEqual(detail.values, {'setAspect': 1.78, 'setWidth': 1920, 'setDuration': 0})
+
+    def test_prepared_stream_lists_reach_native_details_as_first_stream_dicts(self):
+        received = []
+
+        class Detail:
+            def __init__(self):
+                self.values = {}
+
+            def __getattr__(self, name):
+                return lambda value: self.values.__setitem__(name, value)
+
+        class Tag:
+            def __init__(self):
+                self.streams = []
+
+            def addVideoStream(self, detail):
+                self.streams.append(('video', detail.values))
+
+            def addAudioStream(self, detail):
+                self.streams.append(('audio', detail.values))
+
+            def addSubtitleStream(self, detail):
+                self.streams.append(('subtitle', detail.values))
+
+            def __getattr__(self, name):
+                return lambda *args, **kwargs: None
+
+        class Item:
+            def __init__(self, **kwargs):
+                self.tag = Tag()
+                self.properties = {}
+
+            def getVideoInfoTag(self):
+                return self.tag
+
+            def setProperties(self, values):
+                self.properties.update(values)
+
+            def __getattr__(self, name):
+                return lambda *args, **kwargs: None
+
+        for kind in ('Video', 'Audio', 'Subtitle'):
+            setattr(self.widgets.xbmc, kind + 'StreamDetail', Detail)
+            create = getattr(self.widgets, '_create_' + kind + 'StreamDetail')
+            setattr(self.widgets, '_create_' + kind + 'StreamDetail',
+                    lambda stream, create=create: received.append(stream) or create(stream))
+        self.widgets.xbmcgui.ListItem = Item
+        self.widgets.artwork_urls.normalize_plex_artwork_url = lambda url: url
+        # api.mediastreams() answers stream lists, empty for provider-only Watchlist cards
+        empty = {'video': [], 'audio': [], 'subtitle': []}
+        populated = {
+            'video': [{'codec': 'hevc', 'width': 3840, 'height': 2160, 'aspect': 1.777, 'duration': 0},
+                      {'codec': 'h264'}],
+            'audio': [{'codec': 'eac3', 'channels': 6, 'language': 'eng'}, {'codec': 'aac'}],
+            'subtitle': [{'language': 'eng'}, {'language': 'fra'}],
+        }
+        for streams in (empty, populated):
+            with self.subTest(populated=bool(streams['video'])):
+                del received[:]
+                item = self.widgets.prepare_listitem(
+                    {'type': 'movie', 'file': '/watchlist', 'streamdetails': streams})
+                listitem = self.widgets.create_listitem(item, as_tuple=False, listitem=Item)
+                self.assertIsNotNone(listitem)
+                self.assertEqual([type(stream) for stream in received], [dict] * 3)
+        self.assertEqual(listitem.tag.streams, [
+            ('video', {'setCodec': 'hevc', 'setAspect': 1.78, 'setWidth': 3840,
+                       'setHeight': 2160, 'setDuration': 0}),
+            ('audio', {'setChannels': 6, 'setCodec': 'eac3', 'setLanguage': 'eng'}),
+            ('subtitle', {'setLanguage': 'eng'}),
+        ])
+        for key, value in (('VideoResolution', '4K'), ('VideoCodec', 'hevc'),
+                           ('VideoAspect', '1.78'), ('AudioCodec', 'eac3'),
+                           ('AudioChannels', '6'), ('AudioLanguage', 'eng'),
+                           ('SubtitleLanguage', 'eng')):
+            self.assertEqual(item['extraproperties'][key], value)
 
     def test_season_landscape_fallback_preserves_poster(self):
         self.widgets.artwork_urls.normalize_plex_artwork_url = lambda url: url

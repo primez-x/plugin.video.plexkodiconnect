@@ -22,6 +22,7 @@ from . import exceptions
 from . import skip_plex_markers
 from . import upnext
 from . import gui_refresh
+from . import plex_membership
 from . import playstate as shared_playstate
 from . import listing_timer
 
@@ -679,8 +680,8 @@ class KodiMonitor(xbmc.Monitor):
         elif method == "VideoLibrary.OnUpdate":
             with app.APP.lock_playqueues:
                 _videolibrary_onupdate(data)
-        elif method == "VideoLibrary.OnRemove":
-            pass
+        elif method in ("VideoLibrary.OnRemove", "VideoLibrary.OnScanFinished", "VideoLibrary.OnCleanFinished"):
+            plex_membership.invalidate_library()
         elif method == "System.OnSleep":
             # Connection is going to sleep
             LOG.info("Marking the server as offline. SystemOnSleep activated.")

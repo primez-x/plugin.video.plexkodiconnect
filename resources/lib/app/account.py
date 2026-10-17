@@ -70,6 +70,8 @@ class Account(object):
 
         # Also load these settings to Kodi window variables - they'll be
         # available for other PKC Python instances
+        from ..plex_membership import reset_account
+        reset_account(self.plex_token)
         utils.window('plex_restricteduser',
                      value='true' if self.restricted_user else 'false')
         utils.window('plex_token', value=self.plex_token or '')
@@ -90,6 +92,8 @@ class Account(object):
 
     def log_out(self):
         LOG.debug('Logging-out user %s', self.plex_username)
+        from ..plex_membership import reset_account
+        reset_account(None)
         self.plex_username = None
         self.plex_user_id = None
         self.pms_token = None
@@ -115,6 +119,8 @@ class Account(object):
 
     def clear(self):
         LOG.debug('Clearing account settings')
+        from ..plex_membership import reset_account
+        reset_account(None)
         self.plex_username = None
         self.plex_user_id = None
         self.plex_token = None

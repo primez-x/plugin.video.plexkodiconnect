@@ -92,6 +92,11 @@ CACHE_MISS = "miss"
 # Discover delta API, so a stale source renders locally and is revalidated by
 # the low-priority service worker.
 CACHE_POLICIES = {
+    "community_account": {"fresh": 60, "stale": 60},
+    "community_reviews": {"fresh": 120, "stale": 120},
+    "community_lists": {"fresh": 60, "stale": 60},
+    "community_list_items": {"fresh": 60, "stale": 60},
+    "community_membership": {"fresh": 30, "stale": 30},
     "catalog": {"fresh": 6 * 60 * 60},
     "hub": {"fresh": 2 * 60 * 60},
     "detail": {"fresh": 24 * 60 * 60},
@@ -108,6 +113,7 @@ CACHE_POLICIES = {
 # A Watchlist cached under an earlier URL is never read again and ages out
 WATCHLIST_URL = plex_discover.WATCHLIST_URL
 REFRESH_HOSTS = {
+    "community_membership": ("community.plex.tv",),
     "catalog": (
         getattr(plex_discover, "DISCOVER_PROVIDER_HOST", "discover.provider.plex.tv"),
     ),
@@ -1081,6 +1087,8 @@ def _valid_refresh_url(url, cache_kind):
         return False
     if cache_kind == "catalog":
         return parsed.path == "/hubs/sections/home"
+    if cache_kind == "community_membership":
+        return url == "https://community.plex.tv/api/favourites"
     if cache_kind == "hub":
         return parsed.path.startswith("/hubs/sections/home/")
     if cache_kind == "watchlist":

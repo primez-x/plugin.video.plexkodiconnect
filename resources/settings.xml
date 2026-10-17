@@ -236,7 +236,14 @@
                     </control>
                 </setting>
             </group>
-            <group id="2" />
+            <group id="2">
+                <setting id="plex_favourite_lists" type="string" label="1036">
+                    <level>4</level>
+                    <default />
+                    <constraints><allowempty>true</allowempty></constraints>
+                    <control type="edit" format="string" />
+                </setting>
+            </group>
             <group id="3" label="39008"> <!-- Plex Companion: Allows flinging media to Kodi through Plex -->
                 <setting id="plexCompanion" type="boolean" label="39004" help=""> <!-- Enable Plex Companion (restart Kodi!) -->
                     <level>0</level>

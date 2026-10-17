@@ -6,6 +6,8 @@ e.g. plugin://... calls. Hence be careful to only rely on window variables.
 """
 
 from logging import getLogger
+from hashlib import sha256
+import json
 import sys
 import copy
 import xml.etree.ElementTree as etree
@@ -20,6 +22,7 @@ from . import clientinfo
 from . import path_ops
 from . import plex_discover
 from . import discover_cache
+from . import plex_membership
 from . import watchlist as watchlist_state
 from .downloadutils import DownloadUtils as DU
 from .plex_api import API, mass_api
@@ -36,6 +39,7 @@ WATCHLIST_PAGE_SIZE = 100
 WATCHLIST_URL = plex_discover.WATCHLIST_URL
 DISCOVER_REDIRECT_STATUS_CODES = (301, 302, 303, 307, 308)
 DISCOVER_DETAIL_TYPES = frozenset(("movie", "show"))
+LIST_DETAIL_TYPES = DISCOVER_DETAIL_TYPES | {"season", "episode"}
 DISCOVER_HTTP_TIMEOUT = (3.0, 10.0)
 # browse_plex keys backing "latest/next" style widgets (On Deck, Recently
 # Added, Plex home hubs); their PMS answers are capped for widgets
@@ -56,6 +60,247 @@ def _provider_headers():
     return clientinfo.getXArgsDeviceInfo(
         {"X-Plex-Token": utils.window("plex_token")}, include_token=False
     )
+
+
+def _community():
+    from . import plex_community
+
+    return plex_community
+
+
+def _community_path(mode, **params):
+    return utils.extend_url("plugin://%s/" % v.ADDON_ID, dict(params, mode=mode))
+
+
+def _add_community_cards(cards):
+    handle = int(sys.argv[1])
+    xbmcplugin.addDirectoryItems(handle, cards, len(cards))
+    xbmcplugin.addSortMethod(handle, xbmcplugin.SORT_METHOD_UNSORTED)
+
+
+def _community_more(cards, mode, page, **params):
+    page_info = page.get("pageInfo", {})
+    cursor = page_info.get("endCursor")
+    if page_info.get("hasNextPage") and cursor:
+        path = _community_path(mode, after=cursor, **params)
+        card = ListItem("More…", path=path)
+        card.setProperty("PlexReviewMore", "true")
+        card.setProperty("PlexReviewPath", path)
+        cards.append((path, card, True))
+
+
+def _review_rating_key(params):
+    key = plex_discover.normalize_rating_key(params.get("rating_key"))
+    if key and not key.isdecimal():
+        return key
+    media_type = plex_discover.normalize_tmdb_type(params.get("plex_type"))
+    if params.get("dbid") and media_type:
+        from .plex_db import PlexDB
+
+        kodi_type = "movie" if media_type == "movie" else "tvshow"
+        try:
+            dbid = int(params["dbid"])
+        except (TypeError, ValueError):
+            return None
+        with PlexDB(lock=False) as plexdb:
+            item = plexdb.item_by_kodi_id(dbid, kodi_type)
+        if item:
+            plex_type = "movie" if media_type == "movie" else "show"
+            key = plex_discover._rating_key_from_guid(item.get("plex_guid"), plex_type)
+            if key:
+                return key
+    tmdb_type = params.get("tmdb_type") or media_type
+    identity = plex_discover.tmdb_watchlist_identity(params.get("tmdb_id"), tmdb_type)
+    if identity:
+        return watchlist_state._rating_key_for_tmdb(
+            {"tmdb_id": params["tmdb_id"], "tmdb_type": tmdb_type}, identity
+        )
+    return None
+
+
+def _critic_reviews(rating_key):
+    url = plex_discover.METADATA_ITEM_URL % rating_key + "&includeReviews=1"
+    xmls = _provider_xmls(url, (plex_discover.METADATA_PROVIDER_HOST,), "detail")
+    if not xmls:
+        return None
+    records = []
+    for xml in xmls:
+        for metadata in xml:
+            if metadata.get("ratingKey") != rating_key:
+                continue
+            for review in metadata.findall("Review"):
+                text = review.get("text", "")
+                if not text:
+                    continue
+                source = review.get("source", "")
+                author = review.get("tag", "")
+                key = sha256((source + "\0" + author + "\0" + text).encode("utf-8")).hexdigest()
+                records.append({"id": key, "message": text, "hasSpoilers": False,
+                                "userV2": {"displayName": author}, "source": source})
+    return records
+
+
+def _review_card(record, rating_key, after=None, critic=False):
+    author = record.get("userV2", {}).get("displayName") or "Plex user"
+    card = ListItem(author)
+    spoiler = record.get("hasSpoilers") is True
+    plot = "Spoiler — select to reveal." if spoiler else record.get("message", "")
+    card.setInfo("video", {"plot": plot})
+    rating = record.get("reviewRating")
+    subtitle = record.get("source", "")
+    if isinstance(rating, (int, float)) and not isinstance(rating, bool) and 0 < rating <= 10:
+        subtitle = "%g/10" % rating
+    card.setLabel2(subtitle)
+    card.setProperty("sublabel", subtitle)
+    card.setProperty("PlexReviewSpoiler", "true" if spoiler else "false")
+    path = _community_path("discover_review_show", rating_key=rating_key,
+                           review_id=record["id"], after=after or "", critic="true" if critic else "false")
+    card.setProperty("PlexReviewPath", path)
+    card.setProperty("IsPlayable", "false")
+    avatar = record.get("userV2", {}).get("avatar", "")
+    if isinstance(avatar, str) and avatar.startswith("https://"):
+        card.setArt({"thumb": avatar})
+    return path, card, False
+
+
+def discover_reviews(params):
+    """List Plex user and critic reviews under the account's visibility choice."""
+    preference = _community().review_preference()
+    if preference == 3:
+        return
+    if preference not in (0, 1, 2):
+        raise ListingException
+    rating_key = _review_rating_key(params)
+    if not rating_key:
+        raise ListingException
+    after = params.get("after") or None
+    cards = []
+    if preference in (0, 1):
+        page = _community().reviews(rating_key, after)
+        if page is None:
+            raise ListingException
+        cards.extend(_review_card(record, rating_key, after) for record in page["nodes"])
+        _community_more(cards, "discover_reviews", page, rating_key=rating_key)
+    if preference in (0, 2) and after is None:
+        critics = _critic_reviews(rating_key)
+        if critics is None:
+            raise ListingException
+        cards.extend(_review_card(record, rating_key, critic=True) for record in critics)
+    xbmcplugin.setPluginCategory(int(sys.argv[1]), "Plex reviews")
+    xbmcplugin.setContent(int(sys.argv[1]), "files")
+    _add_community_cards(cards)
+
+
+def discover_review_show(params):
+    """Open one review, with explicit consent before a spoiler becomes visible."""
+    preference = _community().review_preference()
+    critic = params.get("critic") == "true"
+    if preference not in ((0, 2) if critic else (0, 1)):
+        return
+    rating_key = _review_rating_key(params)
+    if not rating_key:
+        return
+    if critic:
+        records = _critic_reviews(rating_key)
+    else:
+        page = _community().reviews(rating_key, params.get("after") or None)
+        records = page["nodes"] if page else None
+    record = next((record for record in records or [] if record["id"] == params.get("review_id")), None)
+    if record is None:
+        return
+    dialog = xbmcgui.Dialog()
+    if record.get("hasSpoilers") and not dialog.yesno("Plex review", "Show the spoiler in this review?"):
+        return
+    author = record.get("userV2", {}).get("displayName") or "Plex review"
+    dialog.textviewer(author, record.get("message", ""))
+
+
+def discover_lists(after=None):
+    """Browse the current Plex account's custom Lists."""
+    page = _community().lists(after)
+    if page is None:
+        raise ListingException
+    cards = []
+    for node in page["nodes"]:
+        path = _community_path("discover_list", slug=node["slug"], username=node["username"])
+        card = ListItem(node["name"], path=path)
+        card.setLabel2(str(node.get("itemCount", 0)))
+        cards.append((path, card, True))
+    _community_more(cards, "discover_lists", page)
+    xbmcplugin.setPluginCategory(int(sys.argv[1]), "My Plex Lists")
+    xbmcplugin.setContent(int(sys.argv[1]), "files")
+    _add_community_cards(cards)
+
+
+def discover_list(slug, username, after=None):
+    """Keep custom List order while matching cloud metadata to local playback."""
+    page = _community().list_items(slug, username, after)
+    if page is None:
+        raise ListingException
+    nodes = page["nodes"]
+    metadata = []
+    if nodes:
+        keys = [plex_discover.normalize_rating_key(node.get("id")) for node in nodes]
+        if not all(keys):
+            raise ListingException
+        url = plex_discover.METADATA_ITEM_URL % ",".join(keys)
+        xmls = _provider_xmls(url, (plex_discover.METADATA_PROVIDER_HOST,), "detail")
+        if not xmls:
+            raise ListingException
+        by_key = {child.get("ratingKey"): child for xml in xmls for child in xml}
+        metadata = [by_key[key] for key in keys if key in by_key]
+    else:
+        url = ""
+    cards = _discover_cards(metadata, url)
+    by_key = {item[1].get("extraproperties", {}).get("ratingKey"): item for item in cards}
+    ordered = []
+    for node in nodes:
+        item = by_key.get(node["id"])
+        if item is not None:
+            item = widgets.create_listitem(widgets.prepare_listitem(item[1]))
+        if item is None:
+            card = ListItem(node.get("title") or "Unavailable title")
+            card.setLabel2("Unavailable in Plex")
+            card.setProperty("IsPlayable", "false")
+            card.setProperty("ratingKey", node["id"])
+            plex_type = node["type"].lower()
+            if plex_type in LIST_DETAIL_TYPES:
+                card.getVideoInfoTag().setUniqueID("plex://%s/%s" % (plex_type, node["id"]), "plex")
+            item = ("", card, False)
+        ordered.append(item)
+    _community_more(ordered, "discover_list", page, slug=slug, username=username)
+    xbmcplugin.setPluginCategory(int(sys.argv[1]), page["name"])
+    xbmcplugin.setContent(int(sys.argv[1]), "files")
+    _add_community_cards(ordered)
+
+
+def discover_favourites_select():
+    """Select an existing Plex List for favourite badges without a cloud mutation."""
+    nodes, after = [], None
+    for _ in range(20):
+        page = _community().lists(after)
+        if page is None:
+            xbmcgui.Dialog().notification("My Plex Lists", "Plex Lists are unavailable.")
+            return
+        nodes.extend(page["nodes"])
+        if not page["pageInfo"]["hasNextPage"]:
+            break
+        after = page["pageInfo"]["endCursor"]
+    else:
+        xbmcgui.Dialog().notification("My Plex Lists", "The List selection could not load every page.")
+        return
+    choice = xbmcgui.Dialog().select("Favourite Plex List", ["None"] + [node["name"] for node in nodes])
+    if choice < 0:
+        return
+    selection = nodes[choice - 1] if choice else None
+    if _community().save_selected_list(selection):
+        from . import plex_membership
+
+        plex_membership.publish_keys("favourites", None)
+        utils.window("PKC.Favourites.ListName", value=selection["name"] if selection else "")
+        if selection:
+            discover_cache.enqueue_refresh("https://community.plex.tv/api/favourites", "community_membership")
+        xbmc.executebuiltin("Container.Refresh")
 
 
 def _download_provider_xmls(url, allowed_redirect_hosts):
@@ -129,6 +374,7 @@ def _download_provider_xmls(url, allowed_redirect_hosts):
 
 def _provider_xmls(url, allowed_redirect_hosts, cache_kind=None, item_key=None):
     """Serve cached Discover XML first, then refresh stale snapshots in PKC."""
+    account_hash = discover_cache.active_account_hash()
     if cache_kind:
         freshness, cached_xmls = discover_cache.read_xml(
             url, cache_kind, item_key=item_key
@@ -142,9 +388,11 @@ def _provider_xmls(url, allowed_redirect_hosts, cache_kind=None, item_key=None):
             return cached_xmls
 
     xmls = _download_provider_xmls(url, allowed_redirect_hosts)
+    if not discover_cache.account_matches(account_hash):
+        return []
     if xmls and cache_kind:
-        discover_cache.put_xml(url, xmls, cache_kind)
-    return xmls
+        discover_cache.put_xml(url, xmls, cache_kind, account_hash=account_hash)
+    return xmls if discover_cache.account_matches(account_hash) else []
 
 
 def _discover_hub_url(hub_id):
@@ -287,6 +535,7 @@ def show_main_menu(content_type=None):
     # Plex Watch later and Watchlist
     if content_type not in ("image", "audio"):
         directory_item("Plex Discover", "plugin://%s?mode=discover_hubs" % v.ADDON_ID)
+        directory_item("My Plex Lists", "plugin://%s?mode=discover_lists" % v.ADDON_ID)
         directory_item(utils.lang(39211), "plugin://%s?mode=watchlater" % v.ADDON_ID)
         directory_item(utils.lang(39212), "plugin://%s?mode=watchlist" % v.ADDON_ID)
     # Plex Channels
@@ -352,6 +601,19 @@ def _set_provider_props(item, child, provider_state_is_current):
     guid = child.get("guid")
     if guid:
         props["plexguid"] = guid
+        item.setdefault("uniqueid", {})["plex"] = guid
+    account_hash = getattr(discover_cache, "active_account_hash", lambda: None)()
+    if account_hash:
+        props["PlexMembershipAccount"] = account_hash
+    try:
+        rating = float(child.get("audienceRating", child.get("rating")) or 0)
+    except (TypeError, ValueError):
+        rating = 0
+    if 0 < rating <= 10:
+        props["PlexRating"] = "%g" % rating
+        source = API(child).ratingtype()
+        if source != "default":
+            props["PlexRatingSource"] = source
     return rating_key
 
 
@@ -743,6 +1005,7 @@ def watchlater():
 def _download_watchlist():
     """Download every page of the provider Watchlist without using PMS paging."""
     url = WATCHLIST_URL
+    account_hash = discover_cache.active_account_hash()
     headers = clientinfo.getXArgsDeviceInfo(
         {"X-Plex-Token": utils.window("plex_token")}, include_token=False
     )
@@ -761,6 +1024,8 @@ def _download_watchlist():
             headerOptions=headers,
             timeout=DISCOVER_HTTP_TIMEOUT,
         )
+        if not discover_cache.account_matches(account_hash):
+            return None
         try:
             page.attrib
         except AttributeError:
@@ -780,6 +1045,9 @@ def _download_watchlist():
 
         page_size = len(page)
         if page_size == 0:
+            if start < total_size:
+                LOG.warning("Plex Watchlist ended before the declared total")
+                return None
             break
         start += page_size
 
@@ -795,6 +1063,8 @@ def watchlist(section_id=None):
     revalidate). Watchlist mutations drop the cache.
     """
     url = WATCHLIST_URL
+    membership_generation = plex_membership.generation()
+    account_hash = discover_cache.active_account_hash()
     freshness, cached_xmls = discover_cache.read_xml(url, "watchlist")
     listing_timer.mark("cache")
     if not cached_xmls:
@@ -819,13 +1089,17 @@ def watchlist(section_id=None):
         generation = discover_cache.watchlist_generation()
         xml = _download_watchlist()
         if xml is not None:
-            discover_cache.put_xml(url, [xml], "watchlist", generation=generation)
+            discover_cache.put_xml(url, [xml], "watchlist", account_hash=account_hash, generation=generation)
         listing_timer.mark("fetch")
     try:
         xml.attrib
     except AttributeError:
         LOG.error("Could not download watch list list from plex.tv")
         raise ListingException
+    if not discover_cache.account_matches(account_hash):
+        raise ListingException
+    if freshness != discover_cache.CACHE_STALE:
+        _publish_membership("watchlist", list(xml), account_hash, generation=membership_generation)
     show_listing(xml, None, section_id, False, "watchlist")
 
 
@@ -946,11 +1220,24 @@ def discover_hub(hub_id):
     if not metadata:
         LOG.info("No items in discover hub %s", hub_id)
         return
-    # Determine content type from first item
+    content_type = v.CONTENT_FROM_PLEX_TYPE.get(API(metadata[0]).plex_type, v.CONTENT_TYPE_FILE)
+    xbmcplugin.setContent(int(sys.argv[1]), content_type)
+    cards = _discover_cards(metadata, url)
+    cards = [widgets.prepare_listitem(card) for _, card, _ in cards]
+    cards = [widgets.create_listitem(card) for card in cards if card is not None]
+    cards = [card for card in cards if card is not None]
+    listing_timer.mark("build")
+    listing_timer.items(len(cards))
+    _add_community_cards(cards)
+    listing_timer.mark("add")
+
+
+def _discover_cards(metadata, url):
+    """Build ordered provider cards with exact local playback matches."""
+    if not metadata:
+        return []
     first_api = API(metadata[0])
     plex_type = first_api.plex_type
-    content_type = v.CONTENT_FROM_PLEX_TYPE.get(plex_type, v.CONTENT_TYPE_FILE)
-    xbmcplugin.setContent(int(sys.argv[1]), content_type)
     widgets.PLEX_TYPE = plex_type
     widgets.SYNCHED = False
     widgets.SECTION_ID = None
@@ -983,6 +1270,7 @@ def discover_hub(hub_id):
         local_api or provider_api for provider_api, local_api in tiles
     )
     listing_timer.mark("details")
+    favourite_keys, account_hash = _listing_favourites()
     all_items = []
     for provider_api, local_api in tiles:
         child = provider_api.xml
@@ -997,6 +1285,10 @@ def discover_hub(hub_id):
         if rating_key is None:
             continue
         item["extraproperties"]["PlexDiscoverDetail"] = "true"
+        if favourite_keys is not None and discover_cache.account_matches(account_hash):
+            item["extraproperties"]["PlexFavouriteHint"] = (
+                "present" if rating_key in favourite_keys else "absent"
+            )
         if local_api is None:
             item["file"] = utils.extend_url(
                 "plugin://%s" % v.ADDON_ID,
@@ -1009,15 +1301,65 @@ def discover_hub(hub_id):
             item["isFolder"] = False
             item["IsPlayable"] = "false"
         all_items.append(item)
-    all_items = [widgets.prepare_listitem(item) for item in all_items]
-    all_items = [widgets.create_listitem(item) for item in all_items
-                 if item is not None]
-    all_items = [item for item in all_items if item is not None]
-    listing_timer.mark("build")
-    listing_timer.items(len(all_items))
-    xbmcplugin.addDirectoryItems(int(sys.argv[1]), all_items, len(all_items))
-    listing_timer.mark("add")
-    xbmcplugin.addSortMethod(int(sys.argv[1]), xbmcplugin.SORT_METHOD_UNSORTED)
+    return [(item["file"], item, item.get("isFolder", False)) for item in all_items]
+
+
+def _listing_favourites():
+    """Load one complete favourite membership set before a provider row renders."""
+    try:
+        selections = json.loads(utils.settings("plex_favourite_lists") or "{}")
+    except (TypeError, ValueError):
+        return None, None
+    if not isinstance(selections, dict) or not selections:
+        return None, None
+    generation = plex_membership.generation()
+    account_hash = discover_cache.active_account_hash()
+    keys = _community().favourite_membership(cached_only=True)
+    if not discover_cache.account_matches(account_hash):
+        return None, None
+    plex_membership.publish_keys("favourites", keys, account_hash=account_hash, generation=generation)
+    if keys is None and _community().selected_list() is not None:
+        discover_cache.enqueue_refresh("https://community.plex.tv/api/favourites", "community_membership")
+    return keys, account_hash
+
+
+def _publish_membership(kind, metadata, account_hash=None, generation=None, keys=None):
+    """Project verified source metadata after the current PKC service starts."""
+    if not utils.window("PKC.Account.Hash"):
+        return False
+    return plex_membership.publish(kind, metadata, account_hash=account_hash, generation=generation, keys=keys)
+
+
+def _refresh_favourites(account_hash):
+    """Refresh selected-List membership in the existing idle cache worker."""
+    generation = plex_membership.generation()
+    selection = _community().selected_list()
+    if selection is None:
+        plex_membership.publish_keys("favourites", None, account_hash=account_hash)
+        return True
+    keys = _community().favourite_membership()
+    if keys is None or not discover_cache.account_matches(account_hash):
+        return False
+    metadata = []
+    hydrated = True
+    ordered = sorted(keys)
+    for start in range(0, len(ordered), 24):
+        url = plex_discover.METADATA_ITEM_URL % ",".join(ordered[start:start + 24])
+        xmls = _provider_xmls(url, (plex_discover.METADATA_PROVIDER_HOST,), "detail")
+        hydrated = hydrated and bool(xmls)
+        if not discover_cache.account_matches(account_hash) or _community().selected_list() != selection:
+            return False
+        metadata.extend(child for xml in xmls for child in xml)
+    if _community().selected_list() != selection or not discover_cache.account_matches(account_hash):
+        return False
+    if not _publish_membership("favourites", metadata if hydrated else None, account_hash,
+                               generation=generation, keys=keys):
+        return False
+    if (plex_membership.generation() != generation
+            or _community().selected_list() != selection):
+        return False
+    utils.window("PKC.Favourites.ListName", value=selection["name"])
+    return hydrated
 
 
 def discover_detail(rating_key):
@@ -1050,7 +1392,7 @@ def discover_detail(rating_key):
     if not metadata:
         LOG.error("Could not load Plex Discover metadata for %s", rating_key)
         return False
-    if metadata[0].get("type") not in DISCOVER_DETAIL_TYPES:
+    if metadata[0].get("type") not in LIST_DETAIL_TYPES:
         LOG.info("Ignoring unsupported Plex Discover type for %s", rating_key)
         return False
     # Provider rating keys are global Plex Discover identities, not local PMS

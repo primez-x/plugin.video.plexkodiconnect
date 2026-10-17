@@ -230,9 +230,9 @@ def _generate_content(api):
                 'trailer': api.trailer(),
                 'tvshowtitle': api.show_title(),
                 'uniqueid': {
-                    'imdbnumber': api.guids.get('imdb') or '',
-                    'tvdb_id': api.guids.get('tvdb') or '',
-                    'tmdb_id': api.guids.get('tmdb') or ''
+                    'imdb': api.guids.get('imdb') or '',
+                    'tvdb': api.guids.get('tvdb') or '',
+                    'tmdb': api.guids.get('tmdb') or ''
                 },
                 'votes': '0',  # [str]!
                 'writer': api.writers(),  # list of [str]
@@ -292,6 +292,22 @@ def _generate_content(api):
         url = url.replace('plugin.video.plexkodiconnect.tvshows',
                           'plugin.video.plexkodiconnect')
     item['file'] = url
+    if plex_type in ('movie', 'show', 'season', 'episode'):
+        from .plex_membership import canonical_guid
+
+        guid = canonical_guid(api.xml.get('guid'), plex_type)
+        if guid:
+            item.setdefault('uniqueid', {})['plex'] = guid
+        props = item.setdefault('extraproperties', {})
+        account_hash = utils.window('PKC.Account.Hash')
+        if account_hash:
+            props['PlexMembershipAccount'] = account_hash
+        rating = api.rating()
+        if 0 < rating <= 10:
+            props['PlexRating'] = '%g' % rating
+            source = api.ratingtype()
+            if source != 'default':
+                props['PlexRatingSource'] = source
     return item
 
 
@@ -431,6 +447,10 @@ def prepare_listitem(item, listing_key = None):
             if len(subtitles) > 0:
                 properties["SubtitleLanguage"] = subtitles[0].get('language', '')
                 item["streamdetails"]["subtitle"] = subtitles[0]
+            # create_listitem takes one stream dict per type; absent streams become empty dicts
+            for kind in ('video', 'audio', 'subtitle'):
+                if not item["streamdetails"].get(kind):
+                    item["streamdetails"][kind] = {}
         else:
             item["streamdetails"] = {}
             item["streamdetails"]["video"] = {'duration': item.get('duration', 0)}
@@ -659,6 +679,10 @@ def create_listitem(item, as_tuple=True, offscreen=True,
 
             tags = liz.getVideoInfoTag() # type: xbmc.InfoTagVideo
 
+            identities = {key: str(value) for key, value in item.get("uniqueid", {}).items() if value}
+            if identities:
+                tags.setUniqueIDs(identities)
+
             if "dbid" in infolabels:
                 tags.setDbId(int(infolabels["dbid"]))
             if "year" in infolabels:
@@ -805,21 +829,21 @@ def _create_VideoStreamDetail(stream):
     '''Creates a VideoStreamDetail object from a video stream'''
     stream_detail = xbmc.VideoStreamDetail()
 
-    if "codec" in stream:
+    if stream.get("codec") is not None:
         stream_detail.setCodec(str(stream["codec"]))
-    if "aspect" in stream:
+    if stream.get("aspect") is not None:
         stream_detail.setAspect(round(stream["aspect"], 2))
-    if "width" in stream:
+    if stream.get("width") is not None:
         stream_detail.setWidth(int(stream["width"]))
-    if "height" in stream:
+    if stream.get("height") is not None:
         stream_detail.setHeight(int(stream["height"]))
-    if "duration" in stream:
+    if stream.get("duration") is not None:
         stream_detail.setDuration(int(stream["duration"]))
-    if "stereomode" in stream:
+    if stream.get("stereomode") is not None:
         stream_detail.setStereoMode(str(stream["stereomode"]))
-    if "language" in stream:
+    if stream.get("language") is not None:
         stream_detail.setLanguage(str(stream["language"]))
-    if "hdrtype" in stream:
+    if stream.get("hdrtype") is not None:
         stream_detail.setHDRType(str(stream["hdrtype"]))
 
     return stream_detail
@@ -829,11 +853,11 @@ def _create_AudioStreamDetail(stream):
     '''Creates a AudioStreamDetail object from an audio stream'''
     stream_detail = xbmc.AudioStreamDetail()
 
-    if "channels" in stream:
+    if stream.get("channels") is not None:
         stream_detail.setChannels(int(stream["channels"]))
-    if "codec" in stream:
+    if stream.get("codec") is not None:
         stream_detail.setCodec(str(stream["codec"]))
-    if "language" in stream:
+    if stream.get("language") is not None:
         stream_detail.setLanguage(str(stream["language"]))
 
     return stream_detail
@@ -843,7 +867,7 @@ def _create_SubtitleStreamDetail(stream):
     '''Creates a SubtitleStreamDetail object from a subtitle stream'''
     stream_detail = xbmc.SubtitleStreamDetail()
 
-    if "language" in stream:
+    if stream.get("language") is not None:
         stream_detail.setLanguage(str(stream["language"]))
 
     return stream_detail

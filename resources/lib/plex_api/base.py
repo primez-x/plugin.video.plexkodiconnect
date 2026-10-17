@@ -159,6 +159,14 @@ class Base(object):
     @property
     def guids(self):
         self._scan_children()
+        from ..plex_membership import canonical_guid
+        child_guid = self._guids.pop('plex', None)
+        if child_guid and not child_guid.startswith('plex://'):
+            child_guid = 'plex://' + child_guid
+        guid = (canonical_guid(self.plex_guid, self.plex_type)
+                or canonical_guid(child_guid, self.plex_type))
+        if guid:
+            self._guids['plex'] = guid
         return self._guids
 
     def check_db(self, plexdb=None):
