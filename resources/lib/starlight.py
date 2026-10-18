@@ -23,8 +23,8 @@ PERSON_KEY = re.compile(r'[0-9a-f]{24}')
 SLUG = re.compile(r'[a-z0-9][a-z0-9-]{0,80}')
 
 
-def route(name, **params):
-    return PREFIX + name + ('?' + urlencode(params) if params else '')
+def route(endpoint, **params):
+    return PREFIX + endpoint + ('?' + urlencode(params) if params else '')
 
 
 def parse_route(path, params):
@@ -289,6 +289,8 @@ def build_cards(records, source, online=False, account_hash=None):
         props = item.setdefault('extraproperties', {})
         key = props['ratingKey']
         record = by_key[key]
+        if '_role' in record:
+            item['label2'] = record['_role']
         local = bool(item.get('movieid') or item.get('tvshowid') or props.get('DBID'))
         if online and local:
             continue
@@ -371,7 +373,10 @@ def _person(params):
             'query': params['name'], 'searchTypes': 'people', 'searchProviders': 'discover', 'includeMetadata': 1})))
         matches = [p for p in people if p.get('title', '').casefold() == params['name'].strip().casefold()]
         if len(matches) != 1:
-            xbmc.executebuiltin('ActivateWindow(11103)')
+            if (not params.get('request')
+                    and window.getProperty('Starlight.Person.Request') == request
+                    and discover_cache.account_matches(account)):
+                xbmc.executebuiltin('ActivateWindow(11103)')
             return
         key = matches[0].get('metadataId')
         if not PERSON_KEY.fullmatch(str(key)):
@@ -379,7 +384,8 @@ def _person(params):
     people = _fetch(DISCOVER + '/library/people/' + key).get('Metadata', [])
     if people and discover_cache.account_matches(account):
         publish_person(window, request, person_properties(people[0]))
-    if (window.getProperty('Starlight.Person.Request') == request
+    if (not params.get('request')
+            and window.getProperty('Starlight.Person.Request') == request
             and discover_cache.account_matches(account)):
         xbmc.executebuiltin('ActivateWindow(11103)')
 
@@ -421,6 +427,9 @@ def dispatch(path, params):
             request = watchlist.begin_key(args, 'present' if params['action'] == 'add' else 'absent')
             if request is not None:
                 transfer.plex_command('WATCHLIST_DETAIL_KEY?' + urlencode(request))
+            else:
+                command = 'WATCHLIST_ADD_KEY' if params['action'] == 'add' else 'WATCHLIST_REMOVE_KEY'
+                transfer.plex_command(command + '?' + urlencode(args))
         elif name == 'person':
             _person(params)
         elif name == 'discover':
@@ -493,6 +502,17 @@ def dispatch(path, params):
                 if cards:
                     card = widgets.create_listitem(widgets.prepare_listitem(cards[0][1]), as_tuple=False)
                     if discover_cache.account_matches(account):
+                        props = cards[0][1].get('extraproperties', {})
+                        if props.get('Starlight.InLibrary') == 'false':
+                            window = xbmcgui.Window(10000)
+                            window.setProperty(watchlist.DETAIL_IDENTITY, 'plex.' + params['rating_key'])
+                            window.clearProperty(watchlist.DETAIL_STATE)
+                            window.clearProperty(watchlist.DETAIL_PENDING)
+                            args = {'rating_key': params['rating_key'],
+                                    'plex_type': 'show' if cards[0][1].get('type') in ('show', 'tvshow') else 'movie',
+                                    'watchlist_hint': props.get('PlexWatchlistHint', '')}
+                            watchlist.bootstrap_status_key(args)
+                            transfer.plex_command('WATCHLIST_STATUS_KEY?' + urlencode(args))
                         xbmcgui.Dialog().info(card)
     except entrypoint.ListingException:
         if directory:

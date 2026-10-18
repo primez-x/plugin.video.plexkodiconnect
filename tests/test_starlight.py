@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +35,42 @@ class StarlightTests(unittest.TestCase):
             with self.subTest(params=params), self.assertRaises(ValueError):
                 self.provider.parse_route('plugin://plugin.video.plexkodiconnect/starlight/watchlist', params)
         self.assertEqual(self.provider.parse_route('plugin://plugin.video.plexkodiconnect/starlight/search', {'query':'Alien'})[0], 'search')
+
+    def test_person_route_preserves_the_name_query(self):
+        self.assertEqual(
+            self.provider.route('person', name='Leonardo DiCaprio', request='current'),
+            'plugin://plugin.video.plexkodiconnect/starlight/person?name=Leonardo+DiCaprio&request=current')
+
+    def test_watchlist_route_queues_without_an_open_detail_page(self):
+        from test_discover_listing import load_entrypoint
+        entrypoint, _, _, _ = load_entrypoint()
+        import resources.lib as package
+        app, transfer, watchlist = Mock(), Mock(), Mock()
+        watchlist.begin_key.return_value = None
+        with patch.object(package, 'app', app, create=True), \
+                patch.object(package, 'transfer', transfer, create=True), \
+                patch.object(package, 'watchlist', watchlist, create=True), \
+                patch.object(sys, 'argv', ['plugin://plugin.video.plexkodiconnect', '-1']):
+            self.provider.dispatch(self.provider.route('watchlist'),
+                                   {'rating_key':'abc123', 'action':'add', 'type':'movie'})
+        transfer.plex_command.assert_called_once_with(
+            'WATCHLIST_ADD_KEY?rating_key=abc123&plex_type=movie')
+
+    def test_watchlist_route_preserves_live_detail_projection(self):
+        from test_discover_listing import load_entrypoint
+        load_entrypoint()
+        import resources.lib as package
+        app, transfer, watchlist = Mock(), Mock(), Mock()
+        watchlist.begin_key.return_value = {'rating_key':'abc123', 'desired':'present',
+                                           'request_id':'current'}
+        with patch.object(package, 'app', app, create=True), \
+                patch.object(package, 'transfer', transfer, create=True), \
+                patch.object(package, 'watchlist', watchlist, create=True), \
+                patch.object(sys, 'argv', ['plugin://plugin.video.plexkodiconnect', '-1']):
+            self.provider.dispatch(self.provider.route('watchlist'),
+                                   {'rating_key':'abc123', 'action':'add', 'type':'movie'})
+        transfer.plex_command.assert_called_once_with(
+            'WATCHLIST_DETAIL_KEY?rating_key=abc123&desired=present&request_id=current')
 
     def test_watchlist_actions_use_encoded_canonical_keys(self):
         route = self.provider.route('watchlist', rating_key='abc123', action='add')
@@ -75,7 +111,10 @@ class StarlightTests(unittest.TestCase):
         entrypoint, _, _, _ = load_entrypoint()
         entrypoint.API.ratingtype = lambda self: None
         entrypoint.listing_timer.mark = lambda *args: None
-        cards = self.provider.build_cards(fixture('hub')['Metadata'], 'catalogue')
+        records = fixture('hub')['Metadata']
+        records[0]['_role'] = 'Executive Producer'
+        cards = self.provider.build_cards(records, 'catalogue')
+        self.assertEqual(cards[0][1]['label2'], 'Executive Producer')
         self.assertEqual(len(cards), 5)
         for rank, (path, card, folder) in enumerate(cards, 1):
             props = card['extraproperties']
@@ -153,6 +192,48 @@ class StarlightTests(unittest.TestCase):
         window = Window()
         self.assertFalse(self.provider.publish_person(window, 'old', {'Biography':'wrong'}))
         self.assertNotIn('Starlight.Person.Biography', window.fields)
+
+    def test_online_info_initializes_the_existing_watchlist_status_contract(self):
+        from test_discover_listing import load_entrypoint
+        entrypoint, _, _, _ = load_entrypoint()
+        import resources.lib as package
+        gui, transfer, watchlist, app = Mock(), Mock(), Mock(), Mock()
+        watchlist.DETAIL_IDENTITY = 'PKC.Watchlist.Detail.Identity'
+        watchlist.DETAIL_STATE = 'PKC.Watchlist.Detail.State'
+        watchlist.DETAIL_PENDING = 'PKC.Watchlist.Detail.Pending'
+        card = {'extraproperties': {'Starlight.InLibrary':'false', 'PlexWatchlistHint':'absent'},
+                'type':'movie'}
+        with patch.dict(sys.modules, {'xbmcgui':gui}), \
+                patch.object(package, 'transfer', transfer, create=True), \
+                patch.object(package, 'watchlist', watchlist, create=True), \
+                patch.object(package, 'app', app, create=True), \
+                patch.object(self.provider, '_fetch', return_value={'Metadata':[]}), \
+                patch.object(self.provider, 'build_cards', return_value=[('',card,False)]):
+            self.provider.dispatch(self.provider.route('item'), {'rating_key':'abc123'})
+        gui.Window.return_value.setProperty.assert_any_call('PKC.Watchlist.Detail.Identity', 'plex.abc123')
+        transfer.plex_command.assert_called_once_with(
+            'WATCHLIST_STATUS_KEY?rating_key=abc123&plex_type=movie&watchlist_hint=absent')
+
+    def test_requested_person_never_reopens_the_page(self):
+        from test_discover_listing import load_entrypoint
+        entrypoint, _, _, _ = load_entrypoint()
+        window = Mock()
+        window.getProperty.return_value = 'current'
+        xbmc = Mock()
+        gui = Mock()
+        gui.Window.return_value = window
+        for records in ([], fixture('person')['Metadata']):
+            with self.subTest(found=bool(records)):
+                xbmc.reset_mock()
+                with patch.dict(sys.modules, {'xbmc': xbmc, 'xbmcgui': gui}), \
+                        patch.object(self.provider, '_fetch', return_value={'Metadata': records}):
+                    self.provider._person({'person_key': '1234567890abcdef12345678',
+                                           'request': 'current'})
+                xbmc.executebuiltin.assert_not_called()
+        with patch.dict(sys.modules, {'xbmc': xbmc, 'xbmcgui': gui}), \
+                patch.object(self.provider, '_fetch', return_value={}):
+            self.provider._person({'name': 'No exact match', 'request': 'current'})
+        xbmc.executebuiltin.assert_not_called()
 
     def test_empty_image_gallery_uses_public_person_portraits(self):
         images = self.provider.person_images({}, fixture('person')['Metadata'][0])
