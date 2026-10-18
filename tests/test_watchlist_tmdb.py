@@ -918,59 +918,6 @@ class TmdbWatchlistTests(unittest.TestCase):
         self.assertEqual(properties[watchlist.DETAIL_REQUEST_ID], request["request_id"])
         self.assertEqual(properties[watchlist.DETAIL_REVISION], request["request_id"])
 
-    def test_monitor_status_requires_current_tmdb_helper_details(self):
-        service_entry, _, _, properties = load_service_entry()
-        watchlist = service_entry.watchlist
-        watchlist.WATCHLIST_MONITOR_ATTEMPTS = 1
-        properties[watchlist.DETAIL_CONTEXT_LABEL] = "Current Title"
-        properties[watchlist.DETAIL_CONTEXT_DBTYPE] = "movie"
-        properties[watchlist.TMDB_MONITOR_ID] = "603"
-        properties[watchlist.TMDB_MONITOR_TYPE] = "movie"
-        properties[watchlist.TMDB_MONITOR_LABEL] = "Previous Title"
-        properties[watchlist.TMDB_MONITOR_DBTYPE] = "movie"
-
-        self.assertFalse(watchlist.status_monitor())
-        self.assertNotIn(watchlist.DETAIL_IDENTITY, properties)
-
-        properties[watchlist.TMDB_MONITOR_LABEL] = "Current Title"
-        calls = []
-        watchlist.status_tmdb = lambda params: calls.append(params) or True
-        writes = []
-        original_window = watchlist.utils.window
-
-        def recording_window(key, value=None, clear=False):
-            if value is not None:
-                writes.append(key)
-            return original_window(key, value=value, clear=clear)
-
-        watchlist.utils.window = recording_window
-        try:
-            self.assertTrue(watchlist.status_monitor())
-        finally:
-            watchlist.utils.window = original_window
-
-        self.assertLess(
-            writes.index(watchlist.DETAIL_IDENTITY),
-            writes.index(watchlist.DETAIL_TMDB_ID),
-        )
-        self.assertLess(
-            writes.index(watchlist.DETAIL_TMDB_ID),
-            writes.index(watchlist.DETAIL_TMDB_TYPE),
-        )
-        self.assertEqual(properties[watchlist.DETAIL_TMDB_ID], "603")
-        self.assertEqual(properties[watchlist.DETAIL_TMDB_TYPE], "movie")
-        self.assertEqual(properties[watchlist.DETAIL_IDENTITY], "tmdb.movie.603")
-        self.assertEqual(
-            calls,
-            [
-                {
-                    "tmdb_id": "603",
-                    "tmdb_type": "movie",
-                    "watchlist_identity": "tmdb.movie.603",
-                }
-            ],
-        )
-
     def test_direct_discovery_rating_key_uses_the_same_checked_action(self):
         service_entry, xbmc, notifications, _ = load_service_entry()
         downloader = DownloadRecorder(

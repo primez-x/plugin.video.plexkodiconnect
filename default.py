@@ -41,7 +41,6 @@ WATCHLIST_ACTION_MODES = frozenset(
         "watchlist_remove_tmdb",
         "watchlist_status_key",
         "watchlist_status_tmdb",
-        "watchlist_status_monitor",
         "watchlist_status_search",
         "watchlist_add_search",
         "watchlist_remove_search",
@@ -62,6 +61,11 @@ def _enqueue_watchlist_detail(command, request):
 
 
 def triage(mode, params, path, arguments, itemid):
+    if path.startswith('plugin://plugin.video.plexkodiconnect/starlight/'):
+        from resources.lib import starlight
+
+        starlight.dispatch(path, params)
+        return
     if mode in ("discover_reviews", "discover_lists", "discover_list",
                 "discover_review_show", "discover_favourites_select"):
         from resources.lib import app
@@ -166,9 +170,6 @@ def triage(mode, params, path, arguments, itemid):
     elif mode == "watchlist_status_tmdb":
         _watchlist().bootstrap_status_tmdb(params)
         transfer.plex_command("WATCHLIST_STATUS_TMDB?%s" % urlencode(params))
-        return
-    elif mode == "watchlist_status_monitor":
-        transfer.plex_command("WATCHLIST_STATUS_MONITOR")
         return
     elif mode == "watchlist_status_search":
         _watchlist().bootstrap_status_search(params)

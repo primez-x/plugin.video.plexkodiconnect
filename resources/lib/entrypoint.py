@@ -1290,8 +1290,7 @@ def _discover_cards(metadata, url, account_hash=None):
     widgets.SYNCHED = False
     widgets.SECTION_ID = None
     widgets.KEY = None
-    # Arctic Fuse opens the native information dialog directly from a hub
-    # tile, rather than first invoking that tile's discover_detail route.
+    # Starlight opens native information directly from a hub card.
     # Resolve the provider GUID before emitting the tile so a synced library
     # item carries its normal DBID and playable PKC path into that dialog.
     # A library item matched by a legacy agent has no plex:// guid; it is
@@ -1482,8 +1481,8 @@ def discover_detail(rating_key):
         props["plexguid"] = guid
     props["PlexDiscoverDetail"] = "true"
     if not library_match:
-        # The provider item has no local PMS playback path. Present it as
-        # non-playable so Arctic Fuse's first action remains Watchlist.
+        # The provider title has no local PMS playback path.
+        # Starlight presents the Watchlist action before playback.
         item["file"] = ""
         item["isFolder"] = False
         item["IsPlayable"] = "false"

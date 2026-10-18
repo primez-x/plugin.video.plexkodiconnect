@@ -340,9 +340,6 @@ class Service(object):
     def watchlist_status_tmdb(self, raw_params):
         return watchlist.status_tmdb(dict(utils.parse_qsl(raw_params)))
 
-    def watchlist_status_monitor(self):
-        return watchlist.status_monitor()
-
     def watchlist_status_search(self, raw_params):
         return watchlist.status_search(dict(utils.parse_qsl(raw_params)))
 
@@ -1021,11 +1018,6 @@ class Service(object):
                         self.watchlist_status_tmdb,
                         None,
                         plex_command.replace("WATCHLIST_STATUS_TMDB?", ""),
-                    )
-                    normal_priority = True
-                elif plex_command == "WATCHLIST_STATUS_MONITOR":
-                    task = backgroundthread.FunctionAsTask(
-                        self.watchlist_status_monitor, None
                     )
                     normal_priority = True
                 elif plex_command.startswith("WATCHLIST_STATUS_SEARCH?"):

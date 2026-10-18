@@ -1,0 +1,237 @@
+{
+  "MediaContainer": {
+    "size": 2,
+    "SearchResults": [
+      {
+        "id": "external",
+        "title": "More Ways To Watch",
+        "size": 10,
+        "SearchResult": [
+          {
+            "Metadata": {
+              "art": "https://metadata-static.plex.tv/3/gracenote/3fe3b4279307b579ee73b687c0a7b0a8.jpg",
+              "duration": 7020000,
+              "guid": "plex://movie/5d7768254de0ee001fcc83a5",
+              "key": "/library/metadata/5d7768254de0ee001fcc83a5",
+              "originallyAvailableAt": "1979-05-25",
+              "ratingKey": "5d7768254de0ee001fcc83a5",
+              "slug": "alien",
+              "thumb": "https://metadata-static.plex.tv/7/gracenote/73a3a76a04f8c0f4573131e23564ee6a.jpg",
+              "title": "Alien",
+              "type": "movie",
+              "year": 1979,
+              "Genre": [
+                {
+                  "id": "5d9c046c2192ba001f2ff6c4",
+                  "key": "/library/categories/sci-fi",
+                  "ratingKey": "genre_5d9c046c2192ba001f2ff6c4",
+                  "slug": "sci-fi",
+                  "tag": "Science Fiction",
+                  "type": "hub"
+                },
+                {
+                  "id": "5d9c046c7b5c2e001e64c612",
+                  "key": "/library/categories/horror",
+                  "ratingKey": "genre_5d9c046c7b5c2e001e64c612",
+                  "slug": "horror",
+                  "tag": "Horror",
+                  "type": "hub"
+                }
+              ]
+            }
+          },
+          {
+            "Metadata": {
+              "art": "https://image.tmdb.org/t/p/original/sVxit4vKQZnrHejeQupBYadP22g.jpg",
+              "duration": 3300000,
+              "guid": "plex://show/66391fb2895fabeb264433d1",
+              "key": "/library/metadata/66391fb2895fabeb264433d1/children",
+              "originallyAvailableAt": "2025-08-12",
+              "ratingKey": "66391fb2895fabeb264433d1",
+              "slug": "alien-earth",
+              "thumb": "https://image.tmdb.org/t/p/original/yueXS3q8BtoWekcHOATFHicLl3e.jpg",
+              "title": "Alien: Earth",
+              "type": "show",
+              "year": 2025,
+              "Genre": [
+                {
+                  "id": "5d9c046c705e7a001e6c8d9a",
+                  "key": "/library/categories/drama",
+                  "ratingKey": "genre_5d9c046c705e7a001e6c8d9a",
+                  "slug": "drama",
+                  "tag": "Drama",
+                  "type": "hub"
+                },
+                {
+                  "id": "5d9c046c7b5c2e001e64c612",
+                  "key": "/library/categories/horror",
+                  "ratingKey": "genre_5d9c046c7b5c2e001e64c612",
+                  "slug": "horror",
+                  "tag": "Horror",
+                  "type": "hub"
+                },
+                {
+                  "id": "5d9c046c2192ba001f2ff6c4",
+                  "key": "/library/categories/sci-fi",
+                  "ratingKey": "genre_5d9c046c2192ba001f2ff6c4",
+                  "slug": "sci-fi",
+                  "tag": "Science Fiction",
+                  "type": "hub"
+                },
+                {
+                  "id": "5d9c046c2192ba001f2ff6c5",
+                  "key": "/library/categories/thriller",
+                  "ratingKey": "genre_5d9c046c2192ba001f2ff6c5",
+                  "slug": "thriller",
+                  "tag": "Thriller",
+                  "type": "hub"
+                },
+                {
+                  "id": "5d9c07e808fddd001f28de45",
+                  "key": "/library/categories/sci-fi-and-fantasy",
+                  "ratingKey": "genre_5d9c07e808fddd001f28de45",
+                  "slug": "sci-fi-and-fantasy",
+                  "tag": "Sci-Fi & Fantasy",
+                  "type": "hub"
+                }
+              ]
+            }
+          },
+          {
+            "Metadata": {
+              "art": "https://metadata-static.plex.tv/b/gracenote/bd1d0692738b74388ac236221e342912.jpg",
+              "duration": 8220000,
+              "guid": "plex://movie/5d776827961905001eb91337",
+              "key": "/library/metadata/5d776827961905001eb91337",
+              "originallyAvailableAt": "1986-07-18",
+              "ratingKey": "5d776827961905001eb91337",
+              "slug": "aliens",
+              "thumb": "https://metadata-static.plex.tv/a/gracenote/a880c4f7d245464cf6fa9bf243922add.jpg",
+              "title": "Aliens",
+              "type": "movie",
+              "year": 1986,
+              "Genre": [
+                {
+                  "id": "5d9c046c2192ba001f2ff6c2",
+                  "key": "/library/categories/action",
+                  "ratingKey": "genre_5d9c046c2192ba001f2ff6c2",
+                  "slug": "action",
+                  "tag": "Action",
+                  "type": "hub"
+                },
+                {
+                  "id": "5d9c046c2192ba001f2ff6c3",
+                  "key": "/library/categories/adventure",
+                  "ratingKey": "genre_5d9c046c2192ba001f2ff6c3",
+                  "slug": "adventure",
+                  "tag": "Adventure",
+                  "type": "hub"
+                },
+                {
+                  "id": "5d9c046c2192ba001f2ff6c4",
+                  "key": "/library/categories/sci-fi",
+                  "ratingKey": "genre_5d9c046c2192ba001f2ff6c4",
+                  "slug": "sci-fi",
+                  "tag": "Science Fiction",
+                  "type": "hub"
+                },
+                {
+                  "id": "5d9c046c7b5c2e001e64c612",
+                  "key": "/library/categories/horror",
+                  "ratingKey": "genre_5d9c046c7b5c2e001e64c612",
+                  "slug": "horror",
+                  "tag": "Horror",
+                  "type": "hub"
+                },
+                {
+                  "id": "5d9c046c2192ba001f2ff6c5",
+                  "key": "/library/categories/thriller",
+                  "ratingKey": "genre_5d9c046c2192ba001f2ff6c5",
+                  "slug": "thriller",
+                  "tag": "Thriller",
+                  "type": "hub"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "id": "people",
+        "title": "People",
+        "size": 10,
+        "SearchResult": [
+          {
+            "Directory": {
+              "bornAt": "1989-11-22",
+              "key": "/library/people/5d776838961905001eb94b38",
+              "metadataId": "5d776838961905001eb94b38",
+              "slug": "alden-ehrenreich",
+              "thumb": "https://metadata-static.plex.tv/b/people/bf97ec3a6f4f3976592d75cdd3682525.jpg",
+              "title": "Alden Ehrenreich",
+              "type": "person",
+              "CreditType": [
+                {
+                  "type": "actor",
+                  "count": 111,
+                  "title": "Actor"
+                },
+                {
+                  "type": "director",
+                  "count": 1,
+                  "title": "Director"
+                },
+                {
+                  "type": "writer",
+                  "count": 1,
+                  "title": "Writer"
+                }
+              ]
+            }
+          },
+          {
+            "Directory": {
+              "bornAt": "1924-09-13",
+              "key": "/library/people/5d7768244de0ee001fcc80d8",
+              "metadataId": "5d7768244de0ee001fcc80d8",
+              "slug": "norman-alden",
+              "thumb": "https://metadata-static.plex.tv/1/people/14231565d31cddfee8aab59dce8a9448.jpg",
+              "title": "Norman Alden",
+              "type": "person",
+              "CreditType": [
+                {
+                  "type": "actor",
+                  "count": 1155,
+                  "title": "Actor"
+                },
+                {
+                  "type": "producer",
+                  "count": 1,
+                  "title": "Producer"
+                }
+              ]
+            }
+          },
+          {
+            "Directory": {
+              "bornAt": "1983-11-28",
+              "key": "/library/people/5d77696f96b655001fdced26",
+              "metadataId": "5d77696f96b655001fdced26",
+              "slug": "alien-huang",
+              "thumb": "https://metadata-static.plex.tv/5/people/53ac46062d3ba7baaa7aaf7212761ade.jpg",
+              "title": "Alien Huang",
+              "type": "person",
+              "CreditType": [
+                {
+                  "type": "actor",
+                  "count": 675,
+                  "title": "Actor"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

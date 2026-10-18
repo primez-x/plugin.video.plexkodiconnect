@@ -1,0 +1,207 @@
+{
+  "MediaContainer": {
+    "size": 4,
+    "CreditGroup": [
+      {
+        "title": "Actor",
+        "type": "actor",
+        "Credit": [
+          {
+            "order": 6,
+            "role": "Felicia (voice)",
+            "Metadata": {
+              "art": "https://metadata-static.plex.tv/3/gracenote/31892f820d74deeb8a7af1dcde18c364.jpg",
+              "key": "/library/metadata/5d776c817a53e9001e744a8e",
+              "originallyAvailableAt": "2027-06-30T00:00:00.000Z",
+              "ratingKey": "5d776c817a53e9001e744a8e",
+              "slug": "shrek-5-2027",
+              "thumb": "https://metadata-static.plex.tv/7/gracenote/7d97ee047e21d5184a577006784f4fc3.jpg",
+              "title": "Shrek 5",
+              "type": "movie",
+              "year": 2027
+            }
+          },
+          {
+            "order": 2,
+            "role": "Chani",
+            "Metadata": {
+              "art": "https://metadata-static.plex.tv/2/gracenote/2cf533df74cb1a2c79d155441d1da4cf.jpg",
+              "key": "/library/metadata/65d514b7e0e20b8c84ece2f6",
+              "originallyAvailableAt": "2026-12-15T00:00:00.000Z",
+              "ratingKey": "65d514b7e0e20b8c84ece2f6",
+              "slug": "dune-part-three-2026",
+              "thumb": "https://metadata-static.plex.tv/1/gracenote/1ef94b72ea24a01c09b34f0f82ac6129.jpg",
+              "title": "Dune: Part Three",
+              "type": "movie",
+              "year": 2026
+            }
+          },
+          {
+            "order": 5,
+            "role": "Cast",
+            "Metadata": {
+              "key": "/library/metadata/6ab4e9c37837f5eaa5b31ca1",
+              "originallyAvailableAt": "2026-09-22T00:00:00.000Z",
+              "ratingKey": "6ab4e9c37837f5eaa5b31ca1",
+              "slug": "becoming-zendaya",
+              "thumb": "https://m.media-amazon.com/images/M/MV5BZjkwMDFkZmMtMjkwOS00MGFhLTg0YmUtYmI0YmY2Y2E0ZDRiXkEyXkFqcGc@._V1_.jpg",
+              "title": "Becoming Zendaya",
+              "type": "movie",
+              "year": 2026
+            }
+          }
+        ]
+      },
+      {
+        "title": "Producer",
+        "type": "producer",
+        "Credit": [
+          {
+            "order": 4,
+            "Metadata": {
+              "art": "https://metadata-static.plex.tv/3/gracenote/3800c7c46d72d29899955f04b4d1a908.jpg",
+              "key": "/library/metadata/61bd9c29bbaecd52f2fc603b",
+              "originallyAvailableAt": "2024-04-18T00:00:00.000Z",
+              "ratingKey": "61bd9c29bbaecd52f2fc603b",
+              "slug": "challengers-2024",
+              "thumb": "https://metadata-static.plex.tv/3/gracenote/335ac84756118abac44bd799e4089213.jpg",
+              "title": "Challengers",
+              "type": "movie",
+              "year": 2024
+            }
+          },
+          {
+            "order": 13,
+            "Metadata": {
+              "art": "https://metadata-static.plex.tv/a/gracenote/af854b3c5cd1a1d6e39929e07a95afc2.jpg",
+              "key": "/library/metadata/5f07203a819d4d004087d66e",
+              "originallyAvailableAt": "2021-02-05T00:00:00.000Z",
+              "ratingKey": "5f07203a819d4d004087d66e",
+              "slug": "malcolm-and-marie",
+              "thumb": "https://metadata-static.plex.tv/0/gracenote/0b3c10c843bfabe9a269ce8441c8302a.jpg",
+              "title": "Malcolm & Marie",
+              "type": "movie",
+              "year": 2021
+            }
+          },
+          {
+            "order": 27,
+            "role": "Executive Producer",
+            "Metadata": {
+              "art": "https://image.tmdb.org/t/p/original/mez2Z3WqlPKNXpi7mWoiiE5guE9.jpg",
+              "key": "/library/metadata/5d9c091b170e24001f2af270/children",
+              "originallyAvailableAt": "2019-06-16T00:00:00.000Z",
+              "ratingKey": "5d9c091b170e24001f2af270",
+              "slug": "euphoria-us",
+              "thumb": "https://image.tmdb.org/t/p/original/aJrG7OkoTMPWG5c8opz8a93AZPY.jpg",
+              "title": "Euphoria (US)",
+              "type": "show",
+              "year": 2019
+            }
+          }
+        ]
+      },
+      {
+        "title": "Appearances",
+        "type": "appeared",
+        "Credit": [
+          {
+            "order": 125,
+            "role": "Self - Presenter & Nominee",
+            "Metadata": {
+              "key": "/library/metadata/69295e359e58d72c9e9c50db",
+              "originallyAvailableAt": "2026-09-14T00:00:00.000Z",
+              "ratingKey": "69295e359e58d72c9e9c50db",
+              "slug": "the-78th-primetime-emmy-awards",
+              "thumb": "https://image.tmdb.org/t/p/original/4JdyYMwkFoOJlRHhzuoGw5u3D0C.jpg",
+              "title": "The 78th Primetime Emmy Awards",
+              "type": "movie",
+              "year": 2026
+            }
+          },
+          {
+            "order": 24,
+            "role": "Self (archive Footage)",
+            "Metadata": {
+              "art": "https://image.tmdb.org/t/p/original/fQiNGtgo9gEpyOIxX29FtUHpcaD.jpg",
+              "key": "/library/metadata/6a5a728d1a76ab3259be98c8",
+              "originallyAvailableAt": "2026-07-24T00:00:00.000Z",
+              "ratingKey": "6a5a728d1a76ab3259be98c8",
+              "slug": "euphoria-a-look-back",
+              "thumb": "https://image.tmdb.org/t/p/original/1us6iYG7P600BgSdwjb6mFYCP97.jpg",
+              "title": "Euphoria: A Look Back",
+              "type": "movie",
+              "year": 2026
+            }
+          },
+          {
+            "order": 24,
+            "role": "Self - Mj",
+            "Metadata": {
+              "art": "https://metadata-static.plex.tv/d/gracenote/d234c9ec0b5c1ae7d7f797f46a636fd3.jpg",
+              "key": "/library/metadata/6a5a72965a0b4726f50c29a5",
+              "originallyAvailableAt": "2026-07-15T00:00:00.000Z",
+              "ratingKey": "6a5a72965a0b4726f50c29a5",
+              "slug": "generations-the-evolution-of-spider-man",
+              "thumb": "https://metadata-static.plex.tv/5/gracenote/5f88f48d0bae6f5ea601fdf74381c42b.jpg",
+              "title": "Generations: The Evolution of Spider-Man",
+              "type": "movie",
+              "year": 2026
+            }
+          }
+        ]
+      },
+      {
+        "title": "Additional Credits",
+        "type": "other",
+        "Credit": [
+          {
+            "order": 1,
+            "role": "Theme Song Performance",
+            "Metadata": {
+              "art": "https://image.tmdb.org/t/p/original/cA3uEd2CWCMr7yzRX9wcoDq1bZz.jpg",
+              "key": "/library/metadata/5d9c084f2192ba001f30c90a/children",
+              "originallyAvailableAt": "2015-01-18T00:00:00.000Z",
+              "ratingKey": "5d9c084f2192ba001f30c90a",
+              "slug": "k-c-undercover",
+              "thumb": "https://image.tmdb.org/t/p/original/52iv1yPKYR4nezoX7lMLcK9yt6q.jpg",
+              "title": "K.C. Undercover",
+              "type": "show",
+              "year": 2015
+            }
+          },
+          {
+            "order": 1,
+            "role": "Co-Executive Producer",
+            "Metadata": {
+              "art": "https://image.tmdb.org/t/p/original/cA3uEd2CWCMr7yzRX9wcoDq1bZz.jpg",
+              "key": "/library/metadata/5d9c084f2192ba001f30c90a/children",
+              "originallyAvailableAt": "2015-01-18T00:00:00.000Z",
+              "ratingKey": "5d9c084f2192ba001f30c90a",
+              "slug": "k-c-undercover",
+              "thumb": "https://image.tmdb.org/t/p/original/52iv1yPKYR4nezoX7lMLcK9yt6q.jpg",
+              "title": "K.C. Undercover",
+              "type": "show",
+              "year": 2015
+            }
+          },
+          {
+            "order": 17,
+            "role": "Story By",
+            "Metadata": {
+              "art": "https://image.tmdb.org/t/p/original/cA3uEd2CWCMr7yzRX9wcoDq1bZz.jpg",
+              "key": "/library/metadata/5d9c084f2192ba001f30c90a/children",
+              "originallyAvailableAt": "2015-01-18T00:00:00.000Z",
+              "ratingKey": "5d9c084f2192ba001f30c90a",
+              "slug": "k-c-undercover",
+              "thumb": "https://image.tmdb.org/t/p/original/52iv1yPKYR4nezoX7lMLcK9yt6q.jpg",
+              "title": "K.C. Undercover",
+              "type": "show",
+              "year": 2015
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

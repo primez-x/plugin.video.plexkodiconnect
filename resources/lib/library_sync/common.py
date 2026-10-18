@@ -52,8 +52,8 @@ def update_kodi_library(video=True, music=True, changed_items=None):
             # Prevent cursor from moving - refresh later
             xbmc.executebuiltin('Container.Refresh')
             app.APP.update_widgets = True
-            # Signal skin-declared side-panel containers (e.g. Arctic Fuse
-            # Combined view episode panels) to reload when a relevant episode
+            # Signal skin-declared episode containers, including Starlight,
+            # to reload when a relevant episode
             # was synced, so stale cached listitem paths don't cause playback
             # errors. Skins opt in by declaring container IDs via:
             #   SetProperty(PKC.SidePanelContainers,530|531|...,10000)

@@ -1,0 +1,66 @@
+{
+  "MediaContainer": {
+    "offset": 0,
+    "totalSize": 4,
+    "size": 4,
+    "Metadata": [
+      {
+        "guid": "plex://clip/6204229830a0d8303016e0fc",
+        "key": "/library/metadata/5d7768254de0ee001fcc83a5/extras/iva-2981",
+        "ratingKey": "iva-2981",
+        "subtype": "trailer",
+        "type": "clip",
+        "duration": 117000,
+        "extraType": 1,
+        "originallyAvailableAt": "2022-02-09",
+        "thumb": "https://metadata-static.plex.tv/extras/iva/2981/6ea89477761fe3484b4e630c29499c1b.jpg",
+        "title": "Alien",
+        "year": 2022,
+        "Media": [
+          {
+            "protocol": "mp4",
+            "height": 688,
+            "width": 1280,
+            "duration": 117000,
+            "Part": [
+              {
+                "duration": 117000,
+                "key": "/library/metadata/5d7768254de0ee001fcc83a5/extras/6204229830a0d8303016e0fc/parts/mp4-2500"
+              }
+            ]
+          },
+          {
+            "protocol": "mp4",
+            "height": 387,
+            "width": 720,
+            "duration": 117000,
+            "Part": [
+              {
+                "duration": 117000,
+                "key": "/library/metadata/5d7768254de0ee001fcc83a5/extras/6204229830a0d8303016e0fc/parts/mp4-1500"
+              }
+            ]
+          },
+          {
+            "protocol": "mp4",
+            "height": 258,
+            "width": 480,
+            "duration": 117000,
+            "Part": [
+              {
+                "duration": 117000,
+                "key": "/library/metadata/5d7768254de0ee001fcc83a5/extras/6204229830a0d8303016e0fc/parts/mp4-750"
+              }
+            ]
+          }
+        ],
+        "Image": [
+          {
+            "type": "snapshot",
+            "url": "https://metadata-static.plex.tv/extras/iva/2981/6ea89477761fe3484b4e630c29499c1b.jpg"
+          }
+        ]
+      }
+    ]
+  }
+}

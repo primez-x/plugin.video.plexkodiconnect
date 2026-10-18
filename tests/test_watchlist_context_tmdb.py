@@ -92,24 +92,11 @@ class WatchlistContextTmdbTests(unittest.TestCase):
             "WATCHLIST_REMOVE_TMDB?tmdb_id=132159&tmdb_type=tvshow",
         )
 
-    def test_add_context_falls_back_to_tmdb_helper_monitor_identity(self):
-        window = run_context(
-            "context_watchlist_add_search.py",
-            {
-                "ListItem.UniqueID(tmdb)": "",
-                "ListItem.Property(tmdb_id)": "",
-                "ListItem.DBTYPE": "",
-            },
-            {
-                "TMDbHelper.ListItem.Monitor.TMDb_ID": "12345",
-                "TMDbHelper.ListItem.Monitor.TMDb_Type": "tv",
-            },
-        )
-
-        self.assertEqual(
-            window.properties["plexkodiconnect.command"],
-            "WATCHLIST_ADD_TMDB?tmdb_id=12345&tmdb_type=tv",
-        )
+    def test_context_without_exact_identity_sends_no_command(self):
+        for filename in ('context_watchlist_add_search.py', 'context_watchlist_remove_search.py'):
+            with self.subTest(filename=filename):
+                window = run_context(filename, {})
+                self.assertNotIn('plexkodiconnect.command', window.properties)
 
 
 if __name__ == "__main__":

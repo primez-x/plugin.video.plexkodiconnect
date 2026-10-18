@@ -1,0 +1,53 @@
+{
+  "MediaContainer": {
+    "totalSize": 1,
+    "size": 1,
+    "Metadata": [
+      {
+        "birthPlace": "Oakland, California, USA",
+        "bornAt": "1996-09-01",
+        "key": "/library/people/5d7768d2ebdf2200209c916d",
+        "knownFor": "Acting",
+        "metadataId": "5d7768d2ebdf2200209c916d",
+        "ratingKey": "5d7768d2ebdf2200209c916d",
+        "slug": "zendaya",
+        "thumb": "https://metadata-static.plex.tv/0/people/09bb753b08d4114417ade1aec80de36a.jpg",
+        "title": "Zendaya",
+        "summary": "Zendaya Maree Stoermer Coleman (born September 1, 1996), known mononymously as Zendaya, is an American actress. Her accolades include two Primetime Emmy Awards and a Golden Globe. In 2022, Time named her one of the 100 most influential people in the world.\n\nBorn in Oakland, California, Zendaya began her career as a child model and dancer before gaining prominence for her roles on the Disney Channel sitcoms Shake It Up (2010\u20132013) and K.C. Undercover (2015\u20132018), the latter of which she also produced. For her performance as Rue Bennett, a struggling drug-addicted teenager in the HBO teen drama series Euphoria (2019\u20132026), Zendaya won two Primetime Emmy Awards for Outstanding Lead Actress in a Drama Series.\n\nZendaya made her feature film debut as MJ in the Marvel Cinematic Universe film Spider-Man: Homecoming (2017). She reprised her role in its sequels Far From Home (2019), No Way Home (2021), and Brand New Day (2026). She has since starred in the musical film The Greatest Showman (2017), Denis Villeneuve's Dune trilogy (2021\u20132026), Christopher Nolan's epic The Odyssey (2026), and earned praise for her performances in the romance films Malcolm & Marie (2021), Challengers (2024) and The Drama (2026).",
+        "type": "person",
+        "Image": [
+          {
+            "type": "avatar",
+            "url": "https://metadata-static.plex.tv/0/people/09bb753b08d4114417ade1aec80de36a.jpg"
+          },
+          {
+            "type": "coverPoster",
+            "url": "https://metadata-static.plex.tv/e/people/eeb971c2c1d9b54907a1c8bc4a12d2ce.jpg"
+          }
+        ],
+        "CreditType": [
+          {
+            "type": "actor",
+            "count": 517,
+            "title": "Actor"
+          },
+          {
+            "type": "producer",
+            "count": 113,
+            "title": "Producer"
+          },
+          {
+            "type": "music",
+            "count": 7,
+            "title": "Composer"
+          },
+          {
+            "type": "writer",
+            "count": 2,
+            "title": "Writer"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -36,8 +36,6 @@ WATCHLIST_USER_STATE_URL = (
 WATCHLIST_VERIFY_ATTEMPTS = 4
 WATCHLIST_VERIFY_SLEEP_MS = 250
 WATCHLIST_HTTP_TIMEOUT = (3.0, 8.0)
-WATCHLIST_MONITOR_ATTEMPTS = 25
-WATCHLIST_MONITOR_SLEEP_MS = 200
 WATCHLIST_STATE_CACHE_SECONDS = 300
 DISCOVER_HINT_PROPERTY = "PlexWatchlistHint"
 
@@ -56,13 +54,8 @@ DETAIL_CONTEXT_DBTYPE = "PKC.Watchlist.Detail.Context.DBType"
 DETAIL_TMDB_ID = "PKC.Watchlist.Detail.TMDbId"
 DETAIL_TMDB_TYPE = "PKC.Watchlist.Detail.TMDbType"
 DETAIL_RATING_KEY = "PKC.Watchlist.Detail.RatingKey"
-DETAIL_MONITOR_REVISION = "PKC.Watchlist.Detail.MonitorRevision"
 ITEM_STATE_PREFIX = "PKC.Watchlist.Item."
 
-TMDB_MONITOR_ID = "TMDbHelper.ListItem.Monitor.TMDb_ID"
-TMDB_MONITOR_TYPE = "TMDbHelper.ListItem.Monitor.TMDb_Type"
-TMDB_MONITOR_LABEL = "TMDbHelper.ListItem.base_label"
-TMDB_MONITOR_DBTYPE = "TMDbHelper.ListItem.base_dbtype"
 
 LOCKS = {}
 LOCKS_LOCK = threading.Lock()
@@ -1026,7 +1019,7 @@ def status_tmdb(params):
     return _project_status(identity, revision[0], revision[1], observed_state)
 
 
-# --- title+year search resolver (bypasses TMDb Helper dependency) ------------
+# --- Native Plex title and year search resolver --------------------------
 
 DETAIL_CONTEXT_YEAR = "PKC.Watchlist.Detail.Context.Year"
 DISCOVER_SEARCH_URL = "https://discover.provider.plex.tv/library/search"
@@ -1149,7 +1142,7 @@ def bootstrap_status_search(params):
 
 
 def status_search(params):
-    """Resolve watchlist state by title+year, bypassing TMDb Helper dependency."""
+    """Resolve Watchlist state through Plex title and year search."""
     title = params.get("title") or utils.window(DETAIL_CONTEXT_LABEL)
     year = params.get("year") or utils.window(DETAIL_CONTEXT_YEAR)
     plex_type = params.get("plex_type") or params.get("tmdb_type")
@@ -1184,64 +1177,3 @@ def status_search(params):
         discover_cache.record_watchlist_state(rating_key, observed_state, account_hash)
         discover_cache.record_tmdb_rating_key(identity, rating_key, account_hash)
     return _project_status(identity, revision[0], revision[1], observed_state)
-
-
-def _monitor_context():
-    return (
-        utils.window(DETAIL_CONTEXT_LABEL),
-        utils.window(DETAIL_CONTEXT_DBTYPE),
-    )
-
-
-def status_monitor():
-    """Wait for TMDb Helper's current monitor result, never its stale predecessor."""
-    expected_label, expected_dbtype = _monitor_context()
-    if not expected_label or expected_dbtype not in ("movie", "tvshow"):
-        return False
-    monitor_revision = uuid4().hex
-    utils.window(DETAIL_MONITOR_REVISION, value=monitor_revision)
-
-    for attempt in range(WATCHLIST_MONITOR_ATTEMPTS):
-        if utils.window(
-            DETAIL_MONITOR_REVISION
-        ) != monitor_revision or _monitor_context() != (
-            expected_label,
-            expected_dbtype,
-        ):
-            return False
-        if utils.window(DETAIL_IDENTITY) or utils.window(DETAIL_PENDING):
-            return False
-        tmdb_id = utils.window(TMDB_MONITOR_ID)
-        tmdb_type = utils.window(TMDB_MONITOR_TYPE)
-        monitor_label = utils.window(TMDB_MONITOR_LABEL)
-        monitor_dbtype = utils.window(TMDB_MONITOR_DBTYPE)
-        if (
-            tmdb_id
-            and tmdb_type in ("movie", "tv")
-            and monitor_label == expected_label
-            and monitor_dbtype == expected_dbtype
-        ):
-            if utils.window(DETAIL_MONITOR_REVISION) != monitor_revision:
-                return False
-            identity = plex_discover.tmdb_watchlist_identity(tmdb_id, tmdb_type)
-            if identity is None:
-                return False
-            # The skin only exposes this fallback once all three properties
-            # agree, so an enabled action always has its projection identity.
-            utils.window(DETAIL_IDENTITY, value=identity)
-            utils.window(DETAIL_TMDB_ID, value=tmdb_id)
-            utils.window(DETAIL_TMDB_TYPE, value=tmdb_type)
-            if utils.window(DETAIL_MONITOR_REVISION) != monitor_revision:
-                return False
-            return status_tmdb(
-                {
-                    "tmdb_id": tmdb_id,
-                    "tmdb_type": tmdb_type,
-                    "watchlist_identity": identity,
-                }
-            )
-        if attempt + 1 < WATCHLIST_MONITOR_ATTEMPTS:
-            xbmc.sleep(WATCHLIST_MONITOR_SLEEP_MS)
-
-    LOG.debug("TMDb Helper did not produce a current identity for Watchlist status")
-    return False

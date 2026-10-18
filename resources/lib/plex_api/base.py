@@ -683,17 +683,18 @@ class Base(object):
             return
         return (x for x in extras)
 
-    def trailer(self):
+    def trailer(self, force_play=False):
         """
         Returns the URL for a single trailer (local trailer preferred; first
         trailer found returned) or an add-on path to list all Plex extras
         if the user setting showExtrasInsteadOfTrailer is set.
         Returns None if nothing is found.
+        force_play bypasses the extras-directory preference for an explicit trailer request.
         """
         url = None
         for extras in self.xml.iterfind('Extras'):
             # There will always be only 1 extras element
-            if (len(extras) > 0 and
+            if (not force_play and len(extras) > 0 and
                     app.SYNC.show_extras_instead_of_playing_trailer):
                 return ('plugin://%s?mode=route_to_extras&plex_id=%s'
                         % (v.ADDON_ID, self.plex_id))

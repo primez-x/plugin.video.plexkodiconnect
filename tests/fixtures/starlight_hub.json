@@ -1,0 +1,248 @@
+{
+  "MediaContainer": {
+    "title": "Most Watchlisted This Week",
+    "offset": 0,
+    "totalSize": 60,
+    "size": 60,
+    "Metadata": [
+      {
+        "art": "https://image.tmdb.org/t/p/original/uoXXbN2PrOxH6UKyP7kYwmGpAAP.jpg",
+        "guid": "plex://show/639106ac93ce26bea48d65f2",
+        "key": "/library/metadata/639106ac93ce26bea48d65f2/children",
+        "rating": 9,
+        "ratingKey": "639106ac93ce26bea48d65f2",
+        "subtype": "miniSeries",
+        "type": "show",
+        "audienceRating": 8.5,
+        "duration": 3000000,
+        "originallyAvailableAt": "2026-10-14",
+        "slug": "visionquest",
+        "thumb": "https://image.tmdb.org/t/p/original/WGyAyBPncfuu8MZhLY9RtfZPM0.jpg",
+        "title": "VisionQuest",
+        "year": 2026,
+        "Image": [
+          {
+            "type": "background",
+            "url": "https://image.tmdb.org/t/p/original/uoXXbN2PrOxH6UKyP7kYwmGpAAP.jpg"
+          },
+          {
+            "type": "backgroundSquare",
+            "url": "https://metadata-static.plex.tv/0/gracenote/0aecad3c0adb57199f70aa1acfe6eb80.jpg"
+          },
+          {
+            "type": "banner",
+            "url": "https://artworks.thetvdb.com/banners/v4/series/426606/banners/6a28c0196e7df.jpg"
+          },
+          {
+            "type": "clearLogo",
+            "url": "https://metadata-static.plex.tv/b/683a142553/b240fb9d778b3c97e910142e3501a1db.png"
+          },
+          {
+            "type": "clearLogoWide",
+            "url": "https://metadata-static.plex.tv/b/683a142553/b240fb9d778b3c97e910142e3501a1db.png"
+          },
+          {
+            "type": "coverArt",
+            "url": "https://metadata-static.plex.tv/5/gracenote/5bb8e8f36c030b21ca92942021e655a0.jpg"
+          },
+          {
+            "type": "coverPoster",
+            "url": "https://image.tmdb.org/t/p/original/WGyAyBPncfuu8MZhLY9RtfZPM0.jpg"
+          },
+          {
+            "type": "coverSquare",
+            "url": "https://metadata-static.plex.tv/6/gracenote/6b0a793ea358bc23c2b74bf7d69c4d40.jpg"
+          }
+        ]
+      },
+      {
+        "art": "https://metadata-static.plex.tv/b/gracenote/b77d4ca99fc4bc829c8259d5713ab4ad.jpg",
+        "guid": "plex://movie/6854ddbf96ab065c716a44fa",
+        "key": "/library/metadata/6854ddbf96ab065c716a44fa",
+        "rating": 8.8,
+        "ratingKey": "6854ddbf96ab065c716a44fa",
+        "type": "movie",
+        "audienceRating": 7.6,
+        "duration": 5760000,
+        "originallyAvailableAt": "2026-08-28",
+        "slug": "buddy-2026",
+        "thumb": "https://metadata-static.plex.tv/7/gracenote/784d000a276ac5e9d81a72257c195e81.jpg",
+        "title": "Buddy",
+        "year": 2026,
+        "Image": [
+          {
+            "type": "background",
+            "url": "https://metadata-static.plex.tv/b/gracenote/b77d4ca99fc4bc829c8259d5713ab4ad.jpg"
+          },
+          {
+            "type": "backgroundSquare",
+            "url": "https://metadata-static.plex.tv/6/gracenote/6ae2a2d66b7ada3122bf39030e0e22cd.jpg"
+          },
+          {
+            "type": "clearLogo",
+            "url": "https://metadata-static.plex.tv/b/683a142553/b20edc944d768288a088c3aae0da5a9c.png"
+          },
+          {
+            "type": "clearLogoWide",
+            "url": "https://metadata-static.plex.tv/b/683a142553/b20edc944d768288a088c3aae0da5a9c.png"
+          },
+          {
+            "type": "coverArt",
+            "url": "https://metadata-static.plex.tv/8/gracenote/8d60f46ac0ac9539716b97b649f2a0f9.jpg"
+          },
+          {
+            "type": "coverPoster",
+            "url": "https://metadata-static.plex.tv/7/gracenote/784d000a276ac5e9d81a72257c195e81.jpg"
+          },
+          {
+            "type": "coverSquare",
+            "url": "https://metadata-static.plex.tv/1/gracenote/1ef3b81cce380a1edc9ecb6fb89ec292.jpg"
+          },
+          {
+            "type": "snapshot",
+            "url": "https://metadata-static.plex.tv/a/gracenote/ab3b0ec1eb7415ae45bc5785108ef65b.jpg"
+          }
+        ]
+      },
+      {
+        "art": "https://image.tmdb.org/t/p/original/nhIL3O4W9h5V5JbNQm7yjoDk3So.jpg",
+        "guid": "plex://movie/6a9fd4ec7571c8758b8c2589",
+        "key": "/library/metadata/6a9fd4ec7571c8758b8c2589",
+        "rating": 9.9,
+        "ratingKey": "6a9fd4ec7571c8758b8c2589",
+        "type": "movie",
+        "audienceRating": 9.9,
+        "duration": 10440000,
+        "originallyAvailableAt": "2026-10-16",
+        "slug": "you-can-see-everything-2026",
+        "thumb": "https://image.tmdb.org/t/p/original/Ap8QwmKfSjYbWC4XIP8w9pdn72O.jpg",
+        "title": "You Can See Everything",
+        "year": 2026,
+        "Image": [
+          {
+            "type": "background",
+            "url": "https://image.tmdb.org/t/p/original/nhIL3O4W9h5V5JbNQm7yjoDk3So.jpg"
+          },
+          {
+            "type": "clearLogo",
+            "url": "https://metadata-static.plex.tv/8/683a142553/8bf5a126fc4dc202801c3eaf4fd9d56d.png"
+          },
+          {
+            "type": "clearLogoWide",
+            "url": "https://metadata-static.plex.tv/8/683a142553/8bf5a126fc4dc202801c3eaf4fd9d56d.png"
+          },
+          {
+            "type": "coverArt",
+            "url": "https://image.tmdb.org/t/p/original/bYW2CSHSc5vpv8V2vKpFZS7BqnB.jpg"
+          },
+          {
+            "type": "coverPoster",
+            "url": "https://image.tmdb.org/t/p/original/Ap8QwmKfSjYbWC4XIP8w9pdn72O.jpg"
+          },
+          {
+            "type": "snapshot",
+            "url": "https://metadata-static.plex.tv/1/gracenote/18dda30011c6d0474be5f88fd292ed3e.jpg"
+          }
+        ]
+      },
+      {
+        "art": "https://metadata-static.plex.tv/4/gracenote/46bc822979bdb9c70bda65d2381f7622.jpg",
+        "guid": "plex://movie/5f40cb1e86422500429d65e0",
+        "key": "/library/metadata/5f40cb1e86422500429d65e0",
+        "rating": 9.8,
+        "ratingKey": "5f40cb1e86422500429d65e0",
+        "type": "movie",
+        "audienceRating": 9.5,
+        "duration": 7560000,
+        "originallyAvailableAt": "2026-10-16",
+        "slug": "tenzing",
+        "thumb": "https://metadata-static.plex.tv/7/gracenote/7b8167717471025a66077705f3cba552.jpg",
+        "title": "Tenzing",
+        "year": 2026,
+        "Image": [
+          {
+            "type": "background",
+            "url": "https://metadata-static.plex.tv/4/gracenote/46bc822979bdb9c70bda65d2381f7622.jpg"
+          },
+          {
+            "type": "backgroundSquare",
+            "url": "https://metadata-static.plex.tv/2/gracenote/20fc54c0ad85aa1774defcdbfbd6286f.jpg"
+          },
+          {
+            "type": "clearLogo",
+            "url": "https://metadata-static.plex.tv/4/683a142553/46a703b56f84c63bfa0b759947006760.png"
+          },
+          {
+            "type": "clearLogoWide",
+            "url": "https://metadata-static.plex.tv/4/683a142553/46a703b56f84c63bfa0b759947006760.png"
+          },
+          {
+            "type": "coverArt",
+            "url": "https://metadata-static.plex.tv/1/gracenote/15a3b351db3de24d563a8ecf8d8cd790.jpg"
+          },
+          {
+            "type": "coverPoster",
+            "url": "https://metadata-static.plex.tv/7/gracenote/7b8167717471025a66077705f3cba552.jpg"
+          },
+          {
+            "type": "coverSquare",
+            "url": "https://metadata-static.plex.tv/0/gracenote/0d2a0f6f84431e0f0d3edd843d105404.jpg"
+          },
+          {
+            "type": "snapshot",
+            "url": "https://metadata-static.plex.tv/4/gracenote/4eda634b383c793d0f7e9d59fe538e6b.jpg"
+          }
+        ]
+      },
+      {
+        "art": "https://image.tmdb.org/t/p/original/wxiBsKFEOOFK8eQStWOykNORlXY.jpg",
+        "guid": "plex://show/63616445efa3d5c0e05fcd0a",
+        "key": "/library/metadata/63616445efa3d5c0e05fcd0a/children",
+        "rating": 7.5,
+        "ratingKey": "63616445efa3d5c0e05fcd0a",
+        "type": "show",
+        "audienceRating": 8.5,
+        "duration": 3600000,
+        "originallyAvailableAt": "2026-10-15",
+        "slug": "crystal-lake-1",
+        "thumb": "https://image.tmdb.org/t/p/original/sIj9WcA1LkcjGbYjrbfV3pGegbF.jpg",
+        "title": "Crystal Lake",
+        "year": 2026,
+        "Image": [
+          {
+            "type": "background",
+            "url": "https://image.tmdb.org/t/p/original/wxiBsKFEOOFK8eQStWOykNORlXY.jpg"
+          },
+          {
+            "type": "backgroundSquare",
+            "url": "https://metadata-static.plex.tv/e/gracenote/eeeead02fbd51125c7f922f1284b2091.jpg"
+          },
+          {
+            "type": "banner",
+            "url": "https://artworks.thetvdb.com/banners/v4/series/426669/banners/69a24ed63e1c9.jpg"
+          },
+          {
+            "type": "clearLogo",
+            "url": "https://metadata-static.plex.tv/5/683a142553/5b7f44712ad9bb43bf7c1ed73f3435bd.png"
+          },
+          {
+            "type": "clearLogoWide",
+            "url": "https://metadata-static.plex.tv/5/683a142553/5b7f44712ad9bb43bf7c1ed73f3435bd.png"
+          },
+          {
+            "type": "coverArt",
+            "url": "https://metadata-static.plex.tv/5/gracenote/575b7edd953bb0e34af971cc1b2c5374.jpg"
+          },
+          {
+            "type": "coverPoster",
+            "url": "https://image.tmdb.org/t/p/original/sIj9WcA1LkcjGbYjrbfV3pGegbF.jpg"
+          },
+          {
+            "type": "coverSquare",
+            "url": "https://metadata-static.plex.tv/6/gracenote/659dc497a248bf976a3bb4aaa85ec308.jpg"
+          }
+        ]
+      }
+    ]
+  }
+}

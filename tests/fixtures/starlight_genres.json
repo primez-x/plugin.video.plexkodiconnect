@@ -1,0 +1,145 @@
+{
+  "MediaContainer": {
+    "title": "Browse by Genre",
+    "totalSize": 17,
+    "size": 17,
+    "Directory": [
+      {
+        "id": "category.action",
+        "key": "/library/categories/action",
+        "slug": "action",
+        "thumb": "https://provider-static.plex.tv/images/categories/action.png",
+        "title": "Action",
+        "type": "hub"
+      },
+      {
+        "id": "category.animation",
+        "key": "/library/categories/animation",
+        "slug": "animation",
+        "thumb": "https://provider-static.plex.tv/images/categories/animation.png",
+        "title": "Animation",
+        "type": "hub"
+      },
+      {
+        "id": "category.anime",
+        "key": "/library/categories/anime",
+        "slug": "anime",
+        "thumb": "https://provider-static.plex.tv/images/categories/anime.png",
+        "title": "Anime",
+        "type": "hub"
+      },
+      {
+        "id": "category.comedy",
+        "key": "/library/categories/comedy",
+        "slug": "comedy",
+        "thumb": "https://provider-static.plex.tv/images/categories/comedy.png",
+        "title": "Comedy",
+        "type": "hub"
+      },
+      {
+        "id": "category.crime",
+        "key": "/library/categories/crime",
+        "slug": "crime",
+        "thumb": "https://provider-static.plex.tv/images/categories/crime.png",
+        "title": "Crime",
+        "type": "hub"
+      },
+      {
+        "id": "category.documentary",
+        "key": "/library/categories/documentary",
+        "slug": "documentary",
+        "thumb": "https://provider-static.plex.tv/images/categories/documentary.png",
+        "title": "Documentary",
+        "type": "hub"
+      },
+      {
+        "id": "category.drama",
+        "key": "/library/categories/drama",
+        "slug": "drama",
+        "thumb": "https://provider-static.plex.tv/images/categories/drama.png",
+        "title": "Drama",
+        "type": "hub"
+      },
+      {
+        "id": "category.family",
+        "key": "/library/categories/family",
+        "slug": "family",
+        "thumb": "https://provider-static.plex.tv/images/categories/family.png",
+        "title": "Family",
+        "type": "hub"
+      },
+      {
+        "id": "category.horror",
+        "key": "/library/categories/horror",
+        "slug": "horror",
+        "thumb": "https://provider-static.plex.tv/images/categories/horror.png",
+        "title": "Horror",
+        "type": "hub"
+      },
+      {
+        "id": "category.music",
+        "key": "/library/categories/music",
+        "slug": "music",
+        "thumb": "https://provider-static.plex.tv/images/categories/music.png",
+        "title": "Music",
+        "type": "hub"
+      },
+      {
+        "id": "category.news",
+        "key": "/library/categories/news",
+        "slug": "news",
+        "thumb": "https://provider-static.plex.tv/images/categories/news.png",
+        "title": "News",
+        "type": "hub"
+      },
+      {
+        "id": "category.reality",
+        "key": "/library/categories/reality",
+        "slug": "reality",
+        "thumb": "https://provider-static.plex.tv/images/categories/reality.png",
+        "title": "Reality",
+        "type": "hub"
+      },
+      {
+        "id": "category.romance",
+        "key": "/library/categories/romance",
+        "slug": "romance",
+        "thumb": "https://provider-static.plex.tv/images/categories/romance.png",
+        "title": "Romance",
+        "type": "hub"
+      },
+      {
+        "id": "category.sci-fi-and-fantasy",
+        "key": "/library/categories/sci-fi-and-fantasy",
+        "slug": "sci-fi-and-fantasy",
+        "thumb": "https://provider-static.plex.tv/images/categories/sci-fi-and-fantasy.png",
+        "title": "Sci-Fi & Fantasy",
+        "type": "hub"
+      },
+      {
+        "id": "category.thriller",
+        "key": "/library/categories/thriller",
+        "slug": "thriller",
+        "thumb": "https://provider-static.plex.tv/images/categories/thriller.png",
+        "title": "Thriller",
+        "type": "hub"
+      },
+      {
+        "id": "category.war",
+        "key": "/library/categories/war",
+        "slug": "war",
+        "thumb": "https://provider-static.plex.tv/images/categories/war.png",
+        "title": "War",
+        "type": "hub"
+      },
+      {
+        "id": "category.western",
+        "key": "/library/categories/western",
+        "slug": "western",
+        "thumb": "https://provider-static.plex.tv/images/categories/western.png",
+        "title": "Western",
+        "type": "hub"
+      }
+    ]
+  }
+}
