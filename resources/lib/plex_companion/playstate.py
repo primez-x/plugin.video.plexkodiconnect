@@ -28,6 +28,8 @@ requests.packages.urllib3.disable_warnings()
 log = getLogger('PLEX.companion.playstate')
 
 TIMEOUT = (5, 5)
+# Final reports belong to the stop event, never to a later idle shutdown.
+STOP_REPORT_RETRY_WINDOW = 10
 
 # How many seconds do we wait until we check again whether we are registered
 # as a GDM Plex Companion Client?
@@ -65,12 +67,6 @@ class PlaystateMgr(backgroundthread.KillableThread):
         self.httpd_thread = None
         self.stopped_timeline = stopped_timeline()
         self.gdm = plexgdm()
-        msg = stopped_timeline()
-        self.last_pms_msg = {
-            0: msg[0].attrib,
-            1: msg[1].attrib,
-            2: msg[2].attrib
-        }
         # Keep pause suppression independent from the last successful
         # timeline. A resumed request may fail after a long pause, but the
         # next pause must still reach Plex with its newer position.
@@ -90,6 +86,7 @@ class PlaystateMgr(backgroundthread.KillableThread):
         # 'stopped' report carries this position so the PMS resume point
         # stays as accurate as with 1s reporting.
         self.last_observed_pms_msg = {}
+        self.stop_report_deadlines = {}
         self.last_playlist_poll = None
         self.webserver_retry_at = None
         super().__init__()
@@ -242,13 +239,24 @@ class PlaystateMgr(backgroundthread.KillableThread):
             params = proxy_params()
             params.update(current)
             self.last_observed_pms_msg[playerid] = params
+            self.stop_report_deadlines.pop(playerid, None)
             if (rearmed_paused_item is None and
                     not throttle.due(params, now,
                                      frequent=bool(self.subscribers))):
                 return
         else:
-            params = dict(self.last_observed_pms_msg.pop(playerid, None) or
-                          self.last_pms_msg[playerid])
+            observed = self.last_observed_pms_msg.get(playerid)
+            if observed is None:
+                return
+            deadline = self.stop_report_deadlines.setdefault(
+                playerid, now + STOP_REPORT_RETRY_WINDOW)
+            if now >= deadline:
+                self.last_observed_pms_msg.pop(playerid, None)
+                self.stop_report_deadlines.pop(playerid, None)
+                log.warning('Discarding expired final playback report for '
+                            'player %s', playerid)
+                return
+            params = dict(observed)
             params['state'] = 'stopped'
             throttle.reset()
         # Tell the PMS about our playstate progress
@@ -266,8 +274,12 @@ class PlaystateMgr(backgroundthread.KillableThread):
         if not req.ok:
             log_error(log.error, 'Failed reporting playback progress', req)
             return
-        self.last_pms_msg[playerid] = params
-        if current_state != 'stopped':
+        if current_state == 'stopped':
+            # Retire the session after Plex accepts the final position.
+            # A later shutdown must not overwrite another device's progress.
+            self.last_observed_pms_msg.pop(playerid, None)
+            self.stop_report_deadlines.pop(playerid, None)
+        else:
             throttle.record_success(params, now)
         if current_state == 'paused':
             pause_state.record_success(current)
@@ -279,6 +291,9 @@ class PlaystateMgr(backgroundthread.KillableThread):
     def pms_timeline(self, players, message):
         if utils.cached_setting('enablePMSTimeline') == 'false':
             return
+        if players:
+            for playerid in set(self.last_observed_pms_msg).difference(players):
+                self.pms_timeline_per_player(playerid, self.stopped_timeline)
         players = players if players else \
             {0: {'playerid': 0}, 1: {'playerid': 1}, 2: {'playerid': 2}}
         for player in players.values():
@@ -359,11 +374,13 @@ class PlaystateMgr(backgroundthread.KillableThread):
                 elif not players:
                     # Playback has just stopped, need to tell Plex
                     self.send_stop()
-                    signaled_playback_stop = True
+                    signaled_playback_stop = not self.last_observed_pms_msg
                     self.sleep(1)
                     continue
                 elif not app.PLAYSTATE.item:
                     # Not a Plex item currently playing
+                    self.send_stop()
+                    signaled_playback_stop = not self.last_observed_pms_msg
                     self.sleep(1)
                     continue
                 else:

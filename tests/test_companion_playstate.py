@@ -133,6 +133,144 @@ class CompanionPlaystateTimelineTests(unittest.TestCase):
         self.assertEqual(video_stops[0]['time'], '64000')
         self.assertEqual(video_stops[0]['ratingKey'], '100')
 
+    def test_shutdown_does_not_repeat_a_completed_session_stop(self):
+        for playerid in (0, 1, 2):
+            with self.subTest(playerid=playerid):
+                self.sent.clear()
+                self.mgr = self.playstate.PlaystateMgr(companion_enabled=False)
+                playing = _stopped_timeline()
+                playing[playerid].attrib.update(
+                    state='playing', time='3865970', ratingKey='100')
+                self.mgr.pms_timeline({playerid: {'playerid': playerid}},
+                                      playing)
+                self.mgr.send_stop()
+                first_stop = list(self.sent)
+
+                # Another device can finish the movie before this shutdown.
+                self.mgr.send_stop()
+
+                self.assertEqual(self.sent, first_stop)
+                self.assertEqual(first_stop[-1]['state'], 'stopped')
+                self.assertEqual(first_stop[-1]['time'], '3865970')
+
+    def test_stop_without_a_playback_session_sends_no_timeline(self):
+        self.mgr.send_stop()
+
+        self.assertEqual(self.sent, [])
+
+    def test_failed_stop_keeps_the_latest_position_for_the_next_attempt(self):
+        self._tick('playing', 60000)
+        self._tick('playing', 61000)
+        failure = self.playstate.requests.ConnectionError('offline')
+        with patch.object(self.playstate, 'communicate', side_effect=failure):
+            self.mgr.send_stop()
+        self.mgr.send_stop()
+
+        self.assertEqual(self._sent(), [('playing', '60000'),
+                                        ('stopped', '61000')])
+        self.mgr.send_stop()
+        self.assertEqual(len(self.sent), 2)
+
+    def test_rejected_stop_keeps_the_latest_position_for_the_next_attempt(self):
+        self._tick('playing', 60000)
+        self._tick('playing', 61000)
+        with patch.object(self.playstate, 'communicate',
+                          return_value=SimpleNamespace(ok=False)), \
+                patch.object(self.playstate, 'log_error'):
+            self.mgr.send_stop()
+        self.mgr.send_stop()
+
+        self.assertEqual(self._sent(), [('playing', '60000'),
+                                        ('stopped', '61000')])
+
+    def test_failed_stop_cannot_replay_at_a_later_shutdown(self):
+        self._tick('playing', 60000)
+        failure = self.playstate.requests.ConnectionError('offline')
+        with patch.object(self.playstate, 'communicate', side_effect=failure):
+            self.mgr.send_stop()
+        self.clock[0] += 60
+        self.mgr.send_stop()
+
+        self.assertEqual(self._sent(), [('playing', '60000')])
+        self.assertEqual(self.mgr.last_observed_pms_msg, {})
+
+    def test_new_session_gets_a_new_stop_report_window(self):
+        self._tick('playing', 60000)
+        failure = self.playstate.requests.ConnectionError('offline')
+        with patch.object(self.playstate, 'communicate', side_effect=failure):
+            self.mgr.send_stop()
+        self.clock[0] += 60
+        self._tick('playing', 90000)
+        self.mgr.send_stop()
+
+        self.assertEqual(self._sent(), [('playing', '60000'),
+                                        ('playing', '90000'),
+                                        ('stopped', '90000')])
+
+    def test_idle_loop_retries_a_failed_stop_without_waiting_for_shutdown(self):
+        self.playstate.app.PLAYSTATE = SimpleNamespace(item=object())
+        self.playstate.timing.unix_timestamp = lambda: self.clock[0]
+        self.playstate.update_player_info = lambda players: None
+        self.playstate.timeline = lambda players: message('playing', 60000)
+        self.playstate.js.get_players = lambda: (
+            {1: {'playerid': 1}} if self.clock[0] == 1000 else {})
+        self.mgr.gdm = SimpleNamespace(start=lambda: None)
+        self.mgr._should_poll_playlists = lambda idle: False
+        self.mgr.should_suspend = lambda: False
+        self.mgr.should_cancel = lambda: self.clock[0] >= 1005
+        self.mgr.sleep = lambda seconds: self.clock.__setitem__(
+            0, self.clock[0] + seconds)
+        communicate = self.playstate.communicate
+        failed = []
+
+        def fail_first_stop(method, url, **kwargs):
+            if kwargs['params']['state'] == 'stopped' and not failed:
+                failed.append(True)
+                raise self.playstate.requests.ConnectionError('offline')
+            return communicate(method, url, **kwargs)
+
+        self.playstate.communicate = fail_first_stop
+        self.mgr._run()
+
+        self.assertEqual(self._sent(), [('playing', '60000'),
+                                        ('stopped', '60000')])
+
+    def test_video_stop_is_sent_when_audio_starts_without_an_idle_tick(self):
+        self._tick('playing', 60000)
+        audio = _stopped_timeline()
+        audio[0].attrib.update(state='playing', time='1000', ratingKey='200')
+        self.mgr.pms_timeline({0: {'playerid': 0}}, audio)
+        self.clock[0] += 3600
+        self.mgr.send_stop()
+
+        self.assertEqual(self._sent('ratingKey'), [('playing', '100'),
+                                                  ('stopped', '100'),
+                                                  ('playing', '200'),
+                                                  ('stopped', '200')])
+
+    def test_non_plex_playback_retires_the_previous_plex_session(self):
+        self.playstate.app.PLAYSTATE = SimpleNamespace(item=object())
+        self.playstate.timing.unix_timestamp = lambda: self.clock[0]
+        self.playstate.update_player_info = lambda players: None
+        self.playstate.timeline = lambda players: message('playing', 60000)
+
+        def players():
+            if self.clock[0] > 1000:
+                self.playstate.app.PLAYSTATE.item = None
+            return {1: {'playerid': 1}}
+
+        self.playstate.js.get_players = players
+        self.mgr.gdm = SimpleNamespace(start=lambda: None)
+        self.mgr._should_poll_playlists = lambda idle: False
+        self.mgr.should_suspend = lambda: False
+        self.mgr.should_cancel = lambda: self.clock[0] >= 1005
+        self.mgr.sleep = lambda seconds: self.clock.__setitem__(
+            0, self.clock[0] + seconds)
+        self.mgr._run()
+
+        self.assertEqual(self._sent(), [('playing', '60000'),
+                                        ('stopped', '60000')])
+
     def test_pause_resume_and_seek_are_reported_immediately(self):
         self._tick('playing', 60000)
         self._tick('paused', 61000)
