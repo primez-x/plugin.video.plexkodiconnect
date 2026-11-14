@@ -31,6 +31,10 @@ if len(TMDB_MOVIESCRAPER_API) not in (4, 5):
     raise RuntimeError('tmdb.TMDBMovieScraper api changed')
 
 TMDB_SUPPORTED_IDS = ('tmdb', 'imdb')
+# The TMDb scraper returns YouTube add-on trailer URLs. SmartTube plays the
+# same URL shapes, and the YouTube add-on is not installed.
+YOUTUBE_PLUGIN = 'plugin://plugin.video.youtube/'
+SMARTTUBE_PLUGIN = 'plugin://plugin.video.smarttube/'
 
 
 def number_of_function_args(func):
@@ -92,6 +96,8 @@ def process_trailers(plex_id, plex_type, refresh=False):
         trailer = get_tmdb_details(api.guids)
         if trailer:
             trailer = trailer.get('info', {}).get('trailer')
+        if trailer and trailer.startswith(YOUTUBE_PLUGIN):
+            trailer = SMARTTUBE_PLUGIN + trailer[len(YOUTUBE_PLUGIN):]
         if trailer:
             with KodiVideoDB() as kodidb:
                 kodidb.set_trailer(db_item['kodi_id'],
